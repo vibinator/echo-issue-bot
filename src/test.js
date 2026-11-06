@@ -435,4 +435,11 @@ await syncMessage({ channels: { fetch: async (id) => { if (id === 'chanB') retur
 assert.equal(made9, 1);
 assert.equal(issues.get(R9.issue.id).thread_id, 'brandnew');
 
+// ---- the pre-form description ranks the menu (fuzzy), nothing is searched after submit ----
+assert.equal(sg('game crashes when the lobby loads, d3d device removed', [], 25, 'bug')[0].id, 'kb:gpu_hang');
+assert.equal(sg('my controllers do not vibrate', [], 25, 'bug')[0].id, 'kb:haptics');
+assert.equal(sg('instaler says problem parsing the packge', [], 25, 'install')[0].id, 'kb:quest_parse_package', 'typos still rank the right fix first');
+assert.equal(sg('zzz nothing relevant here', [], 25, 'bug').length, 0, 'no close match -> the plain list is shown');
+assert.ok(sg('download stuck on quest', [], 25, 'install').length <= 25);
+
 console.log('All tests passed.');

@@ -108,22 +108,14 @@ const deferHidden = (i) => (hidden(i) ? i.deferUpdate() : i.deferReply({ flags: 
 const backOf = (i) => i.message?.components?.flatMap((r) => r.components ?? []).find((c) => ['browse', 'dev:board'].includes(c.customId))?.customId;
 const card = (i, issue) => renderIssue(issue, { back: backOf(i) });
 
-// Reports held while a user decides whether a suggested fix solved their problem.
-const pending = new Map();
-function stash(data) {
-  const key = Math.random().toString(36).slice(2, 10);
-  pending.set(key, { ...data, exp: Date.now() + 15 * 60_000 });
-  return key;
-}
-function peek(key) {
-  const v = pending.get(key);
-  return v && v.exp > Date.now() ? v : null;
-}
-function take(key) {
-  const v = peek(key);
-  pending.delete(key);
-  return v;
-}
+// The one-line "describe it" a player typed while looking through known problems. Kept in memory only (never
+// stored in the database), for 15 minutes, to rank the list and to pre-fill the report form.
+const drafts = new Map();
+const setDraft = (userId, text) => (text ? drafts.set(userId, { text, exp: Date.now() + 15 * 60_000 }) : drafts.delete(userId));
+const getDraft = (userId) => {
+  const d = drafts.get(userId);
+  return d && d.exp > Date.now() ? d.text : '';
+};
 
 // ---------- panel, modals & forms ----------
 
@@ -183,11 +175,18 @@ const evidenceFields = () => [
     .setFileUploadComponent(new FileUploadBuilder().setCustomId('files').setMinValues(0).setMaxValues(5).setRequired(false)),
 ];
 
-const reportModal = (kind = 'bug') => new ModalBuilder().setCustomId(`report:${kind}`)
+const reportModal = (kind = 'bug', prefill = '') => new ModalBuilder().setCustomId(`report:${kind}`)
   .setTitle(kind === 'install' ? 'Report an install issue' : 'Report a bug in the game').addLabelComponents(
     labelled(kind === 'install' ? 'What happened? (device, step, error)' : 'What went wrong? (what, when, how often)',
-      lText('text', { style: TextInputStyle.Paragraph, max: 1000, required: true, min: 15 })),
+      lText('text', { style: TextInputStyle.Paragraph, max: 1000, required: true, min: 15, value: prefill })),
     platformField(), versionField(), ...evidenceFields());
+
+/** A one-line box shown before the list of known problems. Only used to put the most likely fixes first. */
+const quickModal = (kind) => new ModalBuilder().setCustomId(`faqq:${kind}`)
+  .setTitle(kind === 'install' ? 'Install issue' : 'Bug in the game').addLabelComponents(
+    labelled('Describe the problem briefly (optional)',
+      lText('text', { style: TextInputStyle.Paragraph, max: 300, placeholder: 'e.g. game crashes when the lobby loads / installer says problem parsing the package' }),
+      'Leave empty to just browse the list. This is only used to put the most likely fixes first.'));
 
 /** Step 1 of reporting: is it an install problem or a bug in the game? */
 const reportTypePayload = () => ({
@@ -196,22 +195,38 @@ const reportTypePayload = () => ({
   components: [row(btn('rtype:install', 'Install issue', '🔧', ButtonStyle.Primary), btn('rtype:bug', 'Bug in game', '🐞', ButtonStyle.Primary))],
 });
 
-/** Step 2: try to answer it before any ticket exists – "is your problem one of these?" */
-function faqPayload(guildId, kind) {
+/**
+ * Step 2: try to answer it before any ticket exists – "is your problem one of these?"
+ * `matches` = fuzzy matches for what the player just described (best first); the rest follow, so nothing is hidden.
+ */
+function faqPayload(guildId, kind, matches = []) {
   const entries = faqEntries(kind, articles.list(guildId, { enabledOnly: true }));
   const helped = (e) => kbStats.get(guildId, e.id).helped;
-  const sorted = [...entries.filter((e) => e.custom), ...entries.filter((e) => !e.custom).sort((a, b) => helped(b) - helped(a))].slice(0, 25);
+  const matchScore = new Map(matches.map((m) => [m.id, m.score]));
+  const rest = [...entries.filter((e) => e.custom), ...entries.filter((e) => !e.custom).sort((a, b) => helped(b) - helped(a))];
+  const sorted = [...entries.filter((e) => matchScore.has(e.id)).sort((a, b) => matchScore.get(b.id) - matchScore.get(a.id)),
+    ...rest.filter((e) => !matchScore.has(e.id))].slice(0, 25);
   const label = kind === 'install' ? '🔧 **Install issue**' : '🐞 **Bug in game**';
+  const hint = matchScore.size ? `⭐ marks the closest matches to what you wrote.` : 'Pick the one that matches.';
   return {
-    content: `${label} – before opening a ticket, is your problem one of these? Pick it to see the fix.\nIf none fit, press **None of these** and describe it.`,
+    content: `${label} – before opening a ticket, is your problem one of these? ${hint}\nIf none fit, press **None of these** and describe it – nothing else is searched after that.`,
     embeds: [],
     components: [
       row(new StringSelectMenuBuilder().setCustomId(`faq:${kind}`).setPlaceholder('Pick the one that matches…')
-        .addOptions(sorted.map((e) => ({ label: trunc(e.title, 100), value: e.id, emoji: e.custom ? '📚' : '💡' })))),
+        .addOptions(sorted.map((e) => ({
+          label: trunc(e.title, 100), value: e.id, emoji: matchScore.has(e.id) ? '⭐' : e.custom ? '📚' : '💡',
+          ...(matchScore.has(e.id) ? { description: `Closest match · ${Math.round(matchScore.get(e.id) * 100)}%` } : {}),
+        })))),
       row(btn(`rform:${kind}`, 'None of these – report it', '📝', ButtonStyle.Primary)),
     ],
   };
 }
+
+/** The list for this player, ranked by what they described (if anything). */
+const faqFor = (i, kind) => {
+  const text = getDraft(i.user.id);
+  return faqPayload(i.guildId, kind, text ? suggest(text, articles.list(i.guildId, { enabledOnly: true }), 25, kind) : []);
+};
 
 /** The answer screen: did it fix it, is it not your problem (back to the list), or report it anyway. */
 function faqAnswerPayload(entry, kind) {
@@ -248,22 +263,6 @@ const noteModal = (issue) => new ModalBuilder().setCustomId(`note:${issue.id}`).
 const fixedModal = (issue) => new ModalBuilder().setCustomId(`fixed:${issue.id}`).setTitle(`Mark fixed · #${issue.id}`).addComponents(
   input('version', 'Fixed in version (optional)', { max: 40, placeholder: 'e.g. 0.13.15', value: issue.fixed_version }),
   input('text', 'Note for players (optional)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note }));
-
-/** Shows suggestion `idx` of `sugg`; the user can accept it, deny it (next suggestion / file), or file anyway. */
-function kbPayload(sugg, idx, key) {
-  const s = sugg[idx];
-  const e = new EmbedBuilder().setColor(0xfee75c).setTitle(`💡 ${trunc(s.title, 250)}`).setDescription(trunc(s.fix, 4000))
-    .setFooter({ text: `Source: ${s.source}${sugg.length > 1 ? ` · suggestion ${idx + 1} of ${sugg.length}` : ''}` });
-  return {
-    content: 'This looks like a **known problem**. Try this first:',
-    embeds: [e],
-    components: [row(
-      btn(`kbok:${key}`, 'That fixed it', '✅', ButtonStyle.Success),
-      btn(`kbno:${key}`, idx + 1 < sugg.length ? 'Not my problem – next' : 'Not my problem', '🙅'),
-      btn(`kbfile:${key}`, 'Still happening – file my report', '📝'),
-    )],
-  };
-}
 
 const issueOption = (it) => ({
   label: trunc(`#${it.id} ${it.title}`, 100),
@@ -596,12 +595,19 @@ client.on('interactionCreate', async (i) => {
     // Step 2: show the known problems for this ticket type before any form opens.
     if (i.isButton() && (id === 'rtype:install' || id === 'rtype:bug')) {
       if (!canReport(i)) return noReportAccess(i);
-      return i.update(faqPayload(i.guildId, id.slice(6)));
+      setDraft(i.user.id, ''); // a new report starts clean
+      return i.showModal(quickModal(id.slice(6)));
+    }
+    // The one-line description: rank the known problems by it, then show the list.
+    if (i.isModalSubmit() && (id === 'faqq:install' || id === 'faqq:bug')) {
+      if (!canReport(i)) return noReportAccess(i);
+      setDraft(i.user.id, i.fields.getTextInputValue('text').trim());
+      return show(i, faqFor(i, id.slice(5)));
     }
     if (i.isStringSelectMenu() && id.startsWith('faq:')) {
       const kind = id.slice(4);
       const entry = faqEntries(kind, articles.list(i.guildId, { enabledOnly: true })).find((e) => e.id === i.values[0]);
-      if (!entry) return i.update(faqPayload(i.guildId, kind));
+      if (!entry) return i.update(faqFor(i, kind));
       kbStats.bump(i.guildId, entry.id, 'shown');
       return i.update(faqAnswerPayload(entry, kind));
     }
@@ -613,7 +619,7 @@ client.on('interactionCreate', async (i) => {
     if (i.isButton() && id.startsWith('faqno:')) {
       const [, kind, ...rest] = id.split(':');
       kbStats.bump(i.guildId, rest.join(':'), 'denied');
-      return i.update(faqPayload(i.guildId, kind));
+      return i.update(faqFor(i, kind));
     }
     // "None of these" / "Still happening": open the form.
     if (i.isButton() && id.startsWith('rform:')) {
@@ -621,7 +627,7 @@ client.on('interactionCreate', async (i) => {
       const [, kind, ...rest] = id.split(':');
       if (rest.length) kbStats.bump(i.guildId, rest.join(':'), 'filed');
       const wait = cooldownLeft(i);
-      return wait ? i.reply(waitMsg(wait)) : i.showModal(reportModal(kind));
+      return wait ? i.reply(waitMsg(wait)) : i.showModal(reportModal(kind, getDraft(i.user.id))); // pre-filled with what they already wrote
     }
     if (i.isModalSubmit() && (id === 'report:install' || id === 'report:bug')) {
       if (!canReport(i)) return noReportAccess(i);
@@ -634,47 +640,9 @@ client.on('interactionCreate', async (i) => {
       };
       const wait = cooldownLeft(i);
       if (wait) return i.reply(waitMsg(wait));
-      // Suggest known fixes (built-in + the developers' knowledge articles) before filing anything.
-      const sugg = suggest(`${data.text} ${data.platform}`, articles.list(i.guildId, { enabledOnly: true }), 3, data.kind);
-      if (sugg.length) {
-        const key = stash({ ...data, sugg, idx: 0 });
-        kbStats.bump(i.guildId, sugg[0].id, 'shown');
-        return show(i, kbPayload(sugg, 0, key));
-      }
+      // The player already went through the known-problems list and chose to report: file it, no more searching.
+      setDraft(i.user.id, '');
       await deferHidden(i); // re-hosting files can take longer than Discord's 3s limit
-      return i.editReply(await submitReport(i, data));
-    }
-    if (i.isButton() && id.startsWith('kbok:')) {
-      const d = take(id.slice(5));
-      if (d) kbStats.bump(i.guildId, d.sugg[d.idx].id, 'helped');
-      return i.update({ content: 'Glad that helped! 🎉 No report was filed.', embeds: [], components: [] });
-    }
-    // The user denies the suggestion: show the next one, or file the report if there are no more.
-    if (i.isButton() && id.startsWith('kbno:')) {
-      const key = id.slice(5);
-      const d = peek(key);
-      if (!d) return i.update({ content: 'That took too long – please press **Report a problem** again.', embeds: [], components: [] });
-      kbStats.bump(i.guildId, d.sugg[d.idx].id, 'denied');
-      if (d.idx + 1 < d.sugg.length) {
-        d.idx += 1;
-        kbStats.bump(i.guildId, d.sugg[d.idx].id, 'shown');
-        return i.update(kbPayload(d.sugg, d.idx, key));
-      }
-      take(key);
-      if (!canReport(i)) return noReportAccess(i);
-      const wait = cooldownLeft(i);
-      if (wait) return i.update({ content: `⏳ Please wait ${wait}s before sending another report.`, embeds: [], components: [] });
-      await i.deferUpdate();
-      return i.editReply(await submitReport(i, d));
-    }
-    if (i.isButton() && id.startsWith('kbfile:')) {
-      if (!canReport(i)) return noReportAccess(i);
-      const data = take(id.slice(7));
-      if (!data) return i.update({ content: 'That took too long – please press **Report a problem** again.', embeds: [], components: [] });
-      kbStats.bump(i.guildId, data.sugg[data.idx].id, 'filed');
-      const wait = cooldownLeft(i);
-      if (wait) return i.update({ content: `⏳ Please wait ${wait}s before sending another report.`, embeds: [], components: [] });
-      await i.deferUpdate();
       return i.editReply(await submitReport(i, data));
     }
     if (i.isButton() && id.startsWith('split:')) {
@@ -1146,7 +1114,7 @@ client.once('clientReady', async () => {
       if (cfg.retention_days > 0) purgeExpired(client, cfg.guild_id, cfg.retention_days).catch((e) => console.error('Retention error:', e.message));
     }
     try { const f = maybeBackup(); if (f) console.log(`Backup written: ${f}`); } catch (e) { console.error('Backup failed:', e.message); }
-    for (const [k, v] of pending) if (v.exp < Date.now()) pending.delete(k);
+    for (const [k, v] of drafts) if (v.exp < Date.now()) drafts.delete(k);
   };
   setTimeout(tick, 30_000);
   setInterval(tick, 3_600_000);
