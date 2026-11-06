@@ -64,6 +64,12 @@ A backup is made daily (newest 14 kept), whenever a developer presses **Back up 
 - Keep the bot token secret (rotate it if it was ever pasted anywhere), restrict who can see the issue channel/CSV exports, and tell Discord and affected users about any breach.
 - These documents are templates, not legal advice. Re-check Discord's current [Developer Terms](https://discord.com/developers/docs/policies-and-agreements/developer-terms-of-service) and [Developer Policy](https://discord.com/developers/docs/policies-and-agreements/developer-policy) before relying on them, especially if the bot is added to many servers.
 
+## Speed and reliability
+- **Acknowledge first.** Anything that talks to Discord several times (changing a status, merging, withdrawing, `/setup`, viewing attachments…) answers Discord immediately and does its work afterwards, so a slow network or a busy NAS can't run out Discord's 3-second window.
+- **A failed click never stops the bot.** If Discord rejects a reply (for example "Unknown interaction" because it was answered too late), the error is logged with its reason, the person is told when that is still possible, and the bot carries on.
+- **Fast matching.** Words are spell-checked once and remembered, duplicate review compares only issues that share meaningful words, and the database uses WAL mode with proper indexes. On 600 issues: filing a report ≈ 4 ms, drawing an issue card ≈ 6 ms, the duplicate review ≈ 0.15 s (it used to take over 2 seconds and freeze the bot meanwhile). Set `DB_WAL=0` if the data folder is on a network share (SMB/NFS).
+- `npm test` includes speed guards and a test that a failing reply cannot crash the bot.
+
 ## How the matching works
 Used for the "is it one of these?" menu, for grouping similar reports, and for the duplicate review. No AI service – plain word comparison that runs on your own server:
 - **Typos** are fixed against a vocabulary of Echo VR terms (`src/lexicon.js`: EchoXR, nEVR, Quest, SteamVR, Proton, haptics…) and against words already used in existing issues, while ordinary words like "patch" or "beta" are left alone.

@@ -3,9 +3,8 @@ import { decisions, events, evidence, issues, prefs, reports, watchers } from '.
 import { refreshBoard } from './board.js';
 import { kindOfFile, kindOfLink, linkName } from './evidence.js';
 import { removeReportFiles, saveFromUrl } from './evidenceStore.js';
-import { rankSimilar } from './similarity.js';
+import { rankSimilar, similarPairs } from './similarity.js';
 import { detectCategory, INSTALL_CATEGORY } from './categories.js';
-import { relatedIssues } from './related.js';
 import { renderIssue } from './render.js';
 
 /** Default score at/above which a new report is attached to an existing issue (configurable per server). */
@@ -135,19 +134,13 @@ export function mergeIssues(fromId, intoId) {
  * minus pairs developers already marked "keep separate" and pairs of two closed issues.
  */
 export function duplicatePairs(guildId, floor = 0.12) {
-  const best = new Map();
-  for (const it of issues.list(guildId)) {
-    for (const r of relatedIssues(it, { limit: 5, min: floor })) {
-      const [a, b] = it.id < r.id ? [it.id, r.id] : [r.id, it.id];
-      const key = `${a}-${b}`;
-      best.set(key, { a, b, score: Math.max(best.get(key)?.score ?? 0, r.score) });
-    }
-  }
   const closed = new Set(['fixed', 'wont_fix', 'cannot_reproduce']);
-  return [...best.values()]
+  const status = new Map(issues.list(guildId).map((it) => [it.id, it.status]));
+  return similarPairs(issues.withText(guildId), floor)
+    .map((p) => (p.a < p.b ? p : { a: p.b, b: p.a, score: p.score }))
     .filter((p) => !decisions.has(guildId, p.a, p.b))
-    .filter((p) => !(closed.has(issues.get(p.a)?.status) && closed.has(issues.get(p.b)?.status)))
-    .sort((x, y) => y.score - x.score);
+    .filter((p) => !(closed.has(status.get(p.a)) && closed.has(status.get(p.b))))
+    .slice(0, 500); // the review shows one pair at a time, best first – no need to hold thousands
 }
 
 // ---------- Discord messaging helpers ----------
@@ -166,7 +159,7 @@ export async function syncMessage(client, issue, channelId) {
     try {
       const ch = await client.channels.fetch(fresh.channel_id);
       if (ch.archived) await ch.setArchived(false).catch(() => {}); // messages in an archived thread can't be edited
-      await (await ch.messages.fetch(fresh.message_id)).edit(payload);
+      await ch.messages.edit(fresh.message_id, payload); // one call to Discord (no separate fetch of the message first)
       refreshBoard(client, fresh.guild_id);
       return;
     } catch { /* card deleted, or written by a previous bot account (Discord only lets a bot edit its own messages) */ }
@@ -263,7 +256,7 @@ export async function retireMessage(client, issue, intoId) {
   if (!issue) return;
   try {
     const ch = await client.channels.fetch(issue.channel_id);
-    await (await ch.messages.fetch(issue.message_id)).edit({ content: `🔀 This issue was merged into **#${intoId}** – please continue the discussion there.`, embeds: [], components: [] });
+    await ch.messages.edit(issue.message_id, { content: `🔀 This issue was merged into **#${intoId}** – please continue the discussion there.`, embeds: [], components: [] });
   } catch { /* gone */ }
   if (issue.thread_id) {
     try { const t = await client.channels.fetch(issue.thread_id); await t.setLocked(true); await t.setArchived(true); } catch { /* gone */ }

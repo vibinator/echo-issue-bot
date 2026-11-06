@@ -404,7 +404,7 @@ const thr = {
   get archived() { return isArchived; },
   setArchived: async (v) => { isArchived = v; unarchived.push(v); },
   send: async (p) => { threadMsgs.push(p); return { id: `card${threadMsgs.length}`, url: 'u' }; },
-  messages: { fetch: async () => ({ edit: async (p) => { edits.push(p); } }) },
+  messages: { edit: async (_id, p) => { edits.push(p); } },
 };
 const parentChan = { id: 'chan', threads: { create: async (o) => { parentChan.created = o; return thr; } }, send: async (p) => { channelMsgs.push(p); return { id: 'pub1' }; } };
 const tClient = { channels: { fetch: async (id) => (id === 'th1' ? thr : parentChan) } };
@@ -453,7 +453,7 @@ const oldThread = {
   id: 'oldthread', archived: false, setArchived: async () => {},
   send: async (p) => { sent9.push(p); return { id: 'newcard' }; },
   // a different (previous) bot account wrote the card, so this bot is not allowed to edit it
-  messages: { fetch: async () => ({ edit: async () => { throw Object.assign(new Error('Cannot edit a message authored by another user'), { code: 50005 }); } }) },
+  messages: { edit: async () => { throw Object.assign(new Error('Cannot edit a message authored by another user'), { code: 50005 }); } },
 };
 const parent9 = { id: 'chanB', threads: { create: async () => { created9++; return oldThread; } }, send: async () => ({ id: 'x' }) };
 await syncMessage({ channels: { fetch: async (id) => (id === 'oldthread' ? oldThread : parent9) } }, issues.get(R9.issue.id), 'chanB');
@@ -605,5 +605,49 @@ assert.ok(!ui.canManageArticles(player), 'other members still cannot');
 assert.ok(!ui.isDev(editor), 'being an editor does not make someone a developer (board, settings, export… stay locked)');
 const editorMenu = JSON.parse(JSON.stringify(ui.articleMenuPayload()));
 assert.deepEqual(editorMenu.components.flatMap((r) => r.components.map((c) => c.custom_id)), ['dev:articles'], 'the editor menu holds only the article tools');
+
+// ---- a failed reply must never stop the bot (this crashed the live bot: "Unknown interaction" 10062) ----
+const botClient = ui.client;
+const fakeClick = (customId, reply) => ({
+  guildId: 'gX', customId, user: { id: 'clicker' }, replied: false, deferred: false,
+  isChatInputCommand: () => false, isButton: () => true, isModalSubmit: () => false, isStringSelectMenu: () => false, isChannelSelectMenu: () => false,
+  reply, followUp: async () => {},
+});
+let unhandled = 0;
+const onUnhandled = () => { unhandled++; };
+process.on('unhandledRejection', onUnhandled);
+const clientErrors = [];
+botClient.on('error', (e) => clientErrors.push(e));
+const quiet = console.error; console.error = () => {};
+const tooLate = Object.assign(new Error('Unknown interaction'), { code: 10062 });
+botClient.emit('interactionCreate', fakeClick('mine', async () => { throw tooLate; }));
+const told = [];
+let attempts = 0;
+botClient.emit('interactionCreate', fakeClick('mine', async (m) => { if (attempts++ === 0) throw Object.assign(new Error('Missing Permissions'), { code: 50013 }); told.push(m.content); }));
+await new Promise((resolve) => setTimeout(resolve, 50));
+console.error = quiet;
+process.off('unhandledRejection', onUnhandled);
+assert.equal(unhandled, 0, 'a failed reply is handled instead of escaping as an unhandled rejection');
+assert.equal(clientErrors.length, 0, "no stray 'error' event reaches the client (which would crash Node)");
+assert.equal(told.length, 1, 'when Discord still allows it, the person is told what went wrong');
+assert.match(told[0], /isn't allowed to do that in this channel/, 'and the message gives the reason');
+
+// ---- speed guards (very generous limits – they only catch a return to the old, seconds-long behaviour) ----
+{
+  const PG = 'gPerf';
+  settings.set(PG, 'c', 'r');
+  const subjects = ['arena', 'lobby', 'combat', 'scoreboard', 'voice chat', 'controller', 'disc', 'goal', 'menu', 'launcher'];
+  const faults = ['crashes randomly', 'is very laggy', 'shows the wrong colours', 'freezes for a few seconds', 'drifts to the left', 'flickers constantly'];
+  for (let n = 0; n < 250; n++) {
+    fileReport({ guildId: PG, userId: `p${n % 40}`, threshold: 0.99, text: `The ${subjects[n % 10]} ${faults[(n * 7) % 6]} on ${['Quest 3', 'Rift S', 'Index'][n % 3]} unique detail number ${n} ${n * 31}` });
+  }
+  const timed = (fn) => { const t = performance.now(); fn(); return performance.now() - t; };
+  const target = issues.list(PG)[5];
+  assert.ok(issues.list(PG).length >= 200, 'the speed test really has hundreds of issues');
+  assert.ok(timed(() => duplicatePairs(PG)) < 1500, 'the duplicate review over hundreds of issues takes well under a couple of seconds');
+  assert.ok(timed(() => renderIssue(issues.get(target.id))) < 250, 'drawing an issue card is quick');
+  assert.ok(timed(() => fileReport({ guildId: PG, userId: 'speed', text: 'The arena crashes randomly on Quest 3 again', threshold: 0.99 })) < 250, 'filing a report is quick');
+  assert.ok(timed(() => sg('problm parseing the pakage on my qest', [], 25, 'install')) < 100, 'looking up known problems is quick');
+}
 
 console.log('All tests passed.');

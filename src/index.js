@@ -294,6 +294,7 @@ const failNote = (ev) => (ev.failed.length
  */
 async function sendEvidence(i, rows, heading) {
   if (!rows.length) return i.reply({ content: 'There are no attachments yet.', flags: EPH });
+  await i.deferReply({ flags: EPH }); // reading and uploading files can take a while – acknowledge first
   const lines = [heading];
   const files = [];
   let lastReport = null;
@@ -309,8 +310,8 @@ async function sendEvidence(i, rows, heading) {
       else lines.push(`• ${emoji} ${trunc(r.name, 80)} _(file is no longer available)_`);
     } else lines.push(`• ${emoji} ${r.url}`);
   }
-  const body = { content: trunc(lines.join('\n'), 1900), allowedMentions: { parse: [] }, flags: EPH };
-  await i.reply({ ...body, files: files.slice(0, 10) });
+  const body = { content: trunc(lines.join('\n'), 1900), allowedMentions: { parse: [] } };
+  await i.editReply({ ...body, files: files.slice(0, 10) });
   for (let n = 10; n < files.length; n += 10) await i.followUp({ files: files.slice(n, n + 10), flags: EPH }); // Discord allows 10 per message
 }
 
@@ -655,13 +656,28 @@ function articleStats(guildId) {
 
 // ---------- interactions ----------
 
-client.on('interactionCreate', async (i) => {
+/**
+ * A click, menu choice or form failed. Log it, tell the person WHY (when Discord still lets us answer) and carry on.
+ * Never throws – a failure on one click must never be able to stop the bot.
+ */
+async function failInteraction(i, err) {
+  const { reason } = explainError(err);
+  console.error(`Interaction ${i?.customId ?? i?.commandName ?? '?'} failed because ${reason}:`, err?.code ?? '', err?.message ?? err);
+  if (err?.code === 10062) return; // Discord has already forgotten this interaction (answered too late) – there is nothing left to reply to
+  try {
+    const reply = { content: errorMessage(err), flags: EPH }; // says WHY it failed and what to do, not just "something went wrong"
+    if (i.replied || i.deferred) await i.followUp(reply); else await i.reply(reply);
+  } catch { /* could not even tell them – already logged above */ }
+}
+
+async function handleInteraction(i) {
   try {
     if (!i.guildId) return;
     const id = i.customId ?? '';
 
     // /setup
     if (i.isChatInputCommand() && i.commandName === 'setup') {
+      await i.deferReply({ flags: EPH }); // setup makes a backup and several Discord calls – answer Discord first
       const ch = i.options.getChannel('issues_channel', true);
       const role = i.options.getRole('dev_role', true);
       const prev = settings.get(i.guildId);
@@ -697,7 +713,7 @@ client.on('interactionCreate', async (i) => {
       const kept = have.issues || have.articles
         ? `\n♻️ Existing data found and kept: **${have.issues}** issue${have.issues === 1 ? '' : 's'}, **${have.reports}** report${have.reports === 1 ? '' : 's'}, **${have.articles}** knowledge article${have.articles === 1 ? '' : 's'}${restoredFrom ? ` (restored from backup \`${restoredFrom}\`)` : ''}.`
         : '';
-      return i.reply({
+      return i.editReply({
         content: [
           '✅ **All set!** The control panel is posted above.',
           `• Each issue gets its own thread in <#${ch.id}>`,
@@ -710,7 +726,6 @@ client.on('interactionCreate', async (i) => {
           'Next: press **🛠️ Developer → ⚙️ Settings** to choose where the weekly digest and "fixed" announcements go.',
         ].join('\n'),
         allowedMentions: { parse: [] },
-        flags: EPH,
       });
     }
 
@@ -786,13 +801,14 @@ client.on('interactionCreate', async (i) => {
     if (i.isButton() && id.startsWith('split:')) {
       const report = reports.get(idOf(i));
       if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
+      await i.deferUpdate(); // answer Discord straight away; the work below talks to Discord several times
       const before = issues.get(report.issue_id);
       const res = splitReport(report.id);
       if (res.old) await syncMessage(client, res.old, trackerChannel(i));
       else await removeMessage(client, res.emptiedIssue);
       await syncMessage(client, res.fresh, trackerChannel(i));
       await threadSay(client, res.fresh, `↩️ This report was separated from #${before.id} because it's a different problem.`);
-      return i.update({
+      return i.editReply({
         content: `✅ **Done – your report is now its own issue, #${res.fresh.id}.** It was taken out of #${before.id}, so the two are no longer linked. You'll get updates for #${res.fresh.id}.`,
         embeds: [], components: [row(btn(`trk:${res.fresh.id}`, 'See how it\'s going', '📌'))],
       });
@@ -828,37 +844,42 @@ client.on('interactionCreate', async (i) => {
       if (!issue) return;
       const status = i.values[0];
       if (status === 'fixed' && issue.status !== 'fixed') return i.showModal(fixedModal(issue));
-      return i.update(card(i, await applyStatus(i, issue, status)));
+      await i.deferUpdate(); // acknowledge first: changing a status edits the card, posts in the thread and sends DMs
+      return i.editReply(card(i, await applyStatus(i, issue, status)));
     }
     if (i.isModalSubmit() && id.startsWith('fixed:')) {
       if (!isDev(i)) return devOnly(i, "change an issue's status");
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
+      const fromCard = i.isFromMessage();
+      if (fromCard) await i.deferUpdate(); else await i.deferReply({ flags: EPH });
       const fresh = await applyStatus(i, issue, 'fixed', {
         version: i.fields.getTextInputValue('version').trim(),
         note: i.fields.getTextInputValue('text').trim(),
       });
-      return i.isFromMessage() ? i.update(card(i, fresh)) : i.reply({ content: `Marked #${issue.id} fixed.`, flags: EPH });
+      return i.editReply(fromCard ? card(i, fresh) : { content: `Marked #${issue.id} fixed.` });
     }
     if (i.isStringSelectMenu() && id.startsWith('prio:')) {
       if (!isDev(i)) return devOnly(i, 'change priority');
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
+      await i.deferUpdate();
       issues.setPriority(issue.id, i.values[0], i.user.id);
       events.add(issue.id, 'priority', i.user.id, `${PRIORITIES[issue.priority]?.label} → ${PRIORITIES[i.values[0]]?.label}`);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
-      return i.update(card(i, issues.get(issue.id)));
+      return i.editReply(card(i, issues.get(issue.id)));
     }
     if (i.isButton() && id.startsWith('assign:')) {
       if (!isDev(i)) return devOnly(i, 'take issues');
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
+      await i.deferUpdate();
       const mine = issue.owner_id === i.user.id;
       issues.setOwner(issue.id, mine ? null : i.user.id);
       events.add(issue.id, 'owner', i.user.id, mine ? 'unassigned' : 'took the issue');
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
       if (!mine) await threadSay(client, issue, `🙌 <@${i.user.id}> took this issue${issue.owner_id ? ` (from <@${issue.owner_id}>)` : ''}.`);
-      return i.update(card(i, issues.get(issue.id)));
+      return i.editReply(card(i, issues.get(issue.id)));
     }
 
     // ----- issue message: I have this too -----
@@ -900,9 +921,10 @@ client.on('interactionCreate', async (i) => {
       if (!isDev(i)) return devOnly(i, 'add notes');
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
+      await i.deferReply({ flags: EPH });
       issues.setNote(issue.id, i.fields.getTextInputValue('text').trim() || null, i.user.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
-      return i.reply({ content: `Note saved on #${issue.id}.`, flags: EPH });
+      return i.editReply({ content: `Note saved on #${issue.id}.` });
     }
 
     // ----- issue message: merge into… -----
@@ -928,8 +950,9 @@ client.on('interactionCreate', async (i) => {
       if (!from || !into || from.guild_id !== i.guildId || into.guild_id !== i.guildId) {
         return i.update({ content: 'One of those issues no longer exists.', components: [] });
       }
+      await i.deferUpdate();
       await doMerge(i, from, into);
-      return i.update({ content: `🔀 Merged #${from.id} into #${into.id}.`, components: [] });
+      return i.editReply({ content: `🔀 Merged #${from.id} into #${into.id}.`, components: [] });
     }
 
     // ----- issue message: remove a (spam) report -----
@@ -937,9 +960,10 @@ client.on('interactionCreate', async (i) => {
       if (!isDev(i)) return devOnly(i, 'remove reports');
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
+      await i.deferReply({ flags: EPH }); // looking up up to 25 usernames talks to Discord – acknowledge first
       const list = reports.forIssue(issue.id).slice(0, 25);
       const names = await Promise.all(list.map((r) => client.users.fetch(r.user_id).then((u) => u.username).catch(() => r.user_id)));
-      return i.reply({
+      return i.editReply({
         content: `Which report on **#${issue.id}** should be removed? (Newest first.)`,
         components: [row(new StringSelectMenuBuilder().setCustomId(`rmsel:${issue.id}`).setPlaceholder('Choose a report to remove…')
           .addOptions(list.map((r, n) => ({
@@ -947,7 +971,6 @@ client.on('interactionCreate', async (i) => {
             description: `Report #${r.id} · ${new Date(r.created_at).toISOString().slice(0, 16).replace('T', ' ')}`,
             value: String(r.id),
           }))))],
-        flags: EPH,
       });
     }
     if (i.isStringSelectMenu() && id.startsWith('rmsel:')) {
@@ -957,8 +980,9 @@ client.on('interactionCreate', async (i) => {
       if (!issue || !report || report.issue_id !== issue.id || issue.guild_id !== i.guildId) {
         return i.update({ content: 'That report no longer exists.', components: [] });
       }
+      await i.deferUpdate();
       const { issueDeleted } = await dropReport(i, issue, report);
-      return i.update({
+      return i.editReply({
         content: issueDeleted ? `🗑️ Removed the report. #${issue.id} had no reports left, so the issue was deleted too.` : `🗑️ Removed report #${report.id} from #${issue.id}.`,
         components: [],
       });
@@ -1089,9 +1113,10 @@ client.on('interactionCreate', async (i) => {
     if (i.isButton() && id.startsWith('rematch:')) {
       const report = reports.get(idOf(i));
       if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
+      await i.deferUpdate();
       const res = rematchReport(report.id, i.user.id, cfgOf(i.guildId).threshold);
       if (res.action === 'same') {
-        return i.update({
+        return i.editReply({
           content: `🔄 I checked again, and your report still fits best with **#${res.to.id} – ${trunc(res.to.title, 80)}**. Nothing needs to change.`,
           embeds: [], components: [row(btn(`trk:${res.to.id}`, 'See how it\'s going', '📌'))],
         });
@@ -1102,7 +1127,7 @@ client.on('interactionCreate', async (i) => {
       await threadSay(client, res.to, res.action === 'moved'
         ? `🔁 A report was re-matched here from #${res.from.id} after its details changed.`
         : `✂️ A report was split out of #${res.from.id} after its details changed.`);
-      return i.update({
+      return i.editReply({
         content: (res.action === 'moved'
           ? `🔁 With your new details, your report fits **#${res.to.id} – ${trunc(res.to.title, 80)}** better, so I moved it there.`
           : `✂️ Your new details no longer match **#${res.from.id}**, so your report is now its own issue, **#${res.to.id}**.`) +
@@ -1127,8 +1152,9 @@ client.on('interactionCreate', async (i) => {
     if (i.isButton() && id.startsWith('wdok:')) {
       const report = reports.get(idOf(i));
       if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
+      await i.deferUpdate();
       const { issueDeleted } = await dropReport(i, issues.get(report.issue_id), report);
-      return i.update({ content: issueDeleted ? '🗑️ Your report was withdrawn. Because it was the only one, the issue was removed too.' : '🗑️ Your report was withdrawn.', embeds: [], components: [] });
+      return i.editReply({ content: issueDeleted ? '🗑️ Your report was withdrawn. Because it was the only one, the issue was removed too.' : '🗑️ Your report was withdrawn.', embeds: [], components: [] });
     }
 
     // ----- knowledge articles (developers) -----
@@ -1228,11 +1254,12 @@ client.on('interactionCreate', async (i) => {
           return i.editReply(`💾 Backup saved: \`${backupNow()}\`\nA backup is also made every day, and the 14 newest are kept.`);
         }
         case 'dev:digest': {
+          await i.deferReply({ flags: EPH });
           if (cfgOf(i.guildId).dev_channel_id) {
             await postDigest(client, i.guildId);
-            return i.reply({ content: `📊 The digest was posted in <#${cfgOf(i.guildId).dev_channel_id}>.`, flags: EPH });
+            return i.editReply({ content: `📊 The digest was posted in <#${cfgOf(i.guildId).dev_channel_id}>.` });
           }
-          return i.reply({ content: 'Here\'s the digest. 💡 Choose a digest channel in ⚙️ Settings and it will be posted there every week.', embeds: [buildDigest(i.guildId, cfgOf(i.guildId).stale_days)], flags: EPH });
+          return i.editReply({ content: 'Here\'s the digest. 💡 Choose a digest channel in ⚙️ Settings and it will be posted there every week.', embeds: [buildDigest(i.guildId, cfgOf(i.guildId).stale_days)] });
         }
       }
       return;
@@ -1256,6 +1283,7 @@ client.on('interactionCreate', async (i) => {
     // ----- duplicates review -----
     if (i.isButton() && /^dup[mks]:/.test(id)) {
       if (!isDev(i)) return devOnly(i, 'review duplicates');
+      await i.deferUpdate(); // merging talks to Discord; acknowledge first
       const [kind, a, b] = [id.slice(0, 4), Number(id.split(':')[1]), Number(id.split(':')[2])];
       const A = issues.get(a);
       const B = issues.get(b);
@@ -1268,20 +1296,27 @@ client.on('interactionCreate', async (i) => {
         if (!skipped.has(i.user.id)) skipped.set(i.user.id, new Set());
         skipped.get(i.user.id).add(`${a}-${b}`);
       }
-      return i.update(dupPayload(i));
+      return i.editReply(dupPayload(i));
     }
   } catch (err) {
-    console.error(err);
-    const reply = { content: errorMessage(err), flags: EPH }; // says WHY it failed and what to do, not just "something went wrong"
-    if (i.replied || i.deferred) i.followUp(reply).catch(() => {}); else i.reply(reply).catch(() => {});
+    await failInteraction(i, err);
   }
-});
+}
+
+// Many handlers end with `return i.update(...)`; if that reply fails the rejection travels out of handleInteraction (a returned
+// promise is not caught by the try/catch above), so it is caught here. Together they cover every way a click can fail.
+client.on('interactionCreate', (i) => { handleInteraction(i).catch((err) => failInteraction(i, err)); });
+
+// discord.js turns any stray rejection from a listener into an 'error' event, which crashes Node when nobody listens.
+client.on('error', (err) => console.error('Discord client error:', err?.code ?? '', err?.message ?? err));
 
 client.once('clientReady', async () => {
   const guild = process.env.GUILD_ID;
   if (guild) await (await client.guilds.fetch(guild)).commands.set(commands);
   else await client.application.commands.set(commands);
   console.log(`Logged in as ${client.user.tag}; commands registered ${guild ? `to guild ${guild}` : 'globally'}.`);
+  suggest('warm up the word cache so the first player is not slower than the rest', [], 1); // fills the matcher's caches
+  for (const cfg of settings.all()) try { for (const t of issues.withText(cfg.guild_id)) suggest(t.text, [], 1); } catch { /* not critical */ }
 
   // Hourly housekeeping: weekly digests, daily DB backup, expire stashed reports.
   const tick = () => {
@@ -1300,7 +1335,7 @@ client.once('clientReady', async () => {
 export {
   panelPayload, devMenuPayload, reportTypePayload, reportModal, quickModal, meTooModal, editModal, addEvidenceModal, noteModal, fixedModal,
   faqPayload, faqAnswerPayload, browsePayload, settingsPayload, dupPayload, minePayload, trackPayload, articlesPayload, articleView,
-  articleStats, articleModal, commands, timeline, failNote, canManageArticles, isDev, articleMenuPayload,
+  articleStats, articleModal, commands, timeline, failNote, canManageArticles, isDev, articleMenuPayload, client, failInteraction,
 };
 
 // A network blip (for example a DNS lookup failing right at startup) must not take the bot down: keep retrying.

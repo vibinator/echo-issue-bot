@@ -84,43 +84,87 @@ for (const w of [
 const PROTECTED = new Set(PROTECT);
 const isSwap = (a, b) => a.length === b.length && [...a].sort().join('') === [...b].sort().join('');
 
+// Three reusable rows for the edit-distance calculation (no allocation per call). Words are capped well below this size.
+const MAX_WORD = 48;
+const rowA = new Int32Array(MAX_WORD + 2);
+const rowB = new Int32Array(MAX_WORD + 2);
+const rowC = new Int32Array(MAX_WORD + 2);
+
 /** Optimal-string-alignment edit distance (counts a swap like "crahs" as 1). Stops early past `max`. */
 function editDistance(a, b, max) {
-  if (Math.abs(a.length - b.length) > max) return max + 1;
-  const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
-  for (let j = 1; j <= b.length; j++) d[0][j] = j;
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
-      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+  const la = a.length;
+  const lb = b.length;
+  if (Math.abs(la - lb) > max) return max + 1;
+  let prev2 = rowA; let prev = rowB; let cur = rowC;
+  for (let j = 0; j <= lb; j++) prev[j] = j;
+  for (let i = 1; i <= la; i++) {
+    cur[0] = i;
+    let rowMin = cur[0];
+    for (let j = 1; j <= lb; j++) {
+      let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1));
+      if (i > 1 && j > 1 && a.charCodeAt(i - 1) === b.charCodeAt(j - 2) && a.charCodeAt(i - 2) === b.charCodeAt(j - 1)) v = Math.min(v, prev2[j - 2] + 1);
+      cur[j] = v;
+      if (v < rowMin) rowMin = v;
     }
+    if (rowMin > max) return max + 1; // no way to get back under the limit
+    const t = prev2; prev2 = prev; prev = cur; cur = t;
   }
-  return d[a.length][b.length];
+  return prev[lb];
 }
 
+/** Group a vocabulary by word length, so a typo is only compared with words of about its own length. */
+function bucketize(vocab) {
+  const buckets = new Map();
+  for (const w of vocab) {
+    let b = buckets.get(w.length);
+    if (!b) buckets.set(w.length, (b = []));
+    b.push(w);
+  }
+  return buckets;
+}
+const KNOWN_BUCKETS = bucketize(KNOWN);
+
 /** Map a token to the closest word in `vocab` (1 typo for 4-7 letters, 2 for 8+). Short/numeric tokens are left alone. */
-function fuzzyMap(tok, vocab) {
-  if (vocab.has(tok) || tok.length < 4 || /\d/.test(tok)) return tok;
+function fuzzyMap(tok, vocab, buckets = vocab === KNOWN ? KNOWN_BUCKETS : bucketize(vocab)) {
+  if (vocab.has(tok) || tok.length < 4 || tok.length > MAX_WORD || /\d/.test(tok)) return tok;
   const limit = tok.length >= 8 ? 2 : 1;
   let best = tok;
   let bestD = limit + 1;
-  for (const v of vocab) {
-    if (PROTECTED.has(v) && vocab === KNOWN) continue;     // never correct towards ordinary words like "beta"/"patch"
-    const dist = editDistance(tok, v, limit);
-    if (dist >= bestD) continue;
-    if (tok.length === 4 && !isSwap(tok, v)) continue;      // 4-letter words: only fix swapped letters ("pnig" -> "ping")
-    bestD = dist;
-    best = v;
+  for (let len = tok.length - limit; len <= tok.length + limit; len++) {
+    for (const v of buckets.get(len) ?? []) {
+      if (PROTECTED.has(v) && vocab === KNOWN) continue;     // never correct towards ordinary words like "beta"/"patch"
+      const dist = editDistance(tok, v, limit);
+      if (dist >= bestD) continue;
+      if (tok.length === 4 && !isSwap(tok, v)) continue;      // 4-letter words: only fix swapped letters ("pnig" -> "ping")
+      bestD = dist;
+      best = v;
+    }
   }
   return best;
 }
 
+// The same words come up again and again across reports, so each word is spell-checked and stemmed once, not once per
+// mention. Whole texts are remembered too (issue texts are re-read on every card, match and duplicate check).
+const WORD_CACHE = new Map();
+function canonWord(w) {
+  let c = WORD_CACHE.get(w);
+  if (c === undefined) {
+    c = stem(fuzzyMap(stem(w), KNOWN)); // fix typos of known game/problem words, then canonicalise
+    if (WORD_CACHE.size >= 30000) WORD_CACHE.clear();
+    WORD_CACHE.set(w, c);
+  }
+  return c;
+}
+const TEXT_CACHE = new Map();
 function unigrams(text) {
-  return normalize(text).replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+  const hit = TEXT_CACHE.get(text);
+  if (hit) return hit;
+  const out = normalize(text).replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
     .filter((w) => w && !STOP.has(w) && !/^\d$/.test(w)) // single digits ("quest 3") are noise; error codes like 78 stay
-    .map(stem)
-    .map((t) => stem(fuzzyMap(t, KNOWN))); // fix typos of known game/problem words, then canonicalise
+    .map(canonWord);
+  if (TEXT_CACHE.size >= 3000) TEXT_CACHE.delete(TEXT_CACHE.keys().next().value); // drop the oldest
+  TEXT_CACHE.set(text, out);
+  return out;
 }
 
 const withBigrams = (uni) => {
@@ -155,13 +199,57 @@ function cosine(a, b) {
   return dot / (a.norm * b.norm);
 }
 
+/**
+ * Every pair of documents that is at least `floor` alike, in ONE pass: an inverted index (word -> documents that use it)
+ * means only documents sharing a word are ever compared, instead of ranking every document against every other.
+ * Returns [{ a, b, score }] (a, b = doc ids), best first.
+ */
+export function similarPairs(docs, floor = 0.12) {
+  const n = docs.length;
+  if (n < 2) return [];
+  const toks = docs.map((d) => withBigrams(unigrams(d.text)));
+  const df = new Map();
+  for (const t of toks) for (const w of new Set(t)) df.set(w, (df.get(w) ?? 0) + 1);
+  const idf = new Map([...df].map(([t, c]) => [t, Math.log(1 + n / c)]));
+  const vecs = toks.map((t) => vectorize(t, idf));
+
+  const postings = new Map();
+  vecs.forEach((vec, i) => {
+    for (const [t, w] of vec.v) {
+      let p = postings.get(t);
+      if (!p) postings.set(t, (p = []));
+      p.push([i, w]);
+    }
+  });
+  const dots = new Map(); // (i * n + j), i < j  ->  running dot product
+  const tooCommon = Math.max(50, n / 2); // a word nearly everyone uses says little about two issues, and would make this slow
+  for (const p of postings.values()) {
+    if (p.length > tooCommon) continue;
+    for (let x = 0; x < p.length; x++) {
+      for (let y = x + 1; y < p.length; y++) {
+        const key = p[x][0] * n + p[y][0];
+        dots.set(key, (dots.get(key) ?? 0) + p[x][1] * p[y][1]);
+      }
+    }
+  }
+  const out = [];
+  for (const [key, dot] of dots) {
+    const i = Math.floor(key / n);
+    const j = key % n;
+    const score = dot / (vecs[i].norm * vecs[j].norm);
+    if (score >= floor) out.push({ a: docs[i].id, b: docs[j].id, score });
+  }
+  return out.sort((x, y) => y.score - x.score);
+}
+
 /** docs: [{id, text}]. Returns [{id, score}] sorted best first. */
 export function rankSimilar(query, docs) {
   if (!docs.length) return [];
   const docUni = docs.map((d) => unigrams(d.text));
   // Typos in the query that aren't domain words are snapped to the closest word used in existing issues.
   const docVocab = new Set(docUni.flat());
-  const qUni = unigrams(query).map((t) => (KNOWN.has(t) ? t : fuzzyMap(t, docVocab)));
+  let docBuckets = null; // only built if the query actually contains a word that needs checking
+  const qUni = unigrams(query).map((t) => (KNOWN.has(t) || docVocab.has(t) ? t : fuzzyMap(t, docVocab, (docBuckets ??= bucketize(docVocab)))));
   const docTokens = docUni.map(withBigrams);
   const qTokens = withBigrams(qUni);
   const df = new Map();

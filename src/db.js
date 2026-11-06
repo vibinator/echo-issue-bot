@@ -22,6 +22,13 @@ if (DB_PATH !== ':memory:' && !existsSync(DB_PATH) && existsSync(BACKUP_DIR)) {
 
 export const db = new DatabaseSync(DB_PATH);
 
+// Speed: readers no longer wait for writers (WAL), and a write doesn't force a slow disk flush every time – the
+// difference is large on a NAS disk. Safe for the bot's data folder; set DB_WAL=0 if it lives on a network share (SMB/NFS).
+if (DB_PATH !== ':memory:' && process.env.DB_WAL !== '0') {
+  try { db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;'); } catch (e) { console.error('Could not enable WAL mode:', e.message); }
+}
+db.exec('PRAGMA busy_timeout = 5000;');
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS settings (
   guild_id TEXT PRIMARY KEY, channel_id TEXT, dev_role_id TEXT
@@ -88,6 +95,9 @@ CREATE TABLE IF NOT EXISTS user_prefs (
   user_id TEXT PRIMARY KEY, dm_off INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_issue ON evidence(issue_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_report ON evidence(report_id);
+CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_id);
+CREATE INDEX IF NOT EXISTS idx_watchers_user ON watchers(user_id);
 CREATE INDEX IF NOT EXISTS idx_issues_guild ON issues(guild_id, status);
 CREATE INDEX IF NOT EXISTS idx_reports_issue ON reports(issue_id);
 `);
