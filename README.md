@@ -31,7 +31,7 @@ The panel's **🛠️ Developer** button opens a hidden menu: Board, Review dupl
 There are three roles. **Knowledge article editors** (optional: `/setup article_role:@Role`, or `ARTICLE_ROLE_ID`) can create, edit, enable/disable and delete knowledge articles, see how well they work and use Test matching – through the same **🛠️ Developer** button, which shows them only the article tools – and use **Make knowledge article** on an issue. They get nothing else: no board, settings, export, status changes or attachments. **Developers** (the `dev_role` from `/setup`, or anyone with Manage Server) can do everything on the developer side: change an issue's status, priority and owner, add notes, merge, manage articles and use the Developer menu. `REPORTER_ROLE_ID` (optional) – only this role, plus developers, can send reports; leave it empty to let everyone report. Everyone can browse issues and manage their own reports.
 
 ## Automatic
-Weekly digest · changelog post when an issue is Fixed · daily DB backup (newest 14 kept) · report cooldown · regressions reopen Fixed issues · optional retention (`/setup retention_days:365` deletes closed issues with no activity for a year).
+Weekly digest · changelog post when an issue is Fixed · hourly backup of everything (newest 168 kept) · report cooldown · regressions reopen Fixed issues · optional retention (`/setup retention_days:365` deletes closed issues with no activity for a year).
 
 ## Docker (QNAP Container Station etc.)
 `docker-compose.yml` builds the image from this folder. To deploy from YAML only, use `node:24-alpine` with a `command` that downloads this repository's tarball, installs and starts it (see the project history); mount a folder on `/app/data` to keep the database. If the container can't resolve `discord.com`, add `dns: [1.1.1.1, 8.8.8.8]` or `network_mode: host`.
@@ -54,7 +54,7 @@ Everything (issues, reports, evidence links, knowledge articles, settings, the p
     environment:
       BACKUP_DIR: "/app/backups"
 ```
-A backup is made daily (newest 14 kept), whenever a developer presses **Back up now**, and before every `/setup`. To restore a specific backup by hand: stop the container, copy that `.db` file over `data/issues.db`, start it again.
+A backup is made every hour (newest 168 kept), whenever a developer presses **Back up now**, and before every `/setup`. To restore a specific backup by hand: stop the container, copy that `.db` file over `data/issues.db`, start it again.
 
 ## Privacy, terms and Discord's rules
 - The panel has **🔒 Data & privacy** and **📜 Terms of use** buttons. Full texts: [PRIVACY.md](PRIVACY.md) and [TERMS.md](TERMS.md) – **fill in the contact lines and check they match how you run the bot**. Put their public URLs in the Developer Portal (General Information → Terms of Service URL / Privacy Policy URL); `PRIVACY_URL` / `TERMS_URL` override the in-bot links.

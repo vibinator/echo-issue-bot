@@ -3,7 +3,8 @@ import path from 'node:path';
 import { BACKUP_DIR, db } from './db.js';
 
 const DIR = BACKUP_DIR;
-const KEEP = 14;
+const KEEP = 168; // hourly backups: one week of history
+const EVERY_MS = 55 * 60_000; // a little under an hour, so the hourly check never skips one because of timing jitter
 
 const files = () => { mkdirSync(DIR, { recursive: true }); return readdirSync(DIR).filter((f) => f.endsWith('.db')).sort(); };
 
@@ -17,9 +18,9 @@ export function backupNow() {
   return file;
 }
 
-/** Back up if the newest backup is older than 24h. Returns the file or null. */
+/** Back up if the newest backup is about an hour old (called every hour). Returns the file or null. */
 export function maybeBackup() {
   const latest = files().at(-1);
-  if (latest && Date.now() - statSync(path.join(DIR, latest)).mtimeMs < 864e5) return null;
+  if (latest && Date.now() - statSync(path.join(DIR, latest)).mtimeMs < EVERY_MS) return null;
   return backupNow();
 }

@@ -5,6 +5,7 @@ const { tmpdir } = await import('node:os');
 const { join } = await import('node:path');
 process.env.EVIDENCE_DIR = mkdtempSync(join(tmpdir(), 'evr-evidence-')); // uploaded test files go here, not into the project
 process.env.EVIDENCE_MAX_MB = '1';
+process.env.BACKUP_DIR = mkdtempSync(join(tmpdir(), 'evr-backups-')); // never write test backups into the real data/backups
 const assert = (await import('node:assert/strict')).default;
 const { fileReport, splitReport, mergeIssues } = await import('./service.js');
 const { issues } = await import('./db.js');

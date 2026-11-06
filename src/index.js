@@ -641,7 +641,8 @@ const articleModal = (a, prefill = {}) => new ModalBuilder().setCustomId(`art:sa
   input('body', 'The answer / fix players should try', { style: TextInputStyle.Paragraph, max: 1500, required: true, value: a?.body ?? prefill.body }),
   input('link', 'Link for more info (optional)', { max: 200, value: a?.link ?? prefill.link }));
 
-function articleView(a) {
+const canDeleteArticle = (i, a) => isDev(i) || (!!a.created_by && a.created_by === i.user.id); // editors may delete only articles they created
+function articleView(a, canDelete = true) {
   const s = kbStats.get(a.guild_id, `a:${a.id}`);
   const embed = new EmbedBuilder().setColor(a.enabled ? 0xfee75c : 0x95a5a6).setTitle(`📚 ${trunc(a.title, 240)}${a.enabled ? '' : ' (disabled)'}`)
     .addFields(
@@ -653,7 +654,7 @@ function articleView(a) {
   return {
     content: '', embeds: [embed],
     components: [row(btn(`art:edit:${a.id}`, 'Edit', '✏️'), btn(`art:tog:${a.id}`, a.enabled ? 'Disable' : 'Enable', a.enabled ? '⏸️' : '▶️'),
-      btn(`art:del:${a.id}`, 'Delete', '🗑️'), btn('art:back', 'Back', '⬅️'))],
+      ...(canDelete ? [btn(`art:del:${a.id}`, 'Delete', '🗑️')] : []), btn('art:back', 'Back', '⬅️'))],
   };
 }
 
@@ -1288,7 +1289,7 @@ async function handleInteraction(i) {
           return entry ? i.update(builtInView(i.guildId, entry)) : i.update({ content: 'That answer no longer exists.', embeds: [], components: [] });
         }
         const a = articles.get(Number(i.values[0]));
-        return own(a) ? i.update(articleView(a)) : i.update({ content: 'That article no longer exists.', embeds: [], components: [] });
+        return own(a) ? i.update(articleView(a, canDeleteArticle(i, a))) : i.update({ content: 'That article no longer exists.', embeds: [], components: [] });
       }
       if (i.isModalSubmit() && id === 'art:testm') {
         const found = suggest(i.fields.getTextInputValue('sample'), articles.list(i.guildId, { enabledOnly: true }), 3, null, kbBoosts(i.guildId));
@@ -1311,7 +1312,7 @@ async function handleInteraction(i) {
           articles.update(a.id, data);
           a = articles.get(a.id);
         }
-        return show(i, articleView(a));
+        return show(i, articleView(a, canDeleteArticle(i, a)));
       }
       if (i.isButton()) {
         const [, action, arg] = id.split(':');
@@ -1327,8 +1328,11 @@ async function handleInteraction(i) {
         const a = artFromId();
         if (!own(a)) return i.update({ content: 'That article no longer exists.', embeds: [], components: [] });
         if (action === 'edit') return i.showModal(articleModal(a));
-        if (action === 'view') return i.update(articleView(a));
-        if (action === 'tog') { articles.setEnabled(a.id, !a.enabled); return i.update(articleView(articles.get(a.id))); }
+        if (action === 'view') return i.update(articleView(a, canDeleteArticle(i, a)));
+        if (action === 'tog') { articles.setEnabled(a.id, !a.enabled); return i.update(articleView(articles.get(a.id), canDeleteArticle(i, a))); }
+        if ((action === 'del' || action === 'delok') && !canDeleteArticle(i, a)) {
+          return i.reply({ content: '🔒 You can only delete knowledge articles you created yourself. Ask a developer to remove this one.', flags: EPH });
+        }
         if (action === 'del') {
           return i.update({
             content: `Delete **${trunc(a.title, 100)}**? Players will no longer be shown it.`, embeds: [],
@@ -1371,7 +1375,7 @@ async function handleInteraction(i) {
         }
         case 'dev:backup': {
           await i.deferReply({ flags: EPH });
-          return i.editReply(`💾 Backup saved: \`${backupNow()}\`\nA backup is also made every day, and the 14 newest are kept.`);
+          return i.editReply(`💾 Backup saved: \`${backupNow()}\`\nA backup of everything (issues, reports, knowledge articles, settings) is also made every hour, and the 168 newest (one week) are kept.`);
         }
         case 'dev:digest': {
           await i.deferReply({ flags: EPH });
@@ -1438,7 +1442,7 @@ client.once('clientReady', async () => {
   suggest('warm up the word cache so the first player is not slower than the rest', [], 1); // fills the matcher's caches
   for (const cfg of settings.all()) try { for (const t of issues.withText(cfg.guild_id)) suggest(t.text, [], 1); } catch { /* not critical */ }
 
-  // Hourly housekeeping: weekly digests, daily DB backup, expire stashed reports.
+  // Hourly housekeeping: weekly digests, hourly DB backup, expire stashed reports.
   const tick = () => {
     runDigests(client).catch((e) => console.error('Digest error:', e.message));
     for (const cfg of settings.all()) {
