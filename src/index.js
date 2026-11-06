@@ -179,13 +179,19 @@ async function alertDevs(issue, why) {
 
 function panelPayload(guildId) {
   const todo = guildId ? attention(guildId).total : 0;
+  const open = guildId ? issues.list(guildId) : [];
+  const waiting = open.filter((x) => x.status === 'new').length;
+  const answered = open.filter((x) => x.status === 'seen' || x.status === 'in_progress').length;
+  const kbCount = guildId ? articles.list(guildId).filter((a) => !a.draft).length : 0;
   const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('Echo VR – Problem Tracker')
     .setDescription([
       'Something not working? Let the developers know here.',
       '',
       '📝 **Report a problem** – we\'ll first show quick fixes for common problems. If none help, you can send a report.',
       '📋 **Known issues** – see what has already been reported and how it\'s going.',
+      `> ⏳ **${waiting}** waiting for a reply · 💬 **${answered}** answered, still being worked on`,
       '📌 **My reports** – follow your reports, add details, and turn update messages on or off.',
+      `📚 **Knowledge articles** – **${kbCount}** answer${kbCount === 1 ? '' : 's'} stored.`,
       '',
       '_Everything you open from these buttons is private – only you can see it._',
     ].join('\n'));
