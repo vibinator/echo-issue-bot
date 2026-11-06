@@ -435,6 +435,10 @@ const asOwner = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false
 assert.ok(asOwner.includes('editmine'), 'the reporter can edit their own report');
 const asReadOnly = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: false, article: false, userId: 'x' } }));
 assert.ok(!['plus', 'addev', 'editmine'].some((x) => asReadOnly.includes(x)) && asReadOnly.includes('history'), 'someone who cannot report only reads');
+assert.ok(!asPlayer.includes('evall') && !asReadOnly.includes('evall'), 'someone with no attachments of their own is not offered View attachments');
+const evT = evidence.add({ issue_id: T.issue.id, report_id: reports.forIssue(T.issue.id)[0].id, user_id: 't1', kind: 'link', name: 'clip', url: 'https://example.com/c' });
+assert.ok(idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 't1' } })).includes('evall'), 'the person who attached something can open it');
+assert.ok(!idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'someone' } })).includes('evall'), 'and nobody else is offered it');
 const asDev = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: true, report: true, article: true, userId: 'd' } }));
 assert.ok(['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart'].every((x) => asDev.includes(x)), 'a developer sees everything');
 

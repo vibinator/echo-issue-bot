@@ -108,7 +108,7 @@ export function renderIssue(issue, { back, viewer } = {}) {
     ],
     // Last row: open the private attachments (the bot only shows them to the reporter and developers), plus Back in menus.
     [
-      btn('evall', 'View attachments', '📎'),
+      (!viewer || viewer.dev || ev.some((e) => e.user_id === viewer.userId)) && btn('evall', 'View attachments', '📎'), // others' attachments are private
       back && new ButtonBuilder().setCustomId(back).setLabel('Back').setEmoji('⬅️').setStyle(ButtonStyle.Secondary),
     ],
   ].map((r) => (Array.isArray(r) ? r.filter(Boolean) : r)).filter((r) => (r.components ? r.components.length : r.length))

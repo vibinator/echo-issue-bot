@@ -363,7 +363,7 @@ function browsePayload(i, f) {
     row(menu(`bfc:${f.s}|${f.o}`, 'Show: category', 'Any category', f.c,
       [...Object.keys(CATEGORIES), 'Other'].map((c) => ({ label: c, value: c })))),
     row(menu(`bfo:${f.s}|${f.c}`, 'Show: who\'s on it', 'Anyone', f.o,
-      [{ label: 'Nobody yet', value: 'unassigned', emoji: '🙈' }, { label: 'Assigned to me', value: 'me', emoji: '🙌' }])),
+      [{ label: 'Nobody yet', value: 'unassigned', emoji: '🙈' }, ...(isDev(i) ? [{ label: 'Assigned to me', value: 'me', emoji: '🙌' }] : [])])), // only developers take issues
   ];
   if (list.length) {
     components.push(row(new StringSelectMenuBuilder().setCustomId('bfv').setPlaceholder('Pick an issue to open…').addOptions(list.slice(0, 25).map(issueOption))));
