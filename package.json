@@ -1,0 +1,13 @@
+{
+  "name": "echo-issue-bot",
+  "version": "1.0.0",
+  "description": "Discord bot that collects Echo VR player problems, groups similar ones, and lets devs track status.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --no-warnings --env-file=.env src/index.js",
+    "test": "node --no-warnings src/test.js"
+  },
+  "engines": { "node": ">=22.5" },
+  "dependencies": { "discord.js": "^14.16.0" }
+}

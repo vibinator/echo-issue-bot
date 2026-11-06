@@ -1,0 +1,20 @@
+services:
+  echo-issue-bot:
+    build: .
+    image: echo-issue-bot:latest
+    container_name: echo-issue-bot
+    restart: unless-stopped
+    environment:
+      # --- edit these ---
+      DISCORD_TOKEN: "paste-your-bot-token-here"
+      GUILD_ID: ""                                   # optional: your server ID (instant slash-command registration)
+      REPORTER_ROLE_ID: "1568253292251717726"        # Users: can create reports
+      STATUS_ROLE_ID: "1568253339400020018"          # Developers: can change ticket status
+    volumes:
+      - echo-issue-data:/app/data                    # database + daily backups survive updates
+      # To see the files in File Station instead, use a folder (and uncomment `user` below):
+      # - /share/Container/echo-issue-bot/data:/app/data
+    # user: "0:0"
+
+volumes:
+  echo-issue-data:
