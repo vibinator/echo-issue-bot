@@ -189,7 +189,7 @@ function panelPayload(guildId) {
       '',
       '📝 **Report a problem** – we\'ll first show quick fixes for common problems. If none help, you can send a report.',
       '📋 **Known issues** – see what has already been reported and how it\'s going.',
-      `> ⏳ **${waiting}** waiting for a reply · 💬 **${answered}** answered, still being worked on`,
+      `⏳ **${waiting}** waiting for a reply · 💬 **${answered}** answered, still being worked on`,
       '📌 **My reports** – follow your reports, add details, and turn update messages on or off.',
       `📚 **Knowledge articles** – **${kbCount}** answer${kbCount === 1 ? '' : 's'} stored.`,
       '',
