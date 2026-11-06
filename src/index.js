@@ -3,7 +3,7 @@ import {
   EmbedBuilder, FileUploadBuilder, GatewayIntentBits, LabelBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder,
   StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
 } from 'discord.js';
-import { articles, db, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, settings, summary, watchers } from './db.js';
+import { articles, restoreArticles, db, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, settings, summary, watchers } from './db.js';
 import { erasePayload, privacyPayload, termsPayload } from './legal.js';
 import { CATEGORIES } from './categories.js';
 import { PRIORITIES, STATUSES, renderIssue } from './render.js';
@@ -233,13 +233,17 @@ const reportTypePayload = () => ({
  * Step 2: try to answer it before any ticket exists – "is your problem one of these?"
  * `matches` = fuzzy matches for what the player just described (best first); the rest follow, so nothing is hidden.
  */
-function faqPayload(guildId, kind, matches = []) {
+const FAQ_PAGE = 25; // a dropdown holds at most 25 options, so longer lists are paged
+function faqPayload(guildId, kind, matches = [], page = 0) {
   const entries = faqEntries(kind, articles.list(guildId, { enabledOnly: true }));
   const helped = (e) => kbStats.get(guildId, e.id).helped;
   const matchScore = new Map(matches.map((m) => [m.id, m.score]));
   const rest = [...entries.filter((e) => e.custom), ...entries.filter((e) => !e.custom).sort((a, b) => helped(b) - helped(a))];
   const sorted = [...entries.filter((e) => matchScore.has(e.id)).sort((a, b) => matchScore.get(b.id) - matchScore.get(a.id)),
-    ...rest.filter((e) => !matchScore.has(e.id))].slice(0, 25);
+    ...rest.filter((e) => !matchScore.has(e.id))];
+  const pages = Math.max(1, Math.ceil(sorted.length / FAQ_PAGE));
+  page = Math.min(Math.max(0, page), pages - 1);
+  const shown = sorted.slice(page * FAQ_PAGE, (page + 1) * FAQ_PAGE);
   const label = kind === 'install' ? '🔧 **Install issue**' : '🐞 **Bug in game**';
   const hint = matchScore.size ? '⭐ marks the closest matches to what you wrote.' : 'Pick the one that sounds like yours to see the fix.';
   return {
@@ -247,11 +251,13 @@ function faqPayload(guildId, kind, matches = []) {
     embeds: [],
     components: [
       row(new StringSelectMenuBuilder().setCustomId(`faq:${kind}`).setPlaceholder('Pick the one that matches…')
-        .addOptions(sorted.map((e) => ({
+        .addOptions(shown.map((e) => ({
           label: trunc(e.title, 100), value: e.id, emoji: matchScore.has(e.id) ? '⭐' : e.custom ? '📚' : '💡',
           ...(matchScore.has(e.id) ? { description: `Closest match · ${Math.round(matchScore.get(e.id) * 100)}%` } : {}),
         })))),
       row(btn(`rform:${kind}`, 'None of these – send a report', '📝', ButtonStyle.Primary)),
+      ...(pages > 1 ? [row(btn(`faqp:${kind}:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('faqp:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
+        btn(`faqp:${kind}:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1))] : []),
     ],
   };
 }
@@ -269,10 +275,10 @@ function kbBoosts(guildId) {
 }
 
 /** The list for this player, ranked by what they described (if anything). */
-const faqFor = (i, kind) => {
+const faqFor = (i, kind, page = 0) => {
   const text = getDraft(i.user.id);
   const matches = text ? suggest(text, articles.list(i.guildId, { enabledOnly: true }), 25, kind, kbBoosts(i.guildId)) : [];
-  return faqPayload(i.guildId, kind, matches);
+  return faqPayload(i.guildId, kind, matches, page);
 };
 
 /** The answer screen: did it fix it, is it not your problem (back to the list), or report it anyway. */
@@ -664,8 +670,8 @@ function articlesPayload(guildId, page = 0) {
       return { label: trunc(a.title, 100), description: trunc(`${a.enabled ? 'on' : 'off'} · shown ${s.shown} · helped ${s.helped} · denied ${s.denied}`, 100), value: String(a.id) };
     }))));
   }
-  components.push(row(btn('art:new', 'New article', '➕', ButtonStyle.Success), btn('art:stats', 'Results', '📊'), btn('art:test', 'Test matching', '🧪'),
-    btn('dev:menu', 'Developer menu', '⬅️')));
+  components.push(row(btn('art:new', 'New article', '➕', ButtonStyle.Success), btn('art:all:0', 'View all knowledge', '📖'), btn('art:stats', 'Results', '📊'),
+    btn('art:test', 'Test matching', '🧪'), btn('dev:menu', 'Developer menu', '⬅️')));
   if (pages > 1) {
     components.push(row(btn(`art:page:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('art:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
       btn(`art:page:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
@@ -673,6 +679,50 @@ function articlesPayload(guildId, page = 0) {
   return {
     content: `**📚 Knowledge articles** – ${all.length} of your own, plus ${KB.length} built-in answers.\nBefore anyone sends a report, they see a list of known problems (your articles first, and the closest matches to what they typed are moved to the top, even with typos). **Results** shows which answers actually help, and **Test matching** shows what a player would see for a sample sentence.`,
     embeds: [], components,
+  };
+}
+
+const ALL_PAGE = 10;
+/** Everything players can be shown: your own articles first (even disabled ones), then the built-in answers. */
+const allKnowledge = (guildId) => [
+  ...articles.list(guildId).map((a) => ({ value: String(a.id), title: a.title, own: true, off: !a.enabled })),
+  ...KB.map((e) => ({ value: `kb:${e.id}`, title: e.title, own: false })),
+];
+/** Paged list of all knowledge with a dropdown to open any of them. */
+function allKnowledgePayload(guildId, page = 0) {
+  const all = allKnowledge(guildId);
+  const ownCount = all.filter((e) => e.own).length;
+  const pages = Math.max(1, Math.ceil(all.length / ALL_PAGE));
+  page = Math.min(Math.max(0, page), pages - 1);
+  const list = all.slice(page * ALL_PAGE, (page + 1) * ALL_PAGE);
+  const components = [];
+  if (list.length) {
+    components.push(row(new StringSelectMenuBuilder().setCustomId('art_pick').setPlaceholder(`Open an article… (${page * ALL_PAGE + 1}–${page * ALL_PAGE + list.length} of ${all.length})`)
+      .addOptions(list.map((e) => ({ label: trunc(e.title, 100), value: e.value, emoji: e.own ? '📚' : '💡', description: e.own ? (e.off ? 'your article · off' : 'your article') : 'built-in answer' })))));
+  }
+  if (pages > 1) {
+    components.push(row(btn(`art:all:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('art:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
+      btn(`art:all:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
+  }
+  components.push(row(btn('art:back', 'Back', '⬅️')));
+  return {
+    content: '', components,
+    embeds: [new EmbedBuilder().setColor(0xfee75c).setTitle(`📖 All knowledge – ${ownCount} of your own, ${all.length - ownCount} built-in`)
+      .setDescription(list.map((e) => `${e.own ? '📚' : '💡'} ${e.own ? `**${trunc(e.title, 90)}**` : trunc(e.title, 90)}${e.off ? ' _(disabled)_' : ''}`).join('\n') || '_Nothing yet._')
+      .setFooter({ text: '📚 = your article (editable) · 💡 = built-in answer (read-only)' })],
+  };
+}
+
+/** Read-only view of a built-in answer, with Back returning to the page of the full list it came from. */
+function builtInView(guildId, entry) {
+  const s = kbStats.get(guildId, `kb:${entry.id}`);
+  const page = Math.floor(allKnowledge(guildId).findIndex((e) => e.value === `kb:${entry.id}`) / ALL_PAGE);
+  return {
+    content: '', components: [row(btn(`art:all:${page}`, 'Back', '⬅️'))],
+    embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`💡 ${trunc(entry.title, 240)}`)
+      .addFields({ name: 'Answer players see', value: trunc(entry.fix, 1024) },
+        { name: 'How it\'s doing', value: `Viewed ${s.shown}× · ✅ fixed it ${s.helped}× · 🙅 not their problem ${s.denied}× · 📝 sent a report anyway ${s.filed}×` })
+      .setFooter({ text: `Built-in answer – it can't be edited. Source: ${entry.source}` })],
   };
 }
 
@@ -758,9 +808,10 @@ async function handleInteraction(i) {
           permissionWarning = `\n⚠️ **The bot is missing permissions in <#${ch.id}>:** ${missing.map((m) => m.replace(/([a-z])([A-Z])/g, '$1 $2')).join(', ')}. Please grant them in the channel's permission settings.`;
         }
       } catch { /* couldn't check – not critical */ }
+      const readded = restoreArticles(); // bring back any saved knowledge articles the database is missing
       const have = summary(i.guildId);
       const kept = have.issues || have.articles
-        ? `\n♻️ Existing data found and kept: **${have.issues}** issue${have.issues === 1 ? '' : 's'}, **${have.reports}** report${have.reports === 1 ? '' : 's'}, **${have.articles}** knowledge article${have.articles === 1 ? '' : 's'}${restoredFrom ? ` (restored from backup \`${restoredFrom}\`)` : ''}.`
+        ? `\n♻️ Existing data found and kept: **${have.issues}** issue${have.issues === 1 ? '' : 's'}, **${have.reports}** report${have.reports === 1 ? '' : 's'}, **${have.articles}** knowledge article${have.articles === 1 ? '' : 's'}${restoredFrom ? ` (restored from backup \`${restoredFrom}\`)` : ''}${readded ? ` – **${readded}** re-added from the saved articles file` : ''}.`
         : '';
       return i.editReply({
         content: [
@@ -803,6 +854,10 @@ async function handleInteraction(i) {
       if (!entry) return i.update(faqFor(i, kind));
       kbStats.bump(i.guildId, entry.id, 'shown');
       return i.update(faqAnswerPayload(entry, kind));
+    }
+    if (i.isButton() && id.startsWith('faqp:')) {
+      const [, kind, page] = id.split(':');
+      return i.update(faqFor(i, kind === 'install' ? 'install' : 'bug', Number(page) || 0));
     }
     if (i.isButton() && id.startsWith('faqok:')) {
       const [, , ...rest] = id.split(':');
@@ -1228,6 +1283,10 @@ async function handleInteraction(i) {
         return i.showModal(articleModal(null, { title: issue.title, symptoms: trunc([issue.title, ...sample].join('\n'), 1000), body: issue.dev_note ?? '' }));
       }
       if (i.isStringSelectMenu() && id === 'art_pick') {
+        if (i.values[0].startsWith('kb:')) {
+          const entry = KB.find((e) => `kb:${e.id}` === i.values[0]);
+          return entry ? i.update(builtInView(i.guildId, entry)) : i.update({ content: 'That answer no longer exists.', embeds: [], components: [] });
+        }
         const a = articles.get(Number(i.values[0]));
         return own(a) ? i.update(articleView(a)) : i.update({ content: 'That article no longer exists.', embeds: [], components: [] });
       }
@@ -1258,6 +1317,7 @@ async function handleInteraction(i) {
         const [, action, arg] = id.split(':');
         if (action === 'page') return i.update(articlesPayload(i.guildId, Number(arg) || 0));
         if (action === 'back') return i.update(articlesPayload(i.guildId));
+        if (action === 'all') return i.update(allKnowledgePayload(i.guildId, Number(arg) || 0));
         if (action === 'new') return i.showModal(articleModal(null));
         if (action === 'stats') return i.update(articleStats(i.guildId));
         if (action === 'test') {

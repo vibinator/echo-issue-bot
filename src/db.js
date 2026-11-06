@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const DB_PATH = process.env.DB_PATH ?? 'data/issues.db';
@@ -299,22 +299,81 @@ export const events = {
   moveAll: (from, to) => db.prepare('UPDATE events SET issue_id = ? WHERE issue_id = ?').run(to, from),
 };
 
+/**
+ * Manually written knowledge articles are also kept in a plain JSON file next to the database (and a copy in the backup
+ * folder), rewritten after every change. If the database is ever rebuilt or replaced, articles missing from it are
+ * re-added from that file at startup and on /setup. Deleting an article removes it from the file too, so it stays deleted.
+ */
+const ARTICLES_FILE = process.env.ARTICLES_FILE ?? (DB_PATH === ':memory:' ? null : path.join(path.dirname(DB_PATH), 'knowledge-articles.json'));
+const ARTICLES_COPY = ARTICLES_FILE && !process.env.ARTICLES_FILE ? path.join(BACKUP_DIR, 'knowledge-articles.json') : null;
+const ARTICLE_FIELDS = ['guild_id', 'title', 'symptoms', 'phrases', 'body', 'link', 'enabled', 'created_by', 'created_at', 'updated_at'];
+let journalReady = false; // never overwrite the file before the first restore has had a chance to read it
+
+function writeJournal() {
+  if (!ARTICLES_FILE || !journalReady) return;
+  const rows = db.prepare('SELECT * FROM articles ORDER BY id').all().map((a) => Object.fromEntries(ARTICLE_FIELDS.map((k) => [k, a[k]])));
+  const json = JSON.stringify({ saved_at: now(), articles: rows }, null, 2);
+  for (const file of [ARTICLES_FILE, ARTICLES_COPY].filter(Boolean)) {
+    try {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(`${file}.tmp`, json);
+      renameSync(`${file}.tmp`, file); // atomic: a crash mid-write can't leave a half-written file
+    } catch (e) { console.error(`Could not save knowledge articles to ${file}:`, e.message); }
+  }
+}
+
+/** Re-add saved articles that the database doesn't have (matched by server + title). Returns how many were restored. */
+export function restoreArticles() {
+  let restored = 0;
+  if (ARTICLES_FILE) {
+    const seen = new Set();
+    for (const file of [ARTICLES_FILE, ARTICLES_COPY].filter(Boolean)) {
+      let saved;
+      try { saved = JSON.parse(readFileSync(file, 'utf8')).articles; } catch { continue; } // missing or unreadable: try the other copy
+      if (!Array.isArray(saved)) continue;
+      for (const a of saved) {
+        const key = `${a.guild_id}
+${String(a.title).toLowerCase()}`;
+        if (seen.has(key) || !a.guild_id || !a.title || !a.symptoms || !a.body) continue;
+        seen.add(key);
+        const have = db.prepare('SELECT 1 FROM articles WHERE guild_id = ? AND lower(title) = lower(?)').get(a.guild_id, a.title);
+        if (have) continue;
+        db.prepare(`INSERT INTO articles (guild_id, title, symptoms, phrases, body, link, enabled, created_by, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(a.guild_id, a.title, a.symptoms, a.phrases ?? null, a.body, a.link ?? null, a.enabled === 0 ? 0 : 1, a.created_by ?? null, a.created_at ?? now(), a.updated_at ?? now());
+        restored++;
+      }
+    }
+  }
+  journalReady = true;
+  writeJournal();
+  if (restored) console.log(`Restored ${restored} knowledge article${restored === 1 ? '' : 's'} from the saved file.`);
+  return restored;
+}
+
 /** Knowledge articles written by developers; matched against new reports before an issue is filed. */
 export const articles = {
-  add: (a) => Number(db.prepare(
-    `INSERT INTO articles (guild_id, title, symptoms, phrases, body, link, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(a.guild_id, a.title, a.symptoms, a.phrases || null, a.body, a.link || null, a.created_by ?? null, now(), now()).lastInsertRowid),
+  add: (a) => {
+    const id = Number(db.prepare(
+      `INSERT INTO articles (guild_id, title, symptoms, phrases, body, link, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(a.guild_id, a.title, a.symptoms, a.phrases || null, a.body, a.link || null, a.created_by ?? null, now(), now()).lastInsertRowid);
+    writeJournal();
+    return id;
+  },
   get: (id) => db.prepare('SELECT * FROM articles WHERE id = ?').get(id),
   list: (guild, { enabledOnly = false } = {}) => db.prepare(
     `SELECT * FROM articles WHERE guild_id = ? ${enabledOnly ? 'AND enabled = 1' : ''} ORDER BY title COLLATE NOCASE`
   ).all(guild),
-  update: (id, a) => db.prepare(
-    'UPDATE articles SET title = ?, symptoms = ?, phrases = ?, body = ?, link = ?, updated_at = ? WHERE id = ?'
-  ).run(a.title, a.symptoms, a.phrases || null, a.body, a.link || null, now(), id),
-  setEnabled: (id, enabled) => db.prepare('UPDATE articles SET enabled = ?, updated_at = ? WHERE id = ?').run(enabled ? 1 : 0, now(), id),
-  delete: (id) => db.prepare('DELETE FROM articles WHERE id = ?').run(id),
+  update: (id, a) => {
+    db.prepare('UPDATE articles SET title = ?, symptoms = ?, phrases = ?, body = ?, link = ?, updated_at = ? WHERE id = ?')
+      .run(a.title, a.symptoms, a.phrases || null, a.body, a.link || null, now(), id);
+    writeJournal();
+  },
+  setEnabled: (id, enabled) => { db.prepare('UPDATE articles SET enabled = ?, updated_at = ? WHERE id = ?').run(enabled ? 1 : 0, now(), id); writeJournal(); },
+  delete: (id) => { db.prepare('DELETE FROM articles WHERE id = ?').run(id); writeJournal(); },
 };
+restoreArticles(); // on every start: bring back anything the database lost, then begin keeping the file up to date
 
 /** Per-user choices (currently: whether the bot may DM them progress updates). */
 export const prefs = {
