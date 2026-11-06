@@ -8,7 +8,10 @@ import { erasePayload, privacyPayload, termsPayload } from './legal.js';
 import { CATEGORIES } from './categories.js';
 import { PRIORITIES, STATUSES, renderIssue } from './render.js';
 import { relatedIssues } from './related.js';
-import { extractLinks } from './evidence.js';
+import { extractLinks, KIND_EMOJI } from './evidence.js';
+import { errorMessage, explainError, fileFailureReason } from './errors.js';
+import { pathToFileURL } from 'node:url';
+import { MAX_FILE_MB, readStored } from './evidenceStore.js';
 import {
   attachEvidence, purgeEvidence, duplicatePairs, fileReport, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
   eraseUser, purgeExpired, rematchReport, splitReport, syncMessage, threadSay,
@@ -162,9 +165,9 @@ const versionField = () => labelled('Game / launcher version (optional)', lText(
 const evidenceFields = () => [
   labelled('Links: screenshots, logs, videos (optional)',
     lText('links', { style: TextInputStyle.Paragraph, max: 1000, placeholder: 'https://…  (one per line)' }),
-    'YouTube, Streamable, Medal, Imgur, Pastebin… up to 5 links'),
+    'YouTube, Imgur, Pastebin… up to 5. Only you and the developers can open them.'),
   new LabelBuilder().setLabel('Upload images, logs or videos (optional)')
-    .setDescription('Up to 5 files. For large videos, paste a link above instead.')
+    .setDescription(`Up to 5 files, ${MAX_FILE_MB} MB each. Only you and developers can open them. Big videos: use a link.`)
     .setFileUploadComponent(new FileUploadBuilder().setCustomId('files').setMinValues(0).setMaxValues(5).setRequired(false)),
 ];
 
@@ -239,6 +242,38 @@ function faqAnswerPayload(entry, kind) {
 const meTooModal = (issue) => new ModalBuilder().setCustomId(`plus:${issue.id}`).setTitle(`I have this too · #${issue.id}`).addLabelComponents(
   labelled('Anything to add? (optional)', lText('text', { style: TextInputStyle.Paragraph, max: 1000 })),
   platformField(), versionField(), ...evidenceFields());
+
+const countLine = (n) => `${n} attachment${n === 1 ? '' : 's'}/link${n === 1 ? '' : 's'}`;
+/** A "couldn't save" line for uploaded files that failed (too large, download problem). */
+const failNote = (ev) => (ev.failed.length
+  ? `\n⚠️ Couldn't save ${ev.failed.map((f) => `**${trunc(f.name, 40)}** (${fileFailureReason(f.reason, MAX_FILE_MB)})`).join(', ')}.${ev.failed.some((f) => f.reason === 'too large') ? ' For big videos, paste a link instead.' : ''}`
+  : '');
+
+/**
+ * Show attachments privately in a hidden message. Callers have already checked that the viewer is the person who
+ * sent them or a developer – this is the only place stored files ever leave the bot.
+ */
+async function sendEvidence(i, rows, heading) {
+  if (!rows.length) return i.reply({ content: 'There are no attachments yet.', flags: EPH });
+  const lines = [heading];
+  const files = [];
+  let lastReport = null;
+  for (const r of rows) {
+    if (r.report_id !== lastReport) {
+      lastReport = r.report_id;
+      lines.push(`\n**Report #${r.report_id}** – requested by ${r.user_id === '0' ? 'a removed user' : `<@${r.user_id}>`}`);
+    }
+    const emoji = KIND_EMOJI[r.kind] ?? '📎';
+    if (r.path) {
+      const data = readStored(r.path);
+      if (data) { files.push(new AttachmentBuilder(data, { name: r.name })); lines.push(`• ${emoji} ${trunc(r.name, 80)} _(attached)_`); }
+      else lines.push(`• ${emoji} ${trunc(r.name, 80)} _(file is no longer available)_`);
+    } else lines.push(`• ${emoji} ${r.url}`);
+  }
+  const body = { content: trunc(lines.join('\n'), 1900), allowedMentions: { parse: [] }, flags: EPH };
+  await i.reply({ ...body, files: files.slice(0, 10) });
+  for (let n = 10; n < files.length; n += 10) await i.followUp({ files: files.slice(n, n + 10), flags: EPH }); // Discord allows 10 per message
+}
 
 /** Links + uploaded files from a submitted report form. */
 function readEvidence(i) {
@@ -386,22 +421,42 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
   const cfg = cfgOf(i.guildId);
   const res = fileReport({ guildId: i.guildId, userId: i.user.id, text, platform, version, kind, threshold: cfg.threshold });
   await syncMessage(client, res.issue, cfg.channel_id);
-  const saved = await attachEvidence(client, res.issue, i.user.id, res.reportId, evidence);
+  const ev = await attachEvidence(client, res.issue, i.user.id, res.reportId, evidence);
+  const saved = ev.saved;
   if (saved) await syncMessage(client, issues.get(res.issue.id), cfg.channel_id);
   if (res.reopened) {
     await threadSay(client, res.issue, `⚠️ Reopened by a new report${res.fixedVersion ? ` (it was fixed in \`${res.fixedVersion}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
   }
   const fresh = issues.get(res.issue.id);
   const where = fresh.channel_id ? ` You can follow the discussion in <#${fresh.channel_id}>.` : '';
-  const content = res.created
-    ? `✅ **Thanks – your report has been sent!**\nIt's now ${fresh.kind === 'install' ? '🔧 install issue' : '🐞 issue'} **#${fresh.id}** (${fresh.category}).${where}`
-    : `✅ **Thanks – your report has been added!**\nOther players have reported something similar, so it joined **#${fresh.id} – ${trunc(fresh.title, 100)}**.${where}` +
-      (res.reopened ? '\n⚠️ That issue had been marked fixed, so it has been reopened for the developers to look at again.' : '');
-  const evidenceLine = saved ? `\n📎 Saved ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'} with your report.` : '';
+  const evidenceLine = (saved ? `\n📎 Saved ${countLine(saved)} with your report – only you and the developers can see them.` : '') + failNote(ev);
   const next = '\nYou\'ll get a message when its status changes. See everything under **My reports**.';
+
+  if (res.created) {
+    return {
+      content: `✅ **Thanks – your report has been sent!**\nIt's now ${fresh.kind === 'install' ? '🔧 install issue' : '🐞 issue'} **#${fresh.id}** (${fresh.category}).${where}${evidenceLine}${next}`,
+      embeds: [], components: [],
+    };
+  }
+
+  // The report matched an issue that already exists: say so loudly, show what it matched, and offer to separate it.
+  const sim = Math.round(res.score * 100);
+  const stats = reports.stats(fresh.id);
+  await threadSay(client, fresh, `➕ Another player's report was added to this issue (it looked about ${sim}% alike).`);
+  const embed = new EmbedBuilder().setColor(0xf39c12).setTitle(trunc(`🔗 Similar issue found: #${fresh.id} · ${fresh.title}`, 256))
+    .setDescription('Your report looked like this issue that someone already reported, so it was **added to it** instead of creating a duplicate.')
+    .addFields(
+      { name: 'How alike', value: `About **${sim}%**`, inline: true },
+      { name: 'Status', value: `${STATUSES[fresh.status]?.emoji ?? ''} ${STATUSES[fresh.status]?.label ?? fresh.status}`, inline: true },
+      { name: 'Players affected', value: String(stats.users), inline: true },
+    );
   return {
-    content: `${content}${evidenceLine}${next}`, embeds: [],
-    components: res.created ? [] : [row(btn(`split:${res.reportId}`, 'This is a different problem', '↩️'))],
+    content: `🔗 **We found a similar issue, so your report was added to it.**\nIf that's not the same problem, press **Make it a separate issue**.${res.reopened ? '\n⚠️ That issue had been marked fixed, so it has been reopened for the developers to look at again.' : ''}${where}${evidenceLine}${next}`,
+    embeds: [embed],
+    components: [row(
+      btn(`keep:${res.reportId}`, 'Yes, same problem', '👍', ButtonStyle.Success),
+      btn(`split:${res.reportId}`, 'Make it a separate issue', '↩️', ButtonStyle.Danger),
+    )],
   };
 }
 
@@ -468,9 +523,12 @@ function trackPayload(i, issue) {
   const rows = [];
   if (mine) {
     rows.push(row(btn(`edit:${mine.id}`, 'Edit my report', '✏️'), btn(`addevr:${mine.id}`, 'Add screenshots / logs', '📎'),
-      btn(`rematch:${mine.id}`, 'Recalculate match', '🔄'), btn(`wd:${mine.id}`, 'Withdraw', '🗑️')));
+      btn(`rematch:${mine.id}`, 'Recalculate match', '🔄'), btn(`wd:${mine.id}`, 'Withdraw', '🗑️'),
+      ...(mineEv ? [btn(`evview:${mine.id}`, `My attachments (${mineEv})`, '🖼️')] : [])));
   }
   const nav = [btn('mine:back', 'Back', '⬅️')];
+  // Joined an issue with other players? You can always take your report out into its own issue.
+  if (mine && stats.total > 1) nav.push(btn(`split:${mine.id}`, 'Make it a separate issue', '↩️'));
   if (!mine) nav.push(btn(`follow:${issue.id}`, watchers.has(issue.id, i.user.id) ? 'Unfollow' : 'Follow', watchers.has(issue.id, i.user.id) ? '🔕' : '🔔'));
   rows.push(row(...nav));
   return { content: '', embeds: [embed], components: rows };
@@ -581,6 +639,18 @@ client.on('interactionCreate', async (i) => {
       const panelMsg = await i.channel.send(panelPayload());
       settings.update(i.guildId, { panel_channel_id: i.channel.id, panel_message_id: panelMsg.id });
       const rr = reporterRole(i.guildId);
+      // Check up front what the bot can't do in the issues channel and say why it matters, instead of failing later.
+      let permissionWarning = '';
+      try {
+        const me = await i.guild.members.fetchMe();
+        const missing = ch.permissionsFor(me)?.missing([
+          PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.ReadMessageHistory,
+          PermissionFlagsBits.CreatePublicThreads, PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.ManageThreads,
+        ]) ?? [];
+        if (missing.length) {
+          permissionWarning = `\n⚠️ **The bot is missing permissions in <#${ch.id}>:** ${missing.map((m) => m.replace(/([a-z])([A-Z])/g, '$1 $2')).join(', ')}. Without them, new issues can't get their own thread (they fall back to a plain message) and old threads can't be locked or reopened. Please grant them in the channel's permission settings.`;
+        }
+      } catch { /* couldn't check – not critical */ }
       const have = summary(i.guildId);
       const kept = have.issues || have.articles
         ? `\n♻️ Existing data found and kept: **${have.issues}** issue${have.issues === 1 ? '' : 's'}, **${have.reports}** report${have.reports === 1 ? '' : 's'}, **${have.articles}** knowledge article${have.articles === 1 ? '' : 's'}${restoredFrom ? ` (restored from backup \`${restoredFrom}\`)` : ''}.`
@@ -592,6 +662,7 @@ client.on('interactionCreate', async (i) => {
           `• Developers: <@&${role.id}> (and anyone with Manage Server) – they can change an issue's status and use the Developer menu`,
           `• Who can send reports: ${rr ? `<@&${rr}>` : 'everyone'}`,
           ...(kept ? [kept.trim()] : []),
+          ...(permissionWarning ? [permissionWarning.trim()] : []),
           '',
           'Next: press **🛠️ Developer → ⚙️ Settings** to choose where the weekly digest and "fixed" announcements go.',
         ].join('\n'),
@@ -660,14 +731,28 @@ client.on('interactionCreate', async (i) => {
       await deferHidden(i); // re-hosting files can take longer than Discord's 3s limit
       return i.editReply(await submitReport(i, data));
     }
+    if (i.isButton() && id.startsWith('keep:')) {
+      const report = reports.get(idOf(i));
+      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
+      const issue = issues.get(report.issue_id);
+      return i.update({
+        content: `👍 Great – your report stays with **#${issue.id} – ${trunc(issue.title, 80)}**. You'll get a message when its status changes. (Changed your mind? Open **My reports** and choose **Make it a separate issue**.)`,
+        embeds: [], components: [],
+      });
+    }
     if (i.isButton() && id.startsWith('split:')) {
       const report = reports.get(idOf(i));
       if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
+      const before = issues.get(report.issue_id);
       const res = splitReport(report.id);
       if (res.old) await syncMessage(client, res.old, trackerChannel(i));
       else await removeMessage(client, res.emptiedIssue);
       await syncMessage(client, res.fresh, trackerChannel(i));
-      return i.update({ content: `✅ Got it – your report is now its own issue, **#${res.fresh.id}**.`, components: [] });
+      await threadSay(client, res.fresh, `↩️ This report was separated from #${before.id} because it's a different problem.`);
+      return i.update({
+        content: `✅ **Done – your report is now its own issue, #${res.fresh.id}.** It was taken out of #${before.id}, so the two are no longer linked. You'll get updates for #${res.fresh.id}.`,
+        embeds: [], components: [row(btn(`trk:${res.fresh.id}`, 'See how it\'s going', '📌'))],
+      });
     }
 
     // ----- browsing -----
@@ -752,13 +837,14 @@ client.on('interactionCreate', async (i) => {
       await i.deferReply({ flags: EPH });
       const version = i.fields.getTextInputValue('version').trim();
       const reportId = reports.add(issue.id, i.user.id, i.fields.getTextInputValue('text').trim() || '(me too)', i.fields.getTextInputValue('platform').trim(), version);
-      const saved = await attachEvidence(client, issue, i.user.id, reportId, readEvidence(i));
+      const ev = await attachEvidence(client, issue, i.user.id, reportId, readEvidence(i));
+      const saved = ev.saved;
       if (issue.status === 'fixed') {
         issues.setStatus(issue.id, 'new', null);
         await threadSay(client, issue, `⚠️ Reopened by another report${issue.fixed_version ? ` (it was fixed in \`${issue.fixed_version}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
       } else issues.touch(issue.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
-      return i.editReply({ content: `✅ **Thanks – your report was added to #${issue.id}.**${saved ? `\n📎 Saved ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'} with it.` : ''}\nYou'll get a message when its status changes. See everything under **My reports**.` });
+      return i.editReply({ content: `✅ **Thanks – your report was added to #${issue.id}.**${saved ? `\n📎 Saved ${countLine(saved)} with it – only you and the developers can see them.` : ''}${failNote(ev)}\nYou'll get a message when its status changes. See everything under **My reports**.` });
     }
 
     // ----- issue message: dev note -----
@@ -859,6 +945,31 @@ client.on('interactionCreate', async (i) => {
       return i.update(minePayload(i));
     }
 
+    // ----- private attachments: only the person who sent them, and developers -----
+    if (i.isButton() && id.startsWith('evview:')) {
+      const report = reports.get(idOf(i));
+      if (!report || (report.user_id !== i.user.id && !isDev(i))) {
+        return i.reply({ content: 'You can only open the attachments of your own reports.', flags: EPH });
+      }
+      return sendEvidence(i, evidence.forReport(report.id), `📎 **Attachments on your report #${report.id}** – you're the requester, so only you and the developers can see these.`);
+    }
+    if (i.isButton() && id.startsWith('evall:')) {
+      const issue = await loadIssue(i, idOf(i));
+      if (!issue) return;
+      const rows = evidence.forIssue(issue.id);
+      if (isDev(i)) return sendEvidence(i, rows, `📎 **Attachments on #${issue.id}**`);
+      const mine = rows.filter((r) => r.user_id === i.user.id);
+      if (!mine.length) {
+        return i.reply({
+          content: rows.length
+            ? 'Attachments are private: only the requester (the person who sent them) and the developers can open them. You can add your own with **Add screenshots / logs**.'
+            : 'Nobody has attached anything to this issue yet.',
+          flags: EPH,
+        });
+      }
+      return sendEvidence(i, mine, `📎 **Your attachments on #${issue.id}**`);
+    }
+
     // ----- my reports & tracking -----
     if (i.isButton() && id === 'mine') {
       return i.message?.flags?.has(MessageFlags.Ephemeral) ? i.update(minePayload(i)) : i.reply({ ...minePayload(i), flags: EPH });
@@ -921,13 +1032,14 @@ client.on('interactionCreate', async (i) => {
         });
       }
       const issue = issues.get(report.issue_id);
-      const saved = await attachEvidence(client, issue, i.user.id, report.id, readEvidence(i));
+      const ev = await attachEvidence(client, issue, i.user.id, report.id, readEvidence(i));
+      const saved = ev.saved;
       issues.touch(issue.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
       const added = saved ? ` and added ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'}` : '';
       await threadSay(client, issue, `✏️ A reporter ${editing ? 'edited their report' : 'added evidence'}${editing ? added : ''}.`);
       return i.editReply({
-        content: `✅ ${editing ? `Your report was updated${added}.` : saved ? `Saved ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'} with your report.` : 'Nothing new was added.'}\nIf your new details change what the problem is, press **Recalculate match** and I'll check whether your report belongs with a different issue.`,
+        content: `✅ ${editing ? `Your report was updated${added}.` : saved ? `Saved ${countLine(saved)} with your report – only you and the developers can see them.` : 'Nothing new was added.'}${failNote(ev)}\nIf your new details change what the problem is, press **Recalculate match** and I'll check whether your report belongs with a different issue.`,
         components: [row(btn(`rematch:${report.id}`, 'Recalculate match', '🔄', ButtonStyle.Primary), btn(`trk:${issue.id}`, 'See how it\'s going', '📌'))],
       });
     }
@@ -1111,7 +1223,7 @@ client.on('interactionCreate', async (i) => {
     }
   } catch (err) {
     console.error(err);
-    const reply = { content: 'Sorry, something went wrong on our side. Please try again in a moment – if it keeps happening, let a developer know.', flags: EPH };
+    const reply = { content: errorMessage(err), flags: EPH }; // says WHY it failed and what to do, not just "something went wrong"
     if (i.replied || i.deferred) i.followUp(reply).catch(() => {}); else i.reply(reply).catch(() => {});
   }
 });
@@ -1135,28 +1247,35 @@ client.once('clientReady', async () => {
   setInterval(tick, 3_600_000);
 });
 
-if (!process.env.DISCORD_TOKEN) {
-  console.error('Set DISCORD_TOKEN (copy .env.example to .env, then run: npm start)');
-  process.exit(1);
-}
+// The screens are exported so the tests can build every one of them (and catch Discord limit mistakes before a release).
+export {
+  panelPayload, devMenuPayload, reportTypePayload, reportModal, quickModal, meTooModal, editModal, addEvidenceModal, noteModal, fixedModal,
+  faqPayload, faqAnswerPayload, browsePayload, settingsPayload, dupPayload, minePayload, trackPayload, articlesPayload, articleView,
+  articleStats, articleModal, commands, timeline, failNote,
+};
+
 // A network blip (for example a DNS lookup failing right at startup) must not take the bot down: keep retrying.
 // Only a bad token or missing intents are permanent, so those stop the bot with a clear message.
-process.on('unhandledRejection', (e) => console.error('Unhandled error:', e?.message ?? e));
-
 async function start() {
+  if (!process.env.DISCORD_TOKEN) {
+    console.error('No bot token found: set DISCORD_TOKEN (copy .env.example to .env, or add it to the YAML), then start the bot again.');
+    process.exit(1);
+  }
+  process.on('unhandledRejection', (e) => console.error('Unhandled error:', e?.message ?? e));
   for (let attempt = 1; ; attempt++) {
     try {
       await client.login(process.env.DISCORD_TOKEN);
       return;
     } catch (e) {
       if (['TokenInvalid', 'DisallowedIntents', 'MissingIntents'].includes(e.code)) {
-        console.error(`Cannot log in (${e.code}): check DISCORD_TOKEN.`);
+        console.error(`Discord rejected the bot token (${e.code}). Reset the token in the Developer Portal (Bot → Reset Token) and update DISCORD_TOKEN.`);
         process.exit(1);
       }
       const wait = Math.min(60, 5 * attempt);
-      console.error(`Login failed (${e.code ?? e.message}); retrying in ${wait}s (attempt ${attempt})…`);
+      console.error(`Couldn't log in to Discord because ${explainError(e).reason}. Retrying in ${wait}s (attempt ${attempt})…`);
       await new Promise((resolve) => setTimeout(resolve, wait * 1000));
     }
   }
 }
-start();
+// Only start when run directly (node src/index.js), not when imported by the tests.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) start();

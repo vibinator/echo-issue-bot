@@ -2,6 +2,7 @@ import { EmbedBuilder } from 'discord.js';
 import { decisions, events, evidence, issues, prefs, reports, watchers } from './db.js';
 import { refreshBoard } from './board.js';
 import { kindOfFile, kindOfLink, linkName } from './evidence.js';
+import { removeReportFiles, saveFromUrl } from './evidenceStore.js';
 import { rankSimilar } from './similarity.js';
 import { detectCategory, INSTALL_CATEGORY } from './categories.js';
 import { relatedIssues } from './related.js';
@@ -65,6 +66,12 @@ export function splitReport(reportId) {
   reports.move(r.id, id);
   evidence.moveReport(r.id, id);
   const emptied = reports.stats(old.id).total === 0;
+  // If this very report had reopened a "fixed" issue, taking it out means the issue should be fixed again.
+  const lastEvent = events.forIssue(old.id, 1)[0];
+  if (!emptied && lastEvent?.kind === 'reopened' && lastEvent.actor_id === r.user_id && issues.get(old.id).status === 'new') {
+    issues.setStatus(old.id, 'fixed', null, old.fixed_version);
+    events.add(old.id, 'status', null, 'Back to Fixed – the report that reopened it turned out to be a different problem');
+  }
   if (emptied) issues.delete(old.id);
   return { fresh: issues.get(id), old: emptied ? null : issues.get(old.id), emptiedIssue: emptied ? old : null };
 }
@@ -205,48 +212,37 @@ export async function threadSay(client, issue, text) {
 }
 
 /**
- * Save a report's evidence. Uploaded files are re-hosted in the issue's thread (Discord upload links expire,
- * the thread message is permanent); links are stored as given. Returns how many items were saved.
+ * Save a report's links and uploaded files. Nothing is posted in Discord: files are downloaded into the bot's
+ * private evidence folder and links are stored as text, so only the reporter and developers can ever be shown them
+ * (the bot checks this when someone asks to view them). Returns { saved, failed: [{ name, reason }] }.
  */
 export async function attachEvidence(client, issue, userId, reportId, { links = [], files = [] } = {}) {
-  if (!links.length && !files.length) return 0;
-  const fresh = issues.get(issue.id);
-  let thread = null;
-  if (fresh?.thread_id) { try { thread = await client.channels.fetch(fresh.thread_id); } catch { /* no thread */ } }
-
-  const header = [`📎 <@${userId}> added screenshots, logs or links (report #${reportId})`, ...links.map((l) => `• ${l}`)];
-  const noPing = { parse: [] };
-  let posted = null;
-  if (thread) {
+  const result = { saved: 0, failed: [] };
+  const base = { issue_id: issue.id, report_id: reportId, user_id: userId };
+  for (const l of links) {
+    evidence.add({ ...base, kind: kindOfLink(l), name: linkName(l), url: l });
+    result.saved++;
+  }
+  const already = evidence.forReport(reportId).length; // keeps file names unique across later additions
+  for (const [n, f] of files.entries()) {
     try {
-      posted = await thread.send({ content: header.join('\n'), files: files.map((f) => ({ attachment: f.url, name: f.name })), allowedMentions: noPing });
-    } catch {
-      // Too large to re-host? Post the links so the evidence is still reachable (the Discord links are temporary).
-      posted = await thread.send({
-        content: [...header, ...(files.length ? ['⚠️ The files couldn\'t be saved here (they may be too large). These links stop working after a while, so for big videos please paste a link instead:', ...files.map((f) => `• ${f.url}`)] : [])].join('\n'),
-        allowedMentions: noPing,
-      }).catch(() => null);
+      const rel = await saveFromUrl(reportId, already + n, f);
+      evidence.add({ ...base, kind: kindOfFile(f.name, f.contentType), name: f.name, url: '', path: rel });
+      result.saved++;
+    } catch (e) {
+      result.failed.push({ name: f.name, reason: e.message });
     }
   }
-  const where = { channel_id: posted ? thread.id : null, message_id: posted?.id ?? null };
-  for (const l of links) {
-    evidence.add({ issue_id: issue.id, report_id: reportId, user_id: userId, kind: kindOfLink(l), name: linkName(l), url: l, ...where });
-  }
-  for (const f of files) {
-    evidence.add({
-      issue_id: issue.id, report_id: reportId, user_id: userId, kind: kindOfFile(f.name, f.contentType),
-      name: f.name, url: posted?.url ?? f.url, ...where,
-    });
-  }
-  return links.length + files.length;
+  return result;
 }
 
-/** Remove a report's evidence rows and the thread messages that hold the files (spam clean-up). */
+/** Remove a report's evidence: stored files, rows, and (for older reports) any thread message that held the files. */
 export async function purgeEvidence(client, reportId) {
   const rows = evidence.forReport(reportId);
   for (const m of new Map(rows.filter((r) => r.message_id).map((r) => [r.message_id, r])).values()) {
     try { await (await (await client.channels.fetch(m.channel_id)).messages.fetch(m.message_id)).delete(); } catch { /* gone */ }
   }
+  removeReportFiles(reportId);
   evidence.deleteForReport(reportId);
 }
 
@@ -324,6 +320,7 @@ export async function purgeExpired(client, guildId, days) {
   const old = issues.closedBefore(guildId, Date.now() - days * 864e5);
   for (const issue of old) {
     await removeMessage(client, issue);
+    for (const r of reports.forIssue(issue.id)) removeReportFiles(r.id); // the uploaded files go too
     reports.deleteForIssue(issue.id);
     issues.delete(issue.id);
   }

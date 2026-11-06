@@ -1,5 +1,10 @@
 // Offline sanity test for grouping logic (no Discord needed): npm test
 process.env.DB_PATH = ':memory:';
+const { mkdtempSync } = await import('node:fs');
+const { tmpdir } = await import('node:os');
+const { join } = await import('node:path');
+process.env.EVIDENCE_DIR = mkdtempSync(join(tmpdir(), 'evr-evidence-')); // uploaded test files go here, not into the project
+process.env.EVIDENCE_MAX_MB = '1';
 const assert = (await import('node:assert/strict')).default;
 const { fileReport, splitReport, mergeIssues } = await import('./service.js');
 const { issues } = await import('./db.js');
@@ -135,47 +140,74 @@ assert.equal(linkName('https://www.youtube.com/watch'), 'youtube.com/watch');
 const { attachEvidence, purgeEvidence } = await import('./service.js');
 const { evidence } = await import('./db.js');
 const { renderIssue } = await import('./render.js');
-const sent = [];
-let deleted = 0;
-const thread = {
-  id: 'thread1',
-  send: async (m) => { sent.push(m); return { id: `msg${sent.length}`, url: `https://discord.com/channels/g/thread1/msg${sent.length}`, delete: async () => { deleted++; } }; },
-  messages: { fetch: async () => ({ delete: async () => { deleted++; } }) },
+const { EVIDENCE_DIR, readStored } = await import('./evidenceStore.js');
+const { existsSync } = await import('node:fs');
+const posted = []; // anything the bot would post into Discord – must stay empty: attachments are private
+const fakeClient = { channels: { fetch: async () => ({ send: async (m) => { posted.push(m); return { id: 'x' }; } }) } };
+const downloads = [];
+globalThis.fetch = async (url) => {
+  downloads.push(String(url));
+  const big = String(url).includes('huge');
+  const body = Buffer.from(big ? 'x'.repeat(2 * 1024 * 1024) : `bytes of ${String(url).split('/').pop()}`);
+  return { ok: !String(url).includes('missing'), status: String(url).includes('missing') ? 404 : 200, headers: { get: () => String(body.length) }, arrayBuffer: async () => body };
 };
-const fakeClient = { channels: { fetch: async () => thread } };
+
 const ev1 = fileReport({ guildId: 'g4', userId: 'p1', text: 'Voice chat is cut off when more than four players talk' });
-issues.setThread(ev1.issue.id, 'thread1');
-const n = await attachEvidence(fakeClient, ev1.issue, 'p1', ev1.reportId, {
+const first = await attachEvidence(fakeClient, ev1.issue, 'p1', ev1.reportId, {
   links: ['https://youtu.be/abc123'],
-  files: [{ name: 'shot.png', url: 'https://cdn.discordapp.com/x/shot.png?ex=1', contentType: 'image/png' }, { name: 'output.log', url: 'https://cdn.discordapp.com/x/output.log', contentType: 'text/plain' }],
+  files: [{ name: 'shot.png', url: 'https://cdn.discordapp.com/x/shot.png?ex=1', size: 10, contentType: 'image/png' }, { name: 'output log.txt', url: 'https://cdn.discordapp.com/x/output.txt', size: 10, contentType: 'text/plain' }],
 });
-assert.equal(n, 3);
-assert.equal(sent.length, 1, 'one thread message carries the links and the re-hosted files');
-assert.equal(sent[0].files.length, 2);
-assert.ok(sent[0].allowedMentions.parse.length === 0, 'evidence post never pings');
+assert.deepEqual([first.saved, first.failed.length], [3, 0]);
+assert.equal(posted.length, 0, 'nothing is posted in Discord: attachments stay private');
 const rows = evidence.forIssue(ev1.issue.id);
 assert.deepEqual(rows.map((r) => r.kind).sort(), ['image', 'log', 'video']);
-assert.ok(rows.filter((r) => r.kind !== 'video').every((r) => r.url.startsWith('https://discord.com/channels/')), 'files point at the permanent thread message, not the expiring CDN link');
-const embed = renderIssue(issues.get(ev1.issue.id)).embeds[0].toJSON();
-assert.ok(embed.fields.some((f) => f.name.startsWith('📎 Screenshots, logs & links (3)')), 'evidence shows on the issue');
-assert.equal(await attachEvidence(fakeClient, ev1.issue, 'p1', ev1.reportId, {}), 0);
+const stored = rows.filter((r) => r.path);
+assert.equal(stored.length, 2, 'uploaded files are saved on disk');
+assert.ok(stored.every((r) => r.path.startsWith(`${ev1.reportId}/`) && !/\s/.test(r.path)), 'one private folder per report, with a safe file name');
+assert.equal(readStored(stored[0].path).toString(), 'bytes of shot.png?ex=1');
+assert.equal(readStored('../../etc/passwd'), null, 'stored files cannot be read from outside the evidence folder');
+assert.equal(readStored(`${ev1.reportId}/nope.png`), null);
+const embed1 = renderIssue(issues.get(ev1.issue.id)).embeds[0].toJSON();
+const evField = embed1.fields.find((f) => f.name.startsWith('📎'));
+assert.ok(evField && evField.value.startsWith('3 attached') && !evField.value.includes('youtu.be') && !evField.value.includes('shot.png'),
+  'the public card shows only a count – no names and no links');
+assert.ok(!JSON.stringify(renderIssue(issues.get(ev1.issue.id)).embeds).includes('youtu.be'), 'no evidence link appears anywhere on the public card');
+assert.deepEqual(await attachEvidence(fakeClient, ev1.issue, 'p1', ev1.reportId, {}), { saved: 0, failed: [] });
 
-// too-large files fall back to posting links; evidence still saved
-const failing = { channels: { fetch: async () => ({ id: 'thread1', send: async (m) => { if (m.files?.length) throw new Error('413'); sent.push(m); return { id: 'm9', url: 'https://discord.com/channels/g/t/m9' }; } }) } };
+// later additions don't overwrite earlier files
+const more = await attachEvidence(fakeClient, ev1.issue, 'p1', ev1.reportId, { files: [{ name: 'shot.png', url: 'https://cdn.discordapp.com/x/shot2.png', size: 10, contentType: 'image/png' }] });
+assert.equal(more.saved, 1);
+assert.equal(new Set(evidence.forReport(ev1.reportId).filter((r) => r.path).map((r) => r.path)).size, 3, 'same file name twice -> two separate files');
+
+// refusals: too big, not from Discord, download error – the rest is still saved
 const ev2 = fileReport({ guildId: 'g4', userId: 'p2', text: 'Screen goes black when switching between lobbies quickly' });
-issues.setThread(ev2.issue.id, 'thread1');
-assert.equal(await attachEvidence(failing, ev2.issue, 'p2', ev2.reportId, { files: [{ name: 'big.mp4', url: 'https://cdn.discordapp.com/big.mp4', contentType: 'video/mp4' }] }), 1);
-assert.ok(sent.at(-1).content.includes("couldn't be saved here"), 'oversized files fall back to links with an explanation');
+const mixed = await attachEvidence(fakeClient, ev2.issue, 'p2', ev2.reportId, {
+  links: ['https://pastebin.com/xyz'],
+  files: [
+    { name: 'big.mp4', url: 'https://cdn.discordapp.com/huge.mp4', size: 10, contentType: 'video/mp4' },          // body exceeds the limit
+    { name: 'declared.mp4', url: 'https://cdn.discordapp.com/ok.mp4', size: 5 * 1024 * 1024, contentType: 'video/mp4' }, // declared size exceeds the limit
+    { name: 'evil.png', url: 'https://evil.example.com/x.png', size: 10, contentType: 'image/png' },                // not Discord
+    { name: 'gone.png', url: 'https://cdn.discordapp.com/missing.png', size: 10, contentType: 'image/png' },        // 404
+    { name: 'fine.png', url: 'https://cdn.discordapp.com/fine.png', size: 10, contentType: 'image/png' },
+  ],
+});
+assert.equal(mixed.saved, 2, 'the link and the good file are saved');
+assert.deepEqual(mixed.failed.map((f) => f.name).sort(), ['big.mp4', 'declared.mp4', 'evil.png', 'gone.png']);
+assert.equal(mixed.failed.find((f) => f.name === 'big.mp4').reason, 'too large');
+assert.ok(!downloads.some((u) => u.includes('evil.example.com')), 'nothing is ever downloaded from a non-Discord host');
 
-// evidence follows its report on split, follows the issue on merge, and is purged with the report
+// evidence follows its report on split, follows the issue on merge, and is deleted (files too) with the report
 const sp = splitReport(ev1.reportId);
-assert.equal(evidence.forIssue(sp.fresh.id).length, 3, 'evidence moves with a split report');
+assert.equal(evidence.forIssue(sp.fresh.id).length, 4, 'evidence moves with a split report');
 const evTarget = fileReport({ guildId: 'g4', userId: 'p3', text: 'Completely different: scoreboard shows wrong team colours' });
 mergeIssues(sp.fresh.id, evTarget.issue.id);
-assert.equal(evidence.forIssue(evTarget.issue.id).length, 3, 'evidence moves on merge');
+assert.equal(evidence.forIssue(evTarget.issue.id).length, 4, 'evidence moves on merge');
+const folder = `${EVIDENCE_DIR}/${ev1.reportId}`;
+assert.ok(existsSync(folder));
 await purgeEvidence(fakeClient, ev1.reportId);
 assert.equal(evidence.forReport(ev1.reportId).length, 0);
-assert.ok(deleted >= 1, 'hosted thread message deleted when a report is removed');
+assert.ok(!existsSync(folder), 'the stored files are deleted from disk with the report');
+assert.equal(posted.length, 0, 'still nothing posted in Discord');
 
 // ---- recalculate match after a user edits their report ----
 const { rematchReport } = await import('./service.js');
@@ -384,7 +416,7 @@ assert.equal(fresh8.thread_id, 'th1');
 assert.equal(fresh8.channel_id, 'th1', 'the control card lives inside the thread');
 assert.ok(fresh8.message_id);
 assert.ok(parentChan.created.name.startsWith(`#${T.issue.id} `));
-assert.ok(threadMsgs[0].components.length === 4, 'the first thread message is the issue card with its buttons');
+assert.ok(threadMsgs[0].components.length === 5, 'the first thread message is the issue card with its buttons');
 isArchived = true;
 await syncMessage(tClient, fresh8, 'chan');
 assert.equal(edits.length, 1, 'the second sync edits the card instead of posting another');
@@ -399,8 +431,9 @@ assert.equal(issues.get(T2.issue.id).message_id, 'pub2');
 // back button on cards opened from a hidden menu
 const withBack = renderIssue(issues.get(T.issue.id), { back: 'browse' });
 assert.equal(withBack.components.length, 5);
-assert.equal(withBack.components[4].toJSON().components[0].custom_id, 'browse');
-assert.equal(renderIssue(issues.get(T.issue.id)).components.length, 4, 'no Back button on the public card');
+const lastRowIds = (p) => p.components[4].toJSON().components.map((c) => c.custom_id);
+assert.deepEqual(lastRowIds(withBack), [`evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
+assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`evall:${T.issue.id}`], 'no Back button on the public card');
 
 // ---- recovery: re-run /setup keeps settings; a re-created bot reuses existing threads ----
 const { settings: S2, summary } = await import('./db.js');
@@ -441,5 +474,65 @@ assert.equal(sg('my controllers do not vibrate', [], 25, 'bug')[0].id, 'kb:hapti
 assert.equal(sg('instaler says problem parsing the packge', [], 25, 'install')[0].id, 'kb:quest_parse_package', 'typos still rank the right fix first');
 assert.equal(sg('zzz nothing relevant here', [], 25, 'bug').length, 0, 'no close match -> the plain list is shown');
 assert.ok(sg('download stuck on quest', [], 25, 'install').length <= 25);
+
+// ---- errors say WHY, in plain words ----
+const { explainError, errorMessage, fileFailureReason } = await import('./errors.js');
+const mk = (code, message, extra = {}) => Object.assign(new Error(message), { code, ...extra });
+assert.match(errorMessage(mk(50013, 'Missing Permissions')), /isn't allowed to do that in this channel.*Create Public Threads/s);
+assert.match(errorMessage(mk(50001, 'Missing Access')), /can't see that channel/);
+assert.match(errorMessage(mk(10062, 'Unknown interaction')), /expired or was already used.*Press the button/s);
+assert.match(errorMessage(mk('EAI_AGAIN', 'getaddrinfo EAI_AGAIN discord.com')), /couldn't reach Discord.*network problem/s);
+assert.match(errorMessage(mk(50035, 'Invalid Form Body')), /too long or in the wrong format/);
+assert.match(errorMessage(mk('ENOSPC', 'no space left on device')), /out of disk space/);
+assert.match(errorMessage(mk(undefined, 'database is locked')), /database had a problem/);
+assert.match(errorMessage(new TypeError("Cannot read properties of undefined (reading 'x')")), /unexpected problem \(Cannot read properties of undefined/, 'unknown errors still give the actual reason');
+for (const e of [mk(50013, 'x'), mk(1, 'y'), new Error('')]) {
+  assert.ok(!/something went wrong/i.test(errorMessage(e)), 'never the vague "something went wrong"');
+  assert.ok(explainError(e).reason && explainError(e).fix);
+}
+assert.equal(fileFailureReason('too large', 25), "it's over the 25 MB limit");
+assert.equal(fileFailureReason('not a Discord attachment', 25), "it didn't come from Discord");
+assert.match(fileFailureReason('download failed (404)', 25), /error 404/);
+
+// ---- every screen and form builds, and fits Discord's limits (label/description lengths, 5 rows, 5 fields…) ----
+const ui = await import('./index.js');
+const fi = { guildId: 'g5', user: { id: 'viewer' } };
+const sampleIssue = issues.list('g5')[0];
+const sampleReport = R.forIssue(sampleIssue.id)[0];
+const screens = {
+  panel: ui.panelPayload(), devMenu: ui.devMenuPayload(), type: ui.reportTypePayload(),
+  quickBug: ui.quickModal('bug'), quickInstall: ui.quickModal('install'), reportBug: ui.reportModal('bug'), reportInstall: ui.reportModal('install', 'prefilled text'),
+  meToo: ui.meTooModal(sampleIssue), edit: ui.editModal(sampleReport), addEvidence: ui.addEvidenceModal(sampleReport), note: ui.noteModal(sampleIssue), fixed: ui.fixedModal(sampleIssue),
+  faqBug: ui.faqPayload('g5', 'bug'), faqInstall: ui.faqPayload('g5', 'install'), browse: ui.browsePayload(fi, { s: '-', c: '-', o: '-' }),
+  settings: ui.settingsPayload('g5'), dups: ui.dupPayload(fi), mine: ui.minePayload(fi), track: ui.trackPayload(fi, sampleIssue),
+  articles: ui.articlesPayload('g5'), articleNew: ui.articleModal(null), card: renderIssue(sampleIssue), cardBack: renderIssue(sampleIssue, { back: 'browse' }),
+  privacy: privacyPayload('1', 90), terms: termsPayload('1'), erase: erasePayload(), board: boardPayload('g5'), slash: ui.commands,
+};
+for (const [name, screen] of Object.entries(screens)) {
+  const json = JSON.parse(JSON.stringify(screen)); // runs the Discord builders' validation
+  const rowsOf = json.components ?? [];
+  assert.ok(rowsOf.length <= 5, `${name}: at most 5 rows/fields`);
+  assert.ok(rowsOf.every((r) => !r.components || r.components.length <= 5), `${name}: at most 5 buttons per row`);
+}
+const reportForm = JSON.parse(JSON.stringify(screens.reportBug));
+for (const field of reportForm.components) {
+  assert.ok(field.label.length <= 45, `form label fits: ${field.label}`);
+  assert.ok((field.description ?? '').length <= 100, `form hint fits: ${field.description}`);
+}
+
+// ---- the requester is named on the card; a wrongly matched report can be separated and the issue restored ----
+const reqA = fileReport({ guildId: 'g10', userId: 'requesterA', text: 'Hand tracking drifts upward whenever I hold the disc near my chest' });
+const reqCard = (id) => renderIssue(issues.get(id)).embeds[0].toJSON().fields.find((f) => f.name === 'Requested by').value;
+assert.equal(reqCard(reqA.issue.id), '<@requesterA>');
+issues.setStatus(reqA.issue.id, 'fixed', 'dev', '2.0');
+const reqB = fileReport({ guildId: 'g10', userId: 'requesterB', text: 'Hand tracking drifts upward when I hold the disc near my chest' });
+assert.equal(reqB.issue.id, reqA.issue.id, 'a similar report joins the existing issue');
+assert.ok(reqB.score > 0.25 && !reqB.created, 'the match score is reported so the player can be shown how alike it was');
+assert.equal(reqB.reopened, true);
+assert.equal(reqCard(reqA.issue.id), '<@requesterA> + 1 other', 'the requester stays the first person who asked');
+const undo = splitReport(reqB.reportId);
+assert.equal(issues.get(reqA.issue.id).status, 'fixed', 'separating the report puts the fixed issue back to fixed');
+assert.equal(undo.fresh.status, 'new', 'and the separated report is its own new issue');
+assert.equal(reqCard(undo.fresh.id), '<@requesterB>');
 
 console.log('All tests passed.');

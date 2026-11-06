@@ -115,6 +115,7 @@ addColumn('settings', 'status_role_id', 'TEXT');
 addColumn('settings', 'board_channel_id', 'TEXT');
 addColumn('settings', 'board_message_id', 'TEXT');
 addColumn('reports', 'edited_at', 'INTEGER');
+addColumn('evidence', 'path', 'TEXT'); // uploaded files live in the private evidence folder; this is their relative path
 addColumn('settings', 'panel_channel_id', 'TEXT');   // the one public control-panel message
 addColumn('settings', 'panel_message_id', 'TEXT');
 addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = keep closed issues until deleted by hand
@@ -204,10 +205,10 @@ export const issues = {
 
 export const evidence = {
   add: (e) => Number(db.prepare(
-    `INSERT INTO evidence (issue_id, report_id, user_id, kind, name, url, channel_id, message_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(e.issue_id, e.report_id ?? null, e.user_id, e.kind, e.name, e.url, e.channel_id ?? null, e.message_id ?? null, now()).lastInsertRowid),
-  forIssue: (issueId) => db.prepare('SELECT * FROM evidence WHERE issue_id = ? ORDER BY id DESC').all(issueId),
+    `INSERT INTO evidence (issue_id, report_id, user_id, kind, name, url, path, channel_id, message_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(e.issue_id, e.report_id ?? null, e.user_id, e.kind, e.name, e.url ?? '', e.path ?? null, e.channel_id ?? null, e.message_id ?? null, now()).lastInsertRowid),
+  forIssue: (issueId) => db.prepare('SELECT * FROM evidence WHERE issue_id = ? ORDER BY report_id, id').all(issueId),
   forReport: (reportId) => db.prepare('SELECT * FROM evidence WHERE report_id = ?').all(reportId),
   moveReport: (reportId, to) => db.prepare('UPDATE evidence SET issue_id = ? WHERE report_id = ?').run(to, reportId),
   moveAll: (from, to) => db.prepare('UPDATE evidence SET issue_id = ? WHERE issue_id = ?').run(to, from),

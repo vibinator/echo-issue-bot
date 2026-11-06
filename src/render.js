@@ -3,7 +3,6 @@ import {
 } from 'discord.js';
 import { evidence, issues, reports } from './db.js';
 import { relatedIssues } from './related.js';
-import { KIND_EMOJI } from './evidence.js';
 
 export const STATUSES = {
   new:               { label: 'New',                emoji: '🆕', color: 0x95a5a6 },
@@ -23,6 +22,14 @@ export const PRIORITIES = {
 
 const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+/** The "requester" = whoever sent the first report; others who hit the same problem are counted. */
+function requesterText(issueId, stats) {
+  const first = reports.earliest(issueId);
+  const who = !first ? '_unknown_' : first.user_id === '0' ? '_removed user_' : `<@${first.user_id}>`;
+  const others = Math.max(0, stats.users - 1);
+  return others ? `${who} + ${others} other${others === 1 ? '' : 's'}` : who;
+}
+
 /** `back`: custom id of a button to add that returns to the menu this card was opened from (hidden views only). */
 export function renderIssue(issue, { back } = {}) {
   const st = STATUSES[issue.status] ?? STATUSES.new;
@@ -39,6 +46,7 @@ export function renderIssue(issue, { back } = {}) {
       { name: 'Priority', value: `${pr.emoji} ${pr.label}`, inline: true },
       { name: 'Type', value: issue.kind === 'install' ? '🔧 Install issue' : '🐞 Bug in game', inline: true },
       { name: 'Category', value: issue.category, inline: true },
+      { name: 'Requested by', value: requesterText(issue.id, stats), inline: true },
       { name: "Who's on it", value: issue.owner_id ? `<@${issue.owner_id}>` : '_Nobody yet_', inline: true },
       { name: 'Players affected', value: `${stats.users} (${stats.total} report${stats.total === 1 ? '' : 's'})`, inline: true },
     )
@@ -55,13 +63,10 @@ export function renderIssue(issue, { back } = {}) {
       }).join('\n'), 1024),
     });
   }
+  // Attachments are private: this public card only says how many there are, never what or where they are.
   const ev = evidence.forIssue(issue.id);
-  // (evidence list is shown after the latest reports)
   if (ev.length) {
-    const shown = ev.slice(0, 5).map((e) =>
-      `• ${KIND_EMOJI[e.kind] ?? '📎'} [${trunc(e.name, 40).replace(/[[\]]/g, '')}](${e.url.replace(/\)/g, '%29')}) — <@${e.user_id}>`);
-    if (ev.length > 5) shown.push(`…and ${ev.length - 5} more – see this thread`);
-    embed.addFields({ name: `📎 Screenshots, logs & links (${ev.length})`, value: trunc(shown.join('\n'), 1024) });
+    embed.addFields({ name: '📎 Screenshots, logs & links', value: `${ev.length} attached – only the requester (whoever sent them) and the developers can open them.`, inline: false });
   }
   const related = relatedIssues(issue).map((r) => issues.get(r.id)).filter(Boolean);
   if (related.length) {
@@ -95,11 +100,14 @@ export function renderIssue(issue, { back } = {}) {
     btn('mkart', 'Make knowledge article', '📚'),
   );
 
+  // Last row: open the private attachments (the bot only shows them to the reporter and developers), plus Back in menus.
+  const last = new ActionRowBuilder().addComponents(
+    btn('evall', 'View attachments', '📎'),
+    ...(back ? [new ButtonBuilder().setCustomId(back).setLabel('Back').setEmoji('⬅️').setStyle(ButtonStyle.Secondary)] : []),
+  );
+
   return {
     embeds: [embed],
-    components: [
-      new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu), buttons, more,
-      ...(back ? [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(back).setLabel('Back').setEmoji('⬅️').setStyle(ButtonStyle.Secondary))] : []),
-    ],
+    components: [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu), buttons, more, last],
   };
 }

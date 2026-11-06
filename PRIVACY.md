@@ -12,7 +12,7 @@ Per server, in a database on the operator's own hardware:
 |---|---|
 | Your Discord **user ID** | to attribute reports, show you your own reports, and DM you about them |
 | What you submit: description, headset/platform, game or launcher version | to understand, group and fix the problem |
-| **Links** you add and **files** you upload (screenshots, logs, video) | as evidence. Files are re-posted into the issue's thread in the server; the bot stores the link to that message |
+| **Links** you add and **files** you upload (screenshots, logs, video) | as evidence. Files are copied into a private folder on the operator's server (not posted in any channel or thread); links are stored as text. Files are limited in size (25 MB each by default) |
 | Timestamps; whether a report was edited | to show history |
 | Issues you **follow** | to DM you when they change |
 | Your **DM preference** | so you can turn DMs off |
@@ -26,12 +26,13 @@ Only to run the issue tracker: group similar reports (word-similarity run locall
 The data is **not sold, shared with third parties, used for advertising, or used to train AI models**. No third-party analytics are used.
 
 ## Who can see it
-- People who can see the server's issue channel see your mention, your report text and evidence links.
+- People who can see the server's issue channel see your mention and the text of your report. The issue only shows *how many* attachments it has.
+- **Your attachments and links are shown only to you and to developers.** (The *requester* is the person who sent a report; each requester can open only their own files.) The bot checks who is asking every time someone opens them.
 - Developers (the developer role, and members with Manage Server) can also see the history, and can export reports **including user IDs** as CSV.
 - The operator can access the database and its backups.
 
 ## Backups and retention
-The database is backed up daily on the operator's hardware (newest 14 backups kept). Data is kept until you erase it, a developer deletes it, or – if the operator enabled it with `/setup retention_days` – closed issues are deleted after that many days without activity. Erased data can remain in backups until those rotate out (up to 14 days).
+The database is backed up daily on the operator's hardware (newest 14 backups kept). Uploaded files live in the bot's data folder (`data/evidence`) and are deleted together with their report. Data is kept until you erase it, a developer deletes it, or – if the operator enabled it with `/setup retention_days` – closed issues are deleted after that many days without activity. Erased data can remain in backups until those rotate out (up to 14 days).
 
 ## Your choices and rights
 - **Edit, add to, or withdraw** your reports: panel → **My reports**.
