@@ -28,7 +28,7 @@ export function privacyPayload(devRoleId, retentionDays) {
       '',
       `**How long:** until you erase it or developers delete it${retentionDays ? `; closed issues are deleted automatically after **${retentionDays} days** without activity` : ''}.`,
       '',
-      '**Your choices:** ✏️ edit or 🗑️ withdraw a report under **My reports**; 🔕 turn DMs off there; or erase everything below.',
+      '**Your choices:** ✏️ edit or 🗑️ withdraw a report under **My issues**; 🔕 turn DMs off there; or erase everything below.',
       '',
       '⚠️ **Don\'t submit** passwords, tokens, payment details or other people\'s personal info. Logs can contain your Windows user name or IP address – remove it before uploading.',
       '',
@@ -41,7 +41,7 @@ export function privacyPayload(devRoleId, retentionDays) {
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel('Full policy').setEmoji('📄').setStyle(ButtonStyle.Link).setURL(PRIVACY_URL),
       new ButtonBuilder().setCustomId('legal:erase').setLabel('Delete my data').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId('mine').setLabel('My reports & DM settings').setEmoji('📌').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('mine').setLabel('My issues & DM settings').setEmoji('📌').setStyle(ButtonStyle.Secondary),
     )],
   };
 }

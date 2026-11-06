@@ -44,6 +44,7 @@ export const EXTRA_SYN = {
   people: ['players', 'player', 'everyone', 'others', 'person', 'users'],
   stuck: ['frozen', 'stalled', 'hanging'],
   usage: ['using', 'consumption', 'load'],
-  lag: ['lagg'],
+  lag: ['lagg', 'slow', 'choppy', 'sluggish', 'jittery', 'delay', 'delayed', 'laggy'],
+  headset: ['headphones', 'headphone', 'earphone', 'earphones', 'earbuds', 'earbud', 'hmd'],
   texture: ['textures', 'skin', 'skins'],
 };

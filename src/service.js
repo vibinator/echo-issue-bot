@@ -1,5 +1,5 @@
 import { EmbedBuilder } from 'discord.js';
-import { decisions, events, evidence, issues, prefs, reports, watchers } from './db.js';
+import { decisions, events, evidence, issues, prefs, reports, seen, watchers } from './db.js';
 import { refreshBoard } from './board.js';
 import { kindOfFile, kindOfLink, linkName } from './evidence.js';
 import { readStored, removeReportFiles, saveFromUrl } from './evidenceStore.js';
@@ -15,7 +15,7 @@ export const MATCH_THRESHOLD = 0.25;
 
 const makeTitle = (text) => {
   const first = text.trim().split(/(?<=[.!?\n])\s/)[0].replace(/\s+/g, ' ');
-  return trunc(first, 90);
+  return trunc(first, 150);
 };
 
 /** Crashes start at High priority; developers adjust from there. */
@@ -361,6 +361,7 @@ export async function eraseUser(client, guildId, userId) {
   watchers.removeUser(guildId, userId);
   events.clearActor(userId);
   prefs.delete(userId);
+  seen.removeUser(userId);
   for (const id of touched) {
     const issue = issues.get(id);
     if (issue) await syncMessage(client, issue, issue.channel_id ?? undefined);

@@ -699,4 +699,77 @@ assert.equal(es[0].id, 1);
 assert.ok(es[0].score > 0.25 && es[1].score < 0.25, 'Spanish reports group with each other and not with unrelated ones');
 assert.ok(tokenize('Привет мир').length >= 2, 'Cyrillic words are kept');
 
+// ---- developer replies: unread marker, follow-ups, names, long titles ----
+{
+  const { seen, prefs } = await import('./db.js');
+  const { person } = await import('./render.js');
+  const gx = 'g-replies';
+  const f = fileReport({ guildId: gx, userId: 'pl1', text: 'The scoreboard freezes at the end of every round on my headset' });
+  const iss = () => issues.get(f.issue.id);
+  assert.equal(seen.unread(iss(), 'pl1'), false, 'no reply yet: nothing is unread');
+  assert.deepEqual(issues.followUps(gx), [], 'nothing is waiting on developers after a first report');
+
+  issues.setStatus(f.issue.id, 'new', null); // the bot itself (no developer) changes nothing visible to players
+  assert.equal(seen.unread(iss(), 'pl1'), false, 'automatic changes are not developer replies');
+
+  issues.setStatus(f.issue.id, 'seen', 'dev1');
+  assert.equal(seen.unread(iss(), 'pl1'), true, 'a developer status change is an unread reply');
+  assert.equal(seen.unread(iss(), 'pl2'), true, 'anyone who reported or follows it sees it as unread too');
+  seen.mark(f.issue.id, 'pl1');
+  assert.equal(seen.unread(iss(), 'pl1'), false, 'opening the issue marks the reply as read');
+  assert.equal(seen.unread(iss(), 'pl2'), true, 'other players still have it unread');
+
+  await new Promise((r) => setTimeout(r, 5));
+  issues.setNote(f.issue.id, 'Please send your output_log.txt', 'dev1');
+  assert.equal(seen.unread(iss(), 'pl1'), true, 'a developer note is a reply too');
+  seen.mark(f.issue.id, 'pl1');
+  issues.setNote(f.issue.id, null, 'dev1');
+  assert.equal(seen.unread(iss(), 'pl1'), false, 'clearing a note is not a new reply');
+
+  assert.deepEqual(issues.followUps(gx), [], 'the developers have the last word so far');
+  await new Promise((r) => setTimeout(r, 5));
+  fileReport({ guildId: gx, userId: 'pl3', text: 'The scoreboard freezes at the end of every round on my headset too' });
+  assert.deepEqual(issues.followUps(gx), [f.issue.id], 'a player writing after the last reply puts the issue back on the developers');
+  issues.setStatus(f.issue.id, 'in_progress', 'dev1');
+  assert.deepEqual(issues.followUps(gx), [], 'a new developer reply clears it');
+
+  seen.removeUser('pl1');
+  assert.equal(seen.at(f.issue.id, 'pl1'), 0, 'erasing a user removes what they had read');
+
+  assert.equal(person('nobody'), '<@nobody>', 'unknown people stay a mention');
+  prefs.setName('named1', 'Cool *Player* <@123>');
+  assert.equal(person('named1'), '**Cool Player 123**', 'a known name replaces the mention, with markup stripped');
+  prefs.delete('named1');
+  assert.equal(person('named1'), '<@named1>', 'erasing the user removes the name');
+
+  const long = 'Hello so I run an old quest 2 so maybe everything cant be all fixed but might as well report its when I unplugged my earphone jack off my headset the audio doesnt switch';
+  const t = fileReport({ guildId: 'g-title', userId: 'pl9', text: long });
+  assert.ok(t.issue.title.length > 90, 'long first sentences are no longer cut at 90 characters');
+}
+
+// ---- fuzzy matching: heavy typos and vague wording find the right issue; "something is broken" alone does not ----
+{
+  const { rankSimilar } = await import('./similarity.js');
+  const docs = [
+    { id: 1, text: 'The game crashes every time I join an Echo Arena match on Quest 3' },
+    { id: 2, text: 'My microphone is not working in voice chat, nobody can hear me' },
+    { id: 3, text: 'Huge lag and high ping in combat, rubberbanding everywhere' },
+    { id: 4, text: 'Launcher stuck at downloading game data on Quest, progress bar does not move' },
+    { id: 5, text: 'Audio does not switch to headset when I unplug the earphone jack' },
+  ];
+  const best = (q) => rankSimilar(q, docs)[0];
+  for (const [q, id] of [
+    ['gaem crahsed wen i joinn a mach', 1], ['micropone dosent wrk ppl cnat hear me', 2], ['massive lagg and hihg pnig', 3],
+    ['stuk on downlaoding gamedta', 4], ['sund wont swich to hedset', 5], // misspellings
+    ['cant talk to anyone', 2], ['game is so slow and choppy', 3], ['nothing happens, just sits there', 4], ['no sound from my headphones', 5],
+    ['everything is laggyyy', 3], ['it keeps closing on me', 1], // vague, everyday wording
+  ]) {
+    const r = best(q);
+    assert.ok(r.id === id && r.score >= 0.2, `"${q}" should find issue ${id} (got ${r.id} at ${r.score.toFixed(2)})`);
+  }
+  for (const q of ['game not working', 'something is broken with my game']) {
+    assert.ok(best(q).score < 0.2, `"${q}" says nothing specific, so it must not join an unrelated issue (${best(q).score.toFixed(2)})`);
+  }
+}
+
 console.log('All tests passed.');

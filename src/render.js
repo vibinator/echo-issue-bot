@@ -1,7 +1,7 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder,
 } from 'discord.js';
-import { evidence, issues, reports, watchers } from './db.js';
+import { evidence, issues, prefs, reports, watchers } from './db.js';
 import { relatedIssues } from './related.js';
 import { trunc } from './text.js';
 
@@ -22,10 +22,16 @@ export const PRIORITIES = {
 };
 
 
+/** A person on a card: their name when known (a raw <@id> shows as a number to anyone whose client hasn't seen them), else a mention. */
+export function person(id) {
+  const n = prefs.name(id)?.replace(/[\*_~`>|<@#:\[\]()]/g, '').trim();
+  return n ? `**${trunc(n, 32)}**` : `<@${id}>`;
+}
+
 /** The "requester" = whoever sent the first report; others who hit the same problem are counted. */
 function requesterText(issueId, stats) {
   const first = reports.earliest(issueId);
-  const who = !first ? '_unknown_' : first.user_id === '0' ? '_removed user_' : `<@${first.user_id}>`;
+  const who = !first ? '_unknown_' : first.user_id === '0' ? '_removed user_' : person(first.user_id);
   const others = Math.max(0, stats.users - 1);
   return others ? `${who} + ${others} other${others === 1 ? '' : 's'}` : who;
 }
@@ -40,8 +46,7 @@ export function renderIssue(issue, { back, viewer } = {}) {
   const st = STATUSES[issue.status] ?? STATUSES.new;
   const pr = PRIORITIES[issue.priority] ?? PRIORITIES.normal;
   const stats = reports.stats(issue.id);
-  const latest = reports.forIssue(issue.id).slice(0, 3);
-  const versions = reports.versions(issue.id);
+  const latest = reports.forIssue(issue.id).slice(0, 3);  const versions = reports.versions(issue.id);
 
   const embed = new EmbedBuilder()
     .setTitle(trunc(`${pr.emoji} #${issue.id} · ${issue.title}`, 256))
@@ -52,20 +57,23 @@ export function renderIssue(issue, { back, viewer } = {}) {
       { name: 'Type', value: issue.kind === 'install' ? '🔧 Install issue' : '🐞 Bug in game', inline: true },
       { name: 'Category', value: issue.category, inline: true },
       { name: 'Requested by', value: requesterText(issue.id, stats), inline: true },
-      { name: "Who's on it", value: issue.owner_id ? `<@${issue.owner_id}>` : '_Nobody yet_', inline: true },
+      { name: "Who's on it", value: issue.owner_id ? person(issue.owner_id) : '_Nobody yet_', inline: true },
       { name: 'Players affected', value: `${stats.users} (${stats.total} report${stats.total === 1 ? '' : 's'})`, inline: true },
     )
     .setTimestamp(issue.updated_at);
 
-  if (versions.length) embed.addFields({ name: 'Game versions', value: trunc(versions.map((v) => `\`${v}\``).join(', '), 1024), inline: true });
+  if (versions.length) embed.addFields({ name: 'Game versions', value: trunc(versions.map((v) => `\`${v}\``).join(', '), 300), inline: true });
 
   if (latest.length) {
-    embed.addFields({
-      name: 'Latest reports',
-      value: trunc(latest.map((r) => {
-        const meta = [r.platform, r.version].filter(Boolean).map((x) => trunc(x, 30)).join(' · ');
-        return `• ${r.user_id === '0' ? '_removed user_' : `<@${r.user_id}>`}${meta ? ` _(${meta})_` : ''}${r.edited_at ? ' ✏️' : ''}: ${trunc(r.text.replace(/\s+/g, ' '), 180)}`;
-      }).join('\n'), 1024),
+    // One field per report so each can show (nearly) its full text instead of a short preview.
+    latest.forEach((r, n) => {
+      const meta = [r.platform, r.version].filter(Boolean).map((x) => trunc(x, 30)).join(' · ');
+      const who = `${r.user_id === '0' ? '_removed user_' : person(r.user_id)}${meta ? ` _(${meta})_` : ''}${r.edited_at ? ' ✏️' : ''}`;
+      embed.addFields({
+        name: n === 0 ? 'Latest reports' : '​',
+        value: `• ${who}:\n${trunc(r.text.trim(), 1024 - who.length - 4)}`,
+        inline: false,
+      });
     });
   }
   // Attachments are private: this public card only says how many there are, never what or where they are.
@@ -77,7 +85,7 @@ export function renderIssue(issue, { back, viewer } = {}) {
   if (related.length) {
     embed.addFields({
       name: '🔗 Possibly related',
-      value: trunc(related.map((r) => `• **#${r.id}** ${trunc(r.title, 60)} (${(STATUSES[r.status] ?? STATUSES.new).label})`).join('\n'), 1024),
+      value: trunc(related.map((r) => `• **#${r.id}** ${trunc(r.title, 60)} (${(STATUSES[r.status] ?? STATUSES.new).label})`).join('\n'), 600),
     });
   }
   if (issue.dev_note) embed.addFields({ name: '💬 Developer note', value: trunc(issue.dev_note, 1024) });

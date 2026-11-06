@@ -16,12 +16,13 @@ Per server, in a database on the operator's own hardware:
 | Timestamps; whether a report was edited | to show history |
 | Issues you **follow** | to DM you when they change |
 | Your **DM preference** | so you can turn DMs off |
+| Your **display name** | shown on issue cards instead of a numeric ID; deleted with your data |
 | Each issue's status history and which developer made changes | to show progress and for developer coordination |
 
 The bot does **not** read general messages in the server. It only receives the forms, buttons and menus people use and the `/setup` command. It does not request any privileged Discord intents.
 
 ## How the data is used
-Only to run the issue tracker: group similar reports (word-similarity run locally), suggest known fixes, show developers a board and weekly summary, show you the progress of your reports, and **send you a direct message when an issue you reported or follow changes status**. You can turn those DMs off (My reports → Turn DMs off). The bot sends no advertising and no unrelated messages.
+Only to run the issue tracker: group similar reports (word-similarity run locally), suggest known fixes, show developers a board and weekly summary, show you the progress of your reports, and **send you a direct message when an issue you reported or follow changes status or gets a developer note**. You can turn those DMs off (My issues → Turn DMs off). The bot sends no advertising and no unrelated messages.
 
 The data is **not sold, shared with third parties, used for advertising, or used to train AI models**. No third-party analytics are used.
 
@@ -35,8 +36,8 @@ The data is **not sold, shared with third parties, used for advertising, or used
 The database is backed up daily on the operator's hardware (newest 14 backups kept). Uploaded files live in the bot's data folder (`data/evidence`) and are deleted together with their report. Data is kept until you erase it, a developer deletes it, or – if the operator enabled it with `/setup retention_days` – closed issues are deleted after that many days without activity. Erased data can remain in backups until those rotate out (up to 14 days).
 
 ## Your choices and rights
-- **Edit, add to, or withdraw** your reports: panel → **My reports**.
-- **Turn DMs off**: **My reports** → **Turn DMs off**.
+- **Edit, add to, or withdraw** your reports: panel → **My issues**.
+- **Turn DMs off**: **My issues** → **Turn DMs off**.
 - **Delete all my data**: panel → **Data & privacy** → **Delete my data**. This deletes your reports, the files you uploaded, your follows and settings. If yours is the only report on an issue developers have already worked on, the issue stays but your details are removed. Messages you wrote yourself in an issue thread, and DMs already sent, are separate Discord messages: ask a moderator to remove thread messages.
 - Ask the operator for a copy of your data or to delete it, using the contact above.
 - If you remove your account from Discord, ask the operator to delete your data; the bot cannot tell when an account has been closed.

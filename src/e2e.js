@@ -187,7 +187,7 @@ let aliceIssueId; let aliceReportId;
   const card = cardOf(issue.id);
   check(buttonsOf(card.payload).some((c) => c.custom_id === `status:${issue.id}`), 'the issue opens as a card with its controls');
   const cardText = textOf(card.payload);
-  check(/Requested by[\s\S]*<@alice>/.test(cardText), 'the card names the requester');
+  check(/Requested by[\s\S]*(?:<@alice>|\*\*[^*]+\*\*)/.test(cardText), 'the card names the requester');
   check(!/youtu\.be|crash log/.test(cardText), 'the public card does not reveal attachment names or links');
   check(/2 attached/.test(cardText), 'the public card only counts the attachments');
   check(existsSync(join(process.env.EVIDENCE_DIR, String(aliceReportId))), 'the uploaded file was saved privately on disk');
@@ -207,7 +207,7 @@ let bobReportId; let bobR;
   check(btns.includes('Yes, same problem') && btns.includes('Make it a separate issue'), '…offering to keep it or separate it');
   check(db.issues.list('G').length === 1, 'no duplicate issue was created');
   bobReportId = db.reports.forIssue(aliceIssueId).find((x) => x.user_id === 'bob')?.id;
-  check(/<@alice> \+ 1 other/.test(textOf(cardOf(aliceIssueId).payload)), 'the card still names alice as requester, "+ 1 other"');
+  check(/(?:<@alice>|\*\*[^*]+\*\*) \+ 1 other/.test(textOf(cardOf(aliceIssueId).payload)), 'the card still names alice as requester, "+ 1 other"');
   check(issuesCh.threadsList.length === 0, 'still no thread');
 
   let r = await press(bob, bobR.screen, `keep:${bobReportId}`);
@@ -253,11 +253,11 @@ console.log('6. attachment privacy');
   check(r.i.responses[0].type === 'deferReply', 'My attachments also answers first');
 }
 
-// ================================================================= 7. My reports
-console.log('7. My reports');
+// ================================================================= 7. My issues
+console.log('7. My issues');
 {
   let r = await press(alice, panelScreen, 'mine');
-  check(buttonsOf(r.out.payload).some((c) => c.custom_id === 'mine_view'), 'My reports lists alice\'s report');
+  check(buttonsOf(r.out.payload).some((c) => c.custom_id === 'mine_view'), 'My issues lists alice\'s report');
   check(buttonsOf(r.out.payload).some((c) => c.custom_id === 'dm:toggle'), '…with the update-messages switch');
   let s = await choose(alice, r.screen, 'mine_view', [String(aliceIssueId)]);
   const lab = labelsOf(s.out.payload);

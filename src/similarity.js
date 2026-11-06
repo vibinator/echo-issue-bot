@@ -60,11 +60,26 @@ const PHRASES = [
   [/\bnot\s+(?:playing|doing anything|in use|using it)\b|\bwhen\s+(?:i\s*m\s+)?(?:idle|doing nothing)\b|\beven when\b[^.]{0,20}\bnot\b/g, ' idle '],
   [/\b(?:cuts?|drops?|dropping|cutting|goes?)\s+out\b/g, ' dropout '],
   [/\bload(?:s|ing|ed)?\s+(?:in|into|onto)\b/g, ' join '],
+  // vague, everyday ways of describing a problem
+  [/\b(?:can ?t|cannot|unable to)\s+(?:talk|speak)\b|\b(?:no ?one|nobody|people|everyone|others|friends?)\s+(?:can ?t |cannot |does ?n ?t |do ?n ?t |can )?hears? me\b|\b(?:can ?t|cannot)\s+be heard\b/g, ' mic '],
+  [/\bnothing\s+(?:happens|happened|works)\b|\bsits?\s+there\b|\bdoes ?n ?t\s+do\s+anything\b|\bdoes nothing\b|\bjust\s+sits\b|\bnever\s+(?:finishes|ends|completes)\b/g, ' stuck '],
+  [/\bno\s+(?:sound|audio)\b|\b(?:can ?t|cannot)\s+hear\s+(?:anything|the game|game)\b/g, ' sound broken '],
 ];
+
+// Short or very common words that the edit-distance spell-checker is too careful to touch.
+const SLANG = {
+  wen: 'when', whn: 'when', ppl: 'people', peeps: 'people', gaem: 'game', gmae: 'game', wrk: 'work', wrks: 'works', wrking: 'working',
+  dosent: 'doesn t', dosnt: 'doesn t', doesent: 'doesn t', cnat: 'can t', abt: 'about', bcuz: 'because', becuz: 'because', cuz: 'because',
+  sund: 'sound', sounnd: 'sound', hedset: 'headset', headest: 'headset', hedphones: 'headphones', thx: 'thanks', ur: 'your',
+  crashd: 'crashed', crsh: 'crash', lagy: 'laggy', swich: 'switch', swtich: 'switch', downlaod: 'download', dwnload: 'download',
+  brokn: 'broken', brokin: 'broken', borked: 'broken', bugged: 'broken', glitchy: 'broken', glitched: 'broken',
+};
+const SLANG_RE = new RegExp(`\\b(${Object.keys(SLANG).join('|')})\\b`, 'g');
 
 /** Lower-case, remove apostrophes ("doesn't" -> "doesnt"), then collapse known phrases. */
 function normalize(text) {
   let t = text.toLowerCase().replace(/['’`]/g, '');
+  t = t.replace(/(\p{L})\1{2,}/gu, '$1').replace(SLANG_RE, (m) => SLANG[m]); // "laaag" -> "lag"; "wen"/"ppl"/"dosent" -> real words
   t = t.replace(/\b(wont|doesnt|dont|didnt|cant|couldnt|isnt|arent|wasnt)\b/g, (m) => ({ wont: 'wo n t', doesnt: 'doesn t', dont: 'don t', didnt: 'didn t', cant: 'can t', couldnt: 'couldn t', isnt: 'isn t', arent: 'aren t', wasnt: 'wasn t' }[m]));
   for (const [re, to] of PHRASES) t = t.replace(re, to);
   return t;
@@ -168,6 +183,10 @@ function unigrams(text) {
   return out;
 }
 
+// Words that say "something is wrong" without saying what. Sharing only these must not make two reports look alike.
+const GENERIC = new Set(['broken', 'issue', 'bug', 'wrong', 'weird', 'bad', 'thing', 'stuff', 'work', 'working', 'fix', 'glitch', 'strange', 'annoying', 'terrible', 'again']);
+const isGeneric = (t) => t.split('_').some((p) => GENERIC.has(p));
+
 const withBigrams = (uni) => {
   const out = [...uni];
   for (let i = 0; i < uni.length - 1; i++) out.push(`${uni[i]}_${uni[i + 1]}`);
@@ -183,7 +202,7 @@ function vectorize(tokens, idf) {
   let norm = 0;
   for (const [t, c] of tf) {
     const bigramPenalty = t.includes('_') ? 0.5 : 1;
-    const w = (1 + Math.log(c)) * (idf.get(t) ?? 1) * bigramPenalty;
+    const w = (1 + Math.log(c)) * (idf.get(t) ?? 1) * bigramPenalty * (isGeneric(t) ? 0.3 : 1);
     v.set(t, w);
     norm += w * w;
   }
@@ -251,7 +270,11 @@ export function rankSimilar(query, docs) {
   const docVocab = new Set(docUni.flat());
   let docBuckets = null; // only built if the query actually contains a word that needs checking
   const qUni = unigrams(query).map((t) => (KNOWN.has(t) || docVocab.has(t) ? t : fuzzyMap(t, docVocab, (docBuckets ??= bucketize(docVocab)))));
-  const docTokens = docUni.map(withBigrams);
+  // ...and the other way round: a typo inside an existing issue is snapped to the word the query uses.
+  const qVocab = new Set(qUni);
+  let qBuckets = null;
+  const docUniFixed = docUni.map((u) => u.map((t) => (KNOWN.has(t) || qVocab.has(t) ? t : fuzzyMap(t, qVocab, (qBuckets ??= bucketize(qVocab))))));
+  const docTokens = docUniFixed.map(withBigrams);
   const qTokens = withBigrams(qUni);
   const df = new Map();
   for (const toks of [...docTokens, qTokens]) for (const t of new Set(toks)) df.set(t, (df.get(t) ?? 0) + 1);

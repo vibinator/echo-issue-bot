@@ -125,6 +125,9 @@ addColumn('settings', 'status_role_id', 'TEXT');
 addColumn('settings', 'board_channel_id', 'TEXT');
 addColumn('settings', 'board_message_id', 'TEXT');
 addColumn('reports', 'edited_at', 'INTEGER');
+addColumn('issues', 'dev_replied_at', 'INTEGER'); // when a developer last changed the status or wrote a note: drives the "new reply" marker in My issues
+addColumn('user_prefs', 'display_name', 'TEXT'); // shown instead of a raw <@id> on cards; erased with the user's data
+db.exec('CREATE TABLE IF NOT EXISTS issue_seen (issue_id INTEGER NOT NULL, user_id TEXT NOT NULL, seen_at INTEGER NOT NULL, PRIMARY KEY (issue_id, user_id))');
 addColumn('evidence', 'path', 'TEXT'); // uploaded files live in the private evidence folder; this is their relative path
 addColumn('settings', 'article_role_id', 'TEXT');    // can manage knowledge articles without being a full developer
 addColumn('settings', 'panel_channel_id', 'TEXT');   // the one public control-panel message
@@ -191,8 +194,8 @@ export const issues = {
      FROM issues i LEFT JOIN reports r ON r.issue_id = i.id AND r.id != ? WHERE i.guild_id = ? AND (? IS NULL OR i.kind = ?) GROUP BY i.id`
   ).all(reportId, guild, kind, kind),
   setStatus: (id, status, userId, fixedVersion) => {
-    db.prepare('UPDATE issues SET status = ?, handled_by = COALESCE(?, handled_by), updated_at = ? WHERE id = ?')
-      .run(status, userId, now(), id);
+    db.prepare('UPDATE issues SET status = ?, handled_by = COALESCE(?, handled_by), updated_at = ?, dev_replied_at = CASE WHEN ? IS NULL THEN dev_replied_at ELSE ? END WHERE id = ?')
+      .run(status, userId, now(), userId, now(), id);
     if (status === 'fixed') {
       db.prepare('UPDATE issues SET fixed_at = ?, fixed_version = COALESCE(?, fixed_version) WHERE id = ?')
         .run(now(), fixedVersion || null, id);
@@ -201,8 +204,13 @@ export const issues = {
   setPriority: (id, p, userId) => db.prepare('UPDATE issues SET priority = ?, handled_by = ?, updated_at = ? WHERE id = ?').run(p, userId, now(), id),
   setOwner: (id, owner) => db.prepare('UPDATE issues SET owner_id = ?, updated_at = ? WHERE id = ?').run(owner, now(), id),
   setNote: (id, note, userId) => db.prepare(
-    'UPDATE issues SET dev_note = ?, handled_by = ?, updated_at = ? WHERE id = ?'
-  ).run(note, userId, now(), id),
+    'UPDATE issues SET dev_note = ?, handled_by = ?, updated_at = ?, dev_replied_at = CASE WHEN ? IS NULL THEN dev_replied_at ELSE ? END WHERE id = ?'
+  ).run(note, userId, now(), note, now(), id),
+  /** Open issues where a player wrote or edited a report after the developers' last reply (so it is waiting on them again). */
+  followUps: (guild) => db.prepare(
+    `SELECT i.id FROM issues i WHERE i.guild_id = ? AND i.status IN ('seen', 'in_progress', 'cannot_reproduce') AND i.dev_replied_at IS NOT NULL
+     AND (SELECT MAX(MAX(r.created_at, COALESCE(r.edited_at, 0))) FROM reports r WHERE r.issue_id = i.id) > i.dev_replied_at`
+  ).all(guild).map((r) => r.id),
   setMessage: (id, channel, message) => db.prepare('UPDATE issues SET channel_id = ?, message_id = ? WHERE id = ?').run(channel, message, id),
   setTitle: (id, title) => db.prepare('UPDATE issues SET title = ? WHERE id = ?').run(title, id),
   /** Closed issues with no activity since `ts` (for the optional retention clean-up). */
@@ -218,6 +226,7 @@ export const issues = {
     db.prepare('DELETE FROM evidence WHERE issue_id = ?').run(id);
     db.prepare('DELETE FROM watchers WHERE issue_id = ?').run(id);
     db.prepare('DELETE FROM events WHERE issue_id = ?').run(id);
+    db.prepare('DELETE FROM issue_seen WHERE issue_id = ?').run(id);
     db.prepare('DELETE FROM issues WHERE id = ?').run(id);
   },
 };
@@ -291,6 +300,15 @@ export const watchers = {
     db.prepare('INSERT OR IGNORE INTO watchers (issue_id, user_id) SELECT ?, user_id FROM watchers WHERE issue_id = ?').run(to, from);
     db.prepare('DELETE FROM watchers WHERE issue_id = ?').run(from);
   },
+};
+
+/** When each player last opened an issue in My issues, so a newer developer reply can be flagged as unread. */
+export const seen = {
+  mark: (issueId, userId) => db.prepare('INSERT OR REPLACE INTO issue_seen (issue_id, user_id, seen_at) VALUES (?, ?, ?)').run(issueId, userId, now()),
+  at: (issueId, userId) => db.prepare('SELECT seen_at FROM issue_seen WHERE issue_id = ? AND user_id = ?').get(issueId, userId)?.seen_at ?? 0,
+  removeUser: (userId) => db.prepare('DELETE FROM issue_seen WHERE user_id = ?').run(userId),
+  /** True when a developer replied to this issue after the player last opened it. */
+  unread: (issue, userId) => !!issue.dev_replied_at && issue.dev_replied_at > seen.at(issue.id, userId),
 };
 
 /** Timeline of what happened to an issue (created, status/priority/owner changes, merges, reopenings). */
@@ -392,6 +410,10 @@ export const prefs = {
     'INSERT INTO user_prefs (user_id, dm_off) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET dm_off = excluded.dm_off'
   ).run(userId, off ? 1 : 0),
   delete: (userId) => db.prepare('DELETE FROM user_prefs WHERE user_id = ?').run(userId),
+  name: (userId) => db.prepare('SELECT display_name FROM user_prefs WHERE user_id = ?').get(userId)?.display_name ?? null,
+  setName: (userId, name) => db.prepare(
+    'INSERT INTO user_prefs (user_id, display_name) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name'
+  ).run(userId, name),
 };
 
 const STAT_FIELDS = ['shown', 'helped', 'denied', 'filed'];

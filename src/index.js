@@ -3,10 +3,10 @@ import {
   EmbedBuilder, FileUploadBuilder, GatewayIntentBits, LabelBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder,
   StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
 } from 'discord.js';
-import { articles, restoreArticles, db, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, settings, summary, watchers } from './db.js';
+import { articles, restoreArticles, db, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, seen, settings, summary, watchers } from './db.js';
 import { erasePayload, privacyPayload, termsPayload } from './legal.js';
 import { CATEGORIES } from './categories.js';
-import { PRIORITIES, STATUSES, renderIssue } from './render.js';
+import { PRIORITIES, STATUSES, person, renderIssue } from './render.js';
 import { relatedIssues } from './related.js';
 import { extractLinks, KIND_EMOJI } from './evidence.js';
 import { errorMessage, explainError, fileFailureReason } from './errors.js';
@@ -159,7 +159,9 @@ function attention(guildId) {
   const fresh = list.filter((x) => x.status === 'new').length;
   const stale = list.filter((x) => (x.status === 'seen' || x.status === 'in_progress') && x.updated_at < staleBefore).length;
   const urgent = list.filter((x) => ['new', 'seen', 'in_progress'].includes(x.status) && ['critical', 'high'].includes(x.priority)).length;
-  return { fresh, stale, urgent, total: fresh + stale, days: cfgOf(guildId).stale_days };
+  const staleIds = new Set(list.filter((x) => (x.status === 'seen' || x.status === 'in_progress') && x.updated_at < staleBefore).map((x) => x.id));
+  const followups = issues.followUps(guildId).filter((id) => !staleIds.has(id)).length; // a player wrote again after the last developer reply
+  return { fresh, stale, urgent, followups, total: fresh + stale + followups, days: cfgOf(guildId).stale_days };
 }
 
 /** Redraw the public panel so its Developer button shows the current count. Debounced: a burst of reports edits it once. */
@@ -217,7 +219,7 @@ function panelPayload(guildId) {
       `• **${answered}** answered by a developer`,
       `• **${working}** being worked on`,
       '',
-      '📌 **My reports** – follow your reports, add details, and turn update messages on or off.',
+      '📌 **My issues** – follow your reports, see developer replies (marked 🔴 until you read them), add details, and turn update messages on or off.',
       '',
       '📚 **Knowledge articles** – quick fixes players see before sending a report.',
       `• **${KB.length}** built-in answers`,
@@ -228,7 +230,7 @@ function panelPayload(guildId) {
   return {
     embeds: [embed],
     components: [
-      row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Known issues', '📋'), btn('mine', 'My reports', '📌'),
+      row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Known issues', '📋'), btn('mine', 'My issues', '📌'),
         btn('legal:privacy', 'Data & privacy', '🔒'), btn('legal:terms', 'Terms of use', '📜')),
       row(todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️'), btn('dev:articles', 'Knowledge articles', '📚')),
     ],
@@ -238,7 +240,7 @@ function panelPayload(guildId) {
 /** Everything developers need, one hidden menu behind a single button on the panel. */
 function devMenuPayload(guildId) {
   const a = guildId ? attention(guildId) : null;
-  const parts = a ? [a.fresh && `🆕 **${a.fresh}** new issue${a.fresh === 1 ? '' : 's'} nobody has looked at`, a.stale && `⏳ **${a.stale}** quiet for ${a.days}+ days`, a.urgent && `🔴 **${a.urgent}** open with high or critical priority`].filter(Boolean) : [];
+  const parts = a ? [a.fresh && `🆕 **${a.fresh}** new issue${a.fresh === 1 ? '' : 's'} nobody has looked at`, a.stale && `⏳ **${a.stale}** quiet for ${a.days}+ days`, a.followups && `💬 **${a.followups}** where a player wrote again after your last reply`, a.urgent && `🔴 **${a.urgent}** open with high or critical priority`].filter(Boolean) : [];
   return {
     content: `**🛠️ Developer menu** · bot ${versionLabel()} – only you can see this.\n${parts.length ? `⚠️ **Needs attention:** ${parts.join(' · ')}` : '✅ Nothing needs attention right now.'}`,
     embeds: [],
@@ -582,7 +584,7 @@ async function doMerge(i, from, into) {
 const STATUS_DM = {
   in_progress: (t) => `🛠️ The developers have started working on **${t}**.`,
   fixed: (t) => `✅ Good news – **${t}** is now fixed!`,
-  cannot_reproduce: (t) => `❓ The developers couldn't make **${t}** happen on their side. More details can help: open **My reports** on the panel, then choose **Edit report** or **Add evidence**.`,
+  cannot_reproduce: (t) => `❓ The developers couldn't make **${t}** happen on their side. More details can help: open **My issues** on the panel, then choose **Edit report** or **Add evidence**.`,
   wont_fix: (t) => `🚫 The developers have decided not to fix **${t}**.`,
 };
 
@@ -591,7 +593,7 @@ async function tellMerged(into, userIds) {
   if (!STATUS_DM[into.status] || !userIds.length) return;
   const update = into.status === 'fixed' && into.fixed_version ? `\nUpdate to version \`${into.fixed_version}\` (or newer) to get the fix.` : '';
   const devNote = into.dev_note ? `\n> ${into.dev_note}` : '';
-  await notifyReporters(client, into, `🔀 Your report was merged into #${into.id}, which is already known.\n${STATUS_DM[into.status](`#${into.id} – ${trunc(into.title, 120)}`)}${update}${devNote}\n_You can turn these messages off under **My reports**._`, userIds).catch(() => {});
+  await notifyReporters(client, into, `🔀 Your report was merged into #${into.id}, which is already known.\n${STATUS_DM[into.status](`#${into.id} – ${trunc(into.title, 120)}`)}${update}${devNote}\n_You can turn these messages off under **My issues**._`, userIds).catch(() => {});
 }
 
 async function applyStatus(i, issue, status,{ version, note } = {}) {
@@ -608,7 +610,7 @@ async function applyStatus(i, issue, status,{ version, note } = {}) {
     if (STATUS_DM[status]) {
       const update = status === 'fixed' && fresh.fixed_version ? `\nUpdate to version \`${fresh.fixed_version}\` (or newer) to get the fix.` : '';
       const devNote = fresh.dev_note ? `\n> ${fresh.dev_note}` : '';
-      notifyReporters(client, fresh, `${STATUS_DM[status](`#${fresh.id} – ${trunc(fresh.title, 120)}`)}${update}${devNote}\n_You can turn these messages off under **My reports**._`).catch(() => {});
+      notifyReporters(client, fresh, `${STATUS_DM[status](`#${fresh.id} – ${trunc(fresh.title, 120)}`)}${update}${devNote}\n_You can turn these messages off under **My issues**._`).catch(() => {});
     }
     if (status === 'fixed') {
       await postChangelog(client, fresh, cfgOf(i.guildId).changelog_channel_id);
@@ -635,7 +637,7 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
   refreshPanel(i.guildId);
   const where = fresh.channel_id ? ` You can follow the discussion in <#${fresh.channel_id}>.` : '';
   const evidenceLine = (saved ? `\n📎 Saved ${countLine(saved)} with your report – only you and the developers can see them.` : '') + failNote(ev);
-  const next = '\nYou\'ll get a message when its status changes. See everything under **My reports**.';
+  const next = '\nYou\'ll get a message when its status changes. See everything under **My issues**.';
 
   if (res.created) {
     return {
@@ -684,18 +686,20 @@ function minePayload(i) {
   for (const r of reports.byUser(i.guildId, i.user.id)) if (!tags.has(r.issue_id)) tags.set(r.issue_id, '📝 Your report');
   for (const id of watchers.forUser(i.guildId, i.user.id)) if (!tags.has(id)) tags.set(id, '🔔 Following');
   const list = [...tags].map(([id, tag]) => ({ it: issues.get(id), tag })).filter((x) => x.it)
-    .sort((a, b) => b.it.updated_at - a.it.updated_at).slice(0, 25);
+    .map((x) => ({ ...x, unread: seen.unread(x.it, i.user.id) }))
+    .sort((a, b) => (b.unread - a.unread) || (b.it.updated_at - a.it.updated_at)).slice(0, 25);
+  const unread = list.filter((x) => x.unread).length;
   const dmOff = prefs.dmOff(i.user.id);
   const dmRow = row(btn('dm:toggle', dmOff ? 'Turn update messages on' : 'Turn update messages off', dmOff ? '🔔' : '🔕'), btn('legal:privacy', 'Data & privacy', '🔒'));
   if (!list.length) {
     return { content: "You haven't sent or followed any reports yet. Press **Report a problem** on the panel, or 🔔 **Follow** on any issue to get updates.", embeds: [], components: [dmRow] };
   }
   return {
-    content: `**📌 My reports** (${list.length}) – pick one to see how it's going, add details or edit it.\nUpdate messages: **${dmOff ? 'off 🔕' : 'on 🔔'}** – use the button below to change this.`,
+    content: `**📌 My issues** (${list.length}) – pick one to see how it's going, add details or edit it.${unread ? `\n🔴 **${unread}** ${unread === 1 ? 'has' : 'have'} a new reply from the developers – marked below.` : ''}\nUpdate messages: **${dmOff ? 'off 🔕' : 'on 🔔'}** – use the button below to change this.`,
     embeds: [],
-    components: [row(new StringSelectMenuBuilder().setCustomId('mine_view').setPlaceholder('Open one…').addOptions(list.map(({ it, tag }) => ({
-      label: trunc(`#${it.id} ${it.title}`, 100),
-      description: trunc(`${tag} · ${STATUSES[it.status]?.label} · ${(PRIORITIES[it.priority] ?? PRIORITIES.normal).label}`, 100),
+    components: [row(new StringSelectMenuBuilder().setCustomId('mine_view').setPlaceholder('Open one…').addOptions(list.map(({ it, tag, unread: isNew }) => ({
+      label: trunc(`${isNew ? '🔴 ' : ''}#${it.id} ${it.title}`, 100),
+      description: trunc(`${isNew ? 'New developer reply · ' : ''}${tag} · ${STATUSES[it.status]?.label} · ${(PRIORITIES[it.priority] ?? PRIORITIES.normal).label}`, 100),
       emoji: STATUSES[it.status]?.emoji,
       value: String(it.id),
     })))), dmRow],
@@ -704,6 +708,7 @@ function minePayload(i) {
 
 /** Personal progress card for one issue: status, your report, timeline, and the edit / re-check / withdraw buttons. */
 function trackPayload(i, issue) {
+  seen.mark(issue.id, i.user.id); // opening the card counts as reading the developers' latest reply
   const st = STATUSES[issue.status] ?? STATUSES.new;
   const pr = PRIORITIES[issue.priority] ?? PRIORITIES.normal;
   const mine = reports.latestByUser(issue.id, i.user.id);
@@ -713,7 +718,7 @@ function trackPayload(i, issue) {
     .addFields(
       { name: 'Status', value: `${st.emoji} ${st.label}${issue.status === 'fixed' && issue.fixed_version ? ` in \`${issue.fixed_version}\`` : ''}`, inline: true },
       { name: 'Priority', value: `${pr.emoji} ${pr.label}`, inline: true },
-      { name: "Who's on it", value: issue.owner_id ? `<@${issue.owner_id}>` : '_nobody yet_', inline: true },
+      { name: "Who's on it", value: issue.owner_id ? person(issue.owner_id) : '_nobody yet_', inline: true },
       { name: 'Players affected', value: String(stats.users), inline: true },
     );
   if (mine) {
@@ -936,7 +941,16 @@ async function failInteraction(i, err) {
   } catch { /* could not even tell them – already logged above */ }
 }
 
+const knownNames = new Map(); // userId -> the name last saved, so the database is only written when a name changes
+function rememberName(i) {
+  const name = (i.member?.displayName ?? i.user?.globalName ?? i.user?.username ?? '').toString().trim().slice(0, 40);
+  if (!name || !i.user?.id || knownNames.get(i.user.id) === name) return;
+  knownNames.set(i.user.id, name);
+  try { prefs.setName(i.user.id, name); } catch (e) { console.error(`Could not save a display name: ${e.message}`); }
+}
+
 async function handleInteraction(i) {
+  rememberName(i);
   try {
     if (!i.guildId) { // used in a private message: the bot only works inside a server
       if (i.isRepliable?.() ?? true) await i.reply({ content: 'This only works inside a server, not in private messages.', flags: EPH });
@@ -1099,7 +1113,7 @@ async function handleInteraction(i) {
       if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
       const issue = issues.get(report.issue_id);
       return i.update({
-        content: `👍 Great – your report stays with **#${issue.id} – ${trunc(issue.title, 80)}**. You'll get a message when its status changes. (Changed your mind? Open **My reports** and choose **Make it a separate issue**.)`,
+        content: `👍 Great – your report stays with **#${issue.id} – ${trunc(issue.title, 80)}**. You'll get a message when its status changes. (Changed your mind? Open **My issues** and choose **Make it a separate issue**.)`,
         embeds: [], components: [],
       });
     }
@@ -1202,7 +1216,7 @@ async function handleInteraction(i) {
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
       if (!canReport(i)) return noReportAccess(i);
-      if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You\'ve already added your report to this issue. 👍 To add more, use **My reports** → **Edit my report** or **Add screenshots / logs**.', flags: EPH });
+      if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You\'ve already added your report to this issue. 👍 To add more, use **My issues** → **Edit my report** or **Add screenshots / logs**.', flags: EPH });
       const wait = cooldownLeft(i);
       return wait ? i.reply(waitMsg(wait)) : i.showModal(meTooModal(issue));
     }
@@ -1224,7 +1238,7 @@ async function handleInteraction(i) {
         await threadSay(client, issue, `⚠️ Reopened by another report${issue.fixed_version ? ` (it was fixed in \`${issue.fixed_version}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
       } else issues.touch(issue.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
-      return i.editReply({ content: `✅ **Thanks – your report was added to #${issue.id}.**${saved ? `\n📎 Saved ${countLine(saved)} with it – only you and the developers can see them.` : ''}${failNote(ev)}\nYou'll get a message when its status changes. See everything under **My reports**.` });
+      return i.editReply({ content: `✅ **Thanks – your report was added to #${issue.id}.**${saved ? `\n📎 Saved ${countLine(saved)} with it – only you and the developers can see them.` : ''}${failNote(ev)}\nYou'll get a message when its status changes. See everything under **My issues**.` });
     }
 
     // ----- issue message: dev note -----
@@ -1238,8 +1252,16 @@ async function handleInteraction(i) {
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
       await i.deferReply({ flags: EPH });
-      issues.setNote(issue.id, i.fields.getTextInputValue('text').trim() || null, i.user.id);
+      const noteText = i.fields.getTextInputValue('text').trim() || null;
+      const noteChanged = noteText && noteText !== issue.dev_note;
+      issues.setNote(issue.id, noteText, i.user.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
+      if (noteChanged) { // a note is a reply too: tell the players, not only when the status moves
+        notifyReporters(client, issues.get(issue.id), `💬 The developers left a note on **#${issue.id} – ${trunc(issue.title, 120)}**:
+> ${trunc(noteText, 900)}
+_You can turn these messages off under **My issues**._`).catch(() => {});
+        refreshPanel(i.guildId);
+      }
       return i.editReply({ content: `Note saved on #${issue.id}.` });
     }
 
@@ -1375,7 +1397,7 @@ async function handleInteraction(i) {
         return i.reply({ content: `🔕 You've stopped following **#${issue.id}**.`, flags: EPH });
       }
       watchers.add(issue.id, i.user.id);
-      return i.reply({ content: `🔔 You're now following **#${issue.id}** – you'll get a message when its status changes. You can find everything you follow under **My reports**.`, flags: EPH });
+      return i.reply({ content: `🔔 You're now following **#${issue.id}** – you'll get a message when its status changes. You can find everything you follow under **My issues**.`, flags: EPH });
     }
     if (i.isButton() && id.startsWith('history:')) {
       const issue = await loadIssue(i, idOf(i));
@@ -1386,7 +1408,7 @@ async function handleInteraction(i) {
       });
     }
 
-    // edit my report / add evidence – from the issue message (find my latest report) or from My reports (report id)
+    // edit my report / add evidence – from the issue message (find my latest report) or from My issues (report id)
     if (i.isButton() && (id.startsWith('editmine:') || id.startsWith('addev:'))) {
       if (!canReport(i)) return noReportAccess(i);
       const issue = await loadIssue(i, idOf(i));
@@ -1410,7 +1432,7 @@ async function handleInteraction(i) {
       const report = reports.get(idOf(i));
       if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
       if (!canReport(i)) return noReportAccess(i);
-      await deferHidden(i); // replaces the "My reports" card in place when opened from there
+      await deferHidden(i); // replaces the "My issues" card in place when opened from there
       const editing = id.startsWith('edit:');
       if (editing) {
         reports.update(report.id, {
