@@ -188,7 +188,8 @@ function panelPayload(guildId) {
   const todo = guildId ? attention(guildId).total : 0;
   const open = guildId ? issues.list(guildId) : [];
   const waiting = open.filter((x) => x.status === 'new').length;
-  const answered = open.filter((x) => x.status === 'seen' || x.status === 'in_progress').length;
+  const answered = open.filter((x) => x.status === 'seen').length;
+  const working = open.filter((x) => x.status === 'in_progress').length;
   const kbCount = guildId ? articles.list(guildId).filter((a) => !a.draft).length : 0;
   const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('Echo VR – Problem Tracker').setFooter({ text: `Bot ${versionLabel()}` })
     .setDescription([
@@ -197,7 +198,8 @@ function panelPayload(guildId) {
       '📝 **Report a problem** – we\'ll first show quick fixes for common problems. If none help, you can send a report.',
       '📋 **Known issues** – see what has already been reported and how it\'s going.',
       `- ⏳ **${waiting}** waiting for a developer reply`,
-      `- 💬 **${answered}** answered, still being worked on`,
+      `- 💬 **${answered}** answered by a developer`,
+      `- 🛠️ **${working}** being worked on`,
       '📌 **My reports** – follow your reports, add details, and turn update messages on or off.',
       '📚 **Knowledge articles** – quick fixes players see before sending a report.',
       `- 🧰 **${KB.length}** built-in answers`,
