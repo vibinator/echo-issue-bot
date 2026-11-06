@@ -129,10 +129,12 @@ addColumn('evidence', 'path', 'TEXT'); // uploaded files live in the private evi
 addColumn('settings', 'article_role_id', 'TEXT');    // can manage knowledge articles without being a full developer
 addColumn('settings', 'panel_channel_id', 'TEXT');   // the one public control-panel message
 addColumn('settings', 'panel_message_id', 'TEXT');
+addColumn('settings', 'auto_merge', 'INTEGER NOT NULL DEFAULT 0'); // 1 = merge near-identical open issues automatically
+addColumn('issues', 'thread_archived', 'INTEGER NOT NULL DEFAULT 0'); // 1 = the bot archived this fixed issue's thread
 addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = keep closed issues until deleted by hand
 
 const now = () => Date.now();
-const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'article_role_id', 'panel_channel_id', 'panel_message_id'];
+const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'article_role_id', 'panel_channel_id', 'panel_message_id', 'auto_merge'];
 
 /** What is stored for a server – shown after /setup so you can see nothing was lost. */
 export const summary = (guild) => ({
@@ -204,6 +206,9 @@ export const issues = {
   closedBefore: (guild, ts) => db.prepare(
     "SELECT * FROM issues WHERE guild_id = ? AND status IN ('fixed', 'wont_fix', 'cannot_reproduce') AND updated_at < ?"
   ).all(guild, ts),
+  /** Fixed issues quiet since `ts` whose thread the bot has not archived yet. */
+  fixedToArchive: (guild, ts) => db.prepare("SELECT * FROM issues WHERE guild_id = ? AND status = 'fixed' AND thread_id IS NOT NULL AND thread_archived = 0 AND updated_at < ?").all(guild, ts),
+  setThreadArchived: (id, v) => db.prepare('UPDATE issues SET thread_archived = ? WHERE id = ?').run(v ? 1 : 0, id),
   setThread: (id, thread) => db.prepare('UPDATE issues SET thread_id = ? WHERE id = ?').run(thread, id),
   touch: (id) => db.prepare('UPDATE issues SET updated_at = ? WHERE id = ?').run(now(), id),
   delete: (id) => {

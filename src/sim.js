@@ -95,7 +95,7 @@ export function interaction({ kind, customId, who, values, fields = {}, files = 
     memberPermissions: { has: () => who.manageGuild },
     commandName,
     options: {
-      getChannel: (k) => options[k] ?? null, getRole: (k) => options[k] ?? null, getInteger: (k) => options[k] ?? null,
+      getChannel: (k) => options[k] ?? null, getRole: (k) => options[k] ?? null, getInteger: (k) => options[k] ?? null, getBoolean: (k) => options[k] ?? null,
     },
     fields: {
       getTextInputValue: (k) => { if (!(k in fields)) throw new Error(`Modal field "${k}" is not in this form`); return fields[k]; },

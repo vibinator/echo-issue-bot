@@ -175,7 +175,7 @@ async function syncMessageNow(client, issue, channelId) {
   if (fresh.message_id && fresh.channel_id) {
     try {
       const ch = await client.channels.fetch(fresh.channel_id);
-      if (ch.archived) await ch.setArchived(false).catch(() => {}); // messages in an archived thread can't be edited
+      if (ch.archived) { await ch.setArchived(false).catch(() => {}); issues.setThreadArchived(fresh.id, 0); } // messages in an archived thread can't be edited
       await ch.messages.edit(fresh.message_id, payload); // one call to Discord (no separate fetch of the message first)
       refreshBoard(client, fresh.guild_id);
       return;
@@ -186,7 +186,7 @@ async function syncMessageNow(client, issue, channelId) {
   if (fresh.thread_id) {
     try {
       const t = await client.channels.fetch(fresh.thread_id);
-      if (t.archived) await t.setArchived(false).catch(() => {});
+      if (t.archived) { await t.setArchived(false).catch(() => {}); issues.setThreadArchived(fresh.id, 0); }
       const newCard = await t.send(payload);
       issues.setMessage(fresh.id, t.id, newCard.id);
       refreshBoard(client, fresh.guild_id);
@@ -278,6 +278,36 @@ export async function retireMessage(client, issue, intoId) {
   if (issue.thread_id) {
     try { const t = await client.channels.fetch(issue.thread_id); await t.setLocked(true); await t.setArchived(true); } catch { /* gone */ }
   }
+}
+
+/** Archive (not lock) the threads of issues that have been fixed and quiet for `days` days. Any new activity reopens the thread. */
+export async function archiveFixedThreads(client, guildId, days = 180) {
+  for (const it of issues.fixedToArchive(guildId, Date.now() - days * 86_400_000)) {
+    try { const t = await client.channels.fetch(it.thread_id); if (!t.archived) await t.setArchived(true, 'Issue fixed'); } catch { /* thread gone */ }
+    issues.setThreadArchived(it.id, 1); // also when it is gone, so it is not retried every hour
+  }
+}
+
+/** Pairs at/above this score are treated as the same problem when a server turns on automatic merging. */
+export const AUTO_MERGE_SCORE = 0.8;
+
+/** Merge near-identical issues that nobody has started on (same type, both still New and unowned). The older issue is kept. Returns the number merged. */
+export async function autoMergeDuplicates(client, guildId, channelId) {
+  let merged = 0;
+  const untouched = (it) => it && it.status === 'new' && !it.owner_id && !it.dev_note;
+  for (const p of duplicatePairs(guildId)) {
+    if (p.score < AUTO_MERGE_SCORE) break; // sorted best first
+    const a = issues.get(p.a); const b = issues.get(p.b);
+    if (!untouched(a) || !untouched(b) || a.kind !== b.kind) continue;
+    const [keep, drop] = a.id < b.id ? [a, b] : [b, a];
+    await retireMessage(client, drop, keep.id);
+    mergeIssues(drop.id, keep.id);
+    events.add(keep.id, 'merged', null, `automatic: #${drop.id} was ${Math.round(p.score * 100)}% alike`);
+    await syncMessage(client, issues.get(keep.id), channelId);
+    await threadSay(client, keep, `🔀 Issue #${drop.id} (“${trunc(drop.title, 80)}”) looked like the same problem (${Math.round(p.score * 100)}% alike) and was merged into this one automatically. Developers can still split a report out.`);
+    merged++;
+  }
+  return merged;
 }
 
 /**

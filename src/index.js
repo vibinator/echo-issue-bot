@@ -14,7 +14,7 @@ import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored } from './evidenceStore.js';
 import {
   attachEvidence, purgeEvidence, duplicatePairs, fileReport, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
-  eraseUser, purgeExpired, rematchReport, splitReport, syncMessage, threadSay,
+  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
 import { boardPayload, dropBoard } from './board.js';
@@ -37,7 +37,8 @@ const commands = [
     .addRoleOption((o) => o.setName('dev_role').setDescription('Developer role – can manage issues and use the Developer menu').setRequired(true))
     .addRoleOption((o) => o.setName('reporter_role').setDescription('Only this role can send reports (leave empty to keep the current setting)'))
     .addRoleOption((o) => o.setName('article_role').setDescription('Can create, edit and delete knowledge articles without being a developer'))
-    .addIntegerOption((o) => o.setName('retention_days').setDescription('Delete closed issues after this many days of no activity (0 = keep them)').setMinValue(0).setMaxValue(3650)),
+    .addIntegerOption((o) => o.setName('retention_days').setDescription('Delete closed issues after this many days of no activity (0 = keep them)').setMinValue(0).setMaxValue(3650))
+    .addBooleanOption((o) => o.setName('auto_merge').setDescription('Automatically merge open issues that are almost identical (80%+ alike)')),
 ].map((c) => c.toJSON());
 
 // Nothing the bot sends may ping anyone by accident: players' own words (an issue title like "@everyone fix this") end up in
@@ -631,19 +632,27 @@ function articleView(a) {
   };
 }
 
-function articlesPayload(guildId) {
-  const list = articles.list(guildId).slice(0, 25);
+const ART_PAGE = 25; // Discord allows 25 options in a dropdown, so longer lists are paged
+function articlesPayload(guildId, page = 0) {
+  const all = articles.list(guildId);
+  const pages = Math.max(1, Math.ceil(all.length / ART_PAGE));
+  page = Math.min(Math.max(0, page), pages - 1);
+  const list = all.slice(page * ART_PAGE, (page + 1) * ART_PAGE);
   const components = [];
   if (list.length) {
-    components.push(row(new StringSelectMenuBuilder().setCustomId('art_pick').setPlaceholder('Open an article…').addOptions(list.map((a) => {
+    components.push(row(new StringSelectMenuBuilder().setCustomId('art_pick').setPlaceholder(pages > 1 ? `Open an article… (${page * ART_PAGE + 1}–${page * ART_PAGE + list.length} of ${all.length})` : 'Open an article…').addOptions(list.map((a) => {
       const s = kbStats.get(guildId, `a:${a.id}`);
       return { label: trunc(a.title, 100), description: trunc(`${a.enabled ? 'on' : 'off'} · shown ${s.shown} · helped ${s.helped} · denied ${s.denied}`, 100), value: String(a.id) };
     }))));
   }
   components.push(row(btn('art:new', 'New article', '➕', ButtonStyle.Success), btn('art:stats', 'Results', '📊'), btn('art:test', 'Test matching', '🧪'),
     btn('dev:menu', 'Developer menu', '⬅️')));
+  if (pages > 1) {
+    components.push(row(btn(`art:page:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('art:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
+      btn(`art:page:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
+  }
   return {
-    content: `**📚 Knowledge articles** – ${list.length} of your own, plus ${KB.length} built-in answers.\nBefore anyone sends a report, they see a list of known problems (your articles first, and the closest matches to what they typed are moved to the top, even with typos). **Results** shows which answers actually help, and **Test matching** shows what a player would see for a sample sentence.`,
+    content: `**📚 Knowledge articles** – ${all.length} of your own, plus ${KB.length} built-in answers.\nBefore anyone sends a report, they see a list of known problems (your articles first, and the closest matches to what they typed are moved to the top, even with typos). **Results** shows which answers actually help, and **Test matching** shows what a player would see for a sample sentence.`,
     embeds: [], components,
   };
 }
@@ -709,6 +718,8 @@ async function handleInteraction(i) {
       if (articleR) settings.update(i.guildId, { article_role_id: articleR.id });
       const retention = i.options.getInteger('retention_days');
       if (retention !== null) settings.update(i.guildId, { retention_days: retention });
+      const autoMerge = i.options.getBoolean('auto_merge');
+      if (autoMerge !== null) settings.update(i.guildId, { auto_merge: autoMerge ? 1 : 0 });
       // Only ONE public message: replace the previous panel (and any old live board) instead of adding another.
       if (prev?.panel_message_id && prev.panel_channel_id) {
         try { await (await (await client.channels.fetch(prev.panel_channel_id)).messages.fetch(prev.panel_message_id)).delete(); } catch { /* gone */ }
@@ -1216,7 +1227,8 @@ async function handleInteraction(i) {
         return show(i, articleView(a));
       }
       if (i.isButton()) {
-        const [, action] = id.split(':');
+        const [, action, arg] = id.split(':');
+        if (action === 'page') return i.update(articlesPayload(i.guildId, Number(arg) || 0));
         if (action === 'back') return i.update(articlesPayload(i.guildId));
         if (action === 'new') return i.showModal(articleModal(null));
         if (action === 'stats') return i.update(articleStats(i.guildId));
@@ -1342,6 +1354,8 @@ client.once('clientReady', async () => {
   const tick = () => {
     runDigests(client).catch((e) => console.error('Digest error:', e.message));
     for (const cfg of settings.all()) {
+      archiveFixedThreads(client, cfg.guild_id).catch((e) => console.error('Archive error:', e.message));
+      if (cfg.auto_merge) autoMergeDuplicates(client, cfg.guild_id, cfg.channel_id).catch((e) => console.error('Auto-merge error:', e.message));
       if (cfg.retention_days > 0) purgeExpired(client, cfg.guild_id, cfg.retention_days).catch((e) => console.error('Retention error:', e.message));
     }
     try { const f = maybeBackup(); if (f) console.log(`Backup written: ${f}`); } catch (e) { console.error('Backup failed:', e.message); }
