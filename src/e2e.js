@@ -14,6 +14,7 @@ ocr.setRecognizer(async () => ''); // tests never run the real OCR engine; a blo
 const ui = await import('./index.js');
 const S = await import('./sim.js');
 const db = await import('./db.js');
+const { KB } = await import('./kb.js');
 const { sim, FakeChannel, interaction, outcome, person, plain, textOf, embedChars, buttonsOf } = S;
 const { client, handleInteraction } = ui;
 const { renderIssue } = await import('./render.js');
@@ -462,7 +463,7 @@ console.log('9a. attention');
   const kbN = db.articles.list('G').filter((a) => !a.draft).length;
   const panelText = JSON.stringify(plain(panel));
   check(panelText.includes(`**${waitingN}** waiting for a reply`) && panelText.includes(`**${answeredN}** answered`), `the panel shows ${waitingN} waiting and ${answeredN} answered`);
-  check(panelText.includes(`**${kbN}** answer`), `the panel shows ${kbN} stored knowledge articles`);
+  check(panelText.includes(`**${kbN}** written by the team`) && panelText.includes(`**${KB.length}** built-in`), `the panel shows ${kbN} stored knowledge articles`);
   const menu = await press(dev, panelScreen, 'dev:menu');
   check(has(menu.out.payload, /Needs attention/) && labelsOf(menu.out.payload).some((l) => /Board \(\d+ new\)/.test(l)), 'the developer menu says what needs attention and the Board button shows the new count');
   db.settings.update('G', { cooldown_sec: 60 });

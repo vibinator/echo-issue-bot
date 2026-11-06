@@ -192,7 +192,7 @@ function panelPayload(guildId) {
       '📋 **Known issues** – see what has already been reported and how it\'s going.',
       `⏳ **${waiting}** waiting for a reply · 💬 **${answered}** answered, still being worked on`,
       '📌 **My reports** – follow your reports, add details, and turn update messages on or off.',
-      `📚 **Knowledge articles** – **${kbCount}** answer${kbCount === 1 ? '' : 's'} stored.`,
+      `📚 **Knowledge articles** – **${kbCount + KB.length}** answers stored (**${KB.length}** built-in + **${kbCount}** written by the team).`,
       '',
       '_Everything you open from these buttons is private – only you can see it._',
     ].join('\n'));
