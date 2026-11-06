@@ -5,7 +5,8 @@ import { EXTRA_SYN, PROTECT, TERMS } from './lexicon.js';
 const STOP = new Set((
   'a an the and or but if so of to in on at for with without from by is are was were be been am i me my we you it its this that these those ' +
   'when while then than there here have has had do does did not no dont cant wont just very really also can could would should will get got ' +
-  'getting gets keep keeps game echo vr play playing played every time always sometimes'
+  'getting gets keep keeps game echo vr play playing played every time always sometimes ' +
+  'want wanna need go going please pls plz help hi hello thanks thank im ive id some any anything something nothing percent happens happen'
 ).split(' '));
 
 // Different words players use for the same thing -> one canonical token.
@@ -24,10 +25,49 @@ const CANON = new Map();
 for (const [c, ws] of Object.entries(SYN)) for (const w of ws) CANON.set(w, c);
 for (const [c, ws] of Object.entries(EXTRA_SYN)) for (const w of ws) CANON.set(w, c);
 
+// Strip common word endings so "connecting / connection / connected" and "installer / installing" meet in the middle.
+const SUFFIXES = [['ations', 4], ['ation', 4], ['tions', 4], ['tion', 4], ['ments', 4], ['ment', 4], ['ness', 4], ['ings', 3], ['ing', 3],
+  ['ers', 4], ['er', 4], ['ied', 3], ['ies', 3], ['ed', 3], ['es', 3], ['ly', 4], ['s', 3]];
 function stem(w) {
   if (CANON.has(w)) return CANON.get(w);
-  const s = w.replace(/(ing|ed|es|s)$/, (m) => (w.length - m.length >= 3 ? '' : m));
+  let s = w;
+  for (const [suffix, minStem] of SUFFIXES) {
+    if (w.endsWith(suffix) && w.length - suffix.length >= minStem) { s = w.slice(0, -suffix.length); break; }
+  }
   return CANON.get(s) ?? s;
+}
+
+// Multi-word phrases players write in many ways -> one token each (applied before the text is split into words).
+const PHRASES = [
+  [/\bblack\s*screen\b/g, ' blackscreen '],
+  [/\bgame\s*data\b/g, ' gamedata '],
+  [/\b(log|sign)\s*(in|on)\b/g, ' login '],
+  [/\bframe\s*rate\b/g, ' fps '],
+  [/\brubber\s*band\w*/g, ' lag '],
+  [/\b(?:will not|wo ?n ?t|doesn ?t|does not|do not|don ?t|did not|didn ?t|can ?not|can ?t|couldn ?t|unable to|fails? to|failed to|stopped)\s+(work|start|open|launch|load|run|install|update|connect|download|log ?in|join|hear|see)\w*/g, ' broken $1 '],
+  [/\bnot\s+(working|responding|loading|starting|opening|launching|installing|updating|connecting|downloading)\b/g, ' broken '],
+  [/\b(?:how|where|what)\s+(?:do|to|can|should)\s+(?:i|we|you)\b|\bhow\s+to\b|\bstep by step\b/g, ' howto '],
+  [/\bstuck\s+(?:at|on|in)\b/g, ' stuck '],
+  // everyday ways of saying the same thing
+  [/\bsteam\s*vr\b/g, ' steamvr '],
+  [/\bgame\s*files?\b/g, ' gamedata '],
+  [/\b(?:is\s*n ?t|is not|are\s*n ?t|are not|not|no longer)\s+(?:moving|progressing|going anywhere)\b|\bno progress\b|\bnot budging\b/g, ' stuck '],
+  [/\b(?:went|goes|go|gone|going)\s+away\b|\bdisappear\w*\b|\bvanish\w*\b/g, ' vanish '],
+  [/\bpop ?ups?\b|\bdialog\b|\bprompt\b|\bmessage box\b|\bbox\b/g, ' popup '],
+  [/\b(?:what ?s|whats)\s+the\s+(?:way|best way|easiest way)\s+to\b|\bways? to\b/g, ' howto '],
+  [/\bget\b[^.]{0,25}\bonto\b/g, ' install '],
+  [/\b(?:eats?|hogs?|hogging|uses?|using|drains?|draining|maxes?|maxing)\b(?=[^.]{0,20}\b(?:cpu|gpu|memory|ram|battery|resources?)\b)/g, ' usage '],
+  [/\bnot\s+(?:playing|doing anything|in use|using it)\b|\bwhen\s+(?:i\s*m\s+)?(?:idle|doing nothing)\b|\beven when\b[^.]{0,20}\bnot\b/g, ' idle '],
+  [/\b(?:cuts?|drops?|dropping|cutting|goes?)\s+out\b/g, ' dropout '],
+  [/\bload(?:s|ing|ed)?\s+(?:in|into|onto)\b/g, ' join '],
+];
+
+/** Lower-case, remove apostrophes ("doesn't" -> "doesnt"), then collapse known phrases. */
+function normalize(text) {
+  let t = text.toLowerCase().replace(/['’`]/g, '');
+  t = t.replace(/\b(wont|doesnt|dont|didnt|cant|couldnt|isnt|arent|wasnt)\b/g, (m) => ({ wont: 'wo n t', doesnt: 'doesn t', dont: 'don t', didnt: 'didn t', cant: 'can t', couldnt: 'couldn t', isnt: 'isn t', arent: 'aren t', wasnt: 'wasn t' }[m]));
+  for (const [re, to] of PHRASES) t = t.replace(re, to);
+  return t;
 }
 
 // ---- fuzzy (typo-tolerant) matching ----
@@ -77,8 +117,8 @@ function fuzzyMap(tok, vocab) {
 }
 
 function unigrams(text) {
-  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
-    .filter((w) => w && !STOP.has(w))
+  return normalize(text).replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+    .filter((w) => w && !STOP.has(w) && !/^\d$/.test(w)) // single digits ("quest 3") are noise; error codes like 78 stay
     .map(stem)
     .map((t) => stem(fuzzyMap(t, KNOWN))); // fix typos of known game/problem words, then canonicalise
 }

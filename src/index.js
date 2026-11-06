@@ -218,10 +218,23 @@ function faqPayload(guildId, kind, matches = []) {
   };
 }
 
+/**
+ * What players' reactions teach the matcher: answers that often fix the problem rank a little higher, and ones
+ * players keep calling "not my problem" rank a little lower (only after at least 5 views, and never by more than 20%).
+ */
+function kbBoosts(guildId) {
+  const boosts = new Map();
+  for (const s of kbStats.forGuild(guildId)) {
+    if (s.shown >= 5) boosts.set(s.article_id, 1 + 0.2 * Math.max(-1, Math.min(1, (s.helped - s.denied) / s.shown)));
+  }
+  return boosts;
+}
+
 /** The list for this player, ranked by what they described (if anything). */
 const faqFor = (i, kind) => {
   const text = getDraft(i.user.id);
-  return faqPayload(i.guildId, kind, text ? suggest(text, articles.list(i.guildId, { enabledOnly: true }), 25, kind) : []);
+  const matches = text ? suggest(text, articles.list(i.guildId, { enabledOnly: true }), 25, kind, kbBoosts(i.guildId)) : [];
+  return faqPayload(i.guildId, kind, matches);
 };
 
 /** The answer screen: did it fix it, is it not your problem (back to the list), or report it anyway. */
@@ -1104,7 +1117,7 @@ client.on('interactionCreate', async (i) => {
         return own(a) ? i.update(articleView(a)) : i.update({ content: 'That article no longer exists.', embeds: [], components: [] });
       }
       if (i.isModalSubmit() && id === 'art:testm') {
-        const found = suggest(i.fields.getTextInputValue('sample'), articles.list(i.guildId, { enabledOnly: true }));
+        const found = suggest(i.fields.getTextInputValue('sample'), articles.list(i.guildId, { enabledOnly: true }), 3, null, kbBoosts(i.guildId));
         return show(i, {
           content: found.length
             ? `**A player who wrote that would see these first:**\n${found.map((s, n) => `${n + 1}. ${s.custom ? '📚' : '💡'} **${trunc(s.title, 80)}** — ${Math.round(s.score * 100)}% match`).join('\n')}`

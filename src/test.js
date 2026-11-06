@@ -535,4 +535,55 @@ assert.equal(issues.get(reqA.issue.id).status, 'fixed', 'separating the report p
 assert.equal(undo.fresh.status, 'new', 'and the separated report is its own new issue');
 assert.equal(reqCard(undo.fresh.id), '<@requesterB>');
 
+// ---- matcher quality: realistic sentences (typos, loose wording) find the right answer; look-alikes find nothing ----
+const top = (text, kind) => sg(text, [], 3, kind)[0]?.id?.replace('kb:', '') ?? null;
+const SHOULD_FIND = [
+  ['problm parseing the pakage on my qest', 'quest_parse_package', 'install'],
+  ['my quest keeps saying it cant parse the package when installing', 'quest_parse_package', 'install'],
+  ['i pressed install then the box went away and nothing installed', 'quest_install_vanishes', 'install'],
+  ['pressing install does nothing the dialog just closes', 'quest_install_vanishes', 'install'],
+  ['the download of the game files is not moving', 'quest_data_stuck', 'install'],
+  ['game data download sits at the same number for ages', 'quest_data_stuck', 'install'],
+  ['whats the way to get echo onto my quest', 'quest_install_howto', 'install'],
+  ['guide to install echo vr on windows', 'pc_install_howto', 'install'],
+  ['i installed the beta and want to go back to stable', 'beta_to_stable', 'install'],
+  ['stuck on beta how to return to stable', 'beta_to_stable', 'install'],
+  ['launcher eats my gpu even when i am not playing', 'idle_cpu', 'bug'],
+  ['launcher running hot using cpu constantly in the background', 'idle_cpu', 'bug'],
+  ['do i choose echoxr if i use steam vr', 'steam_players', 'bug'],
+  ['the controllers do not shake or vibrate anymore', 'haptics', 'bug'],
+  ['hapitc feedbak is missing', 'haptics', 'bug'],
+  ['echoxr error code 5 no openxr', 'echoxr_exit', 'bug'],
+  ['crash during lobby load, error says the d3d device was removed', 'gpu_hang', 'bug'],
+  ['discord login doesnt work in echo', 'login', 'bug'],
+  ['game exited with code 78 after update', 'nevr_78', 'bug'],
+];
+const missed = SHOULD_FIND.filter(([t, want, kind]) => top(t, kind) !== want).map(([t, want, kind]) => `${t} → ${top(t, kind)} (wanted ${want})`);
+assert.deepEqual(missed, [], 'realistic sentences find the right known-problem answer');
+for (const t of ['goal sound plays twice', 'my avatar is stuck in a t pose', 'vote kick is abused', 'the shop prices are too high', 'emote wheel opens slowly',
+  'players clip through walls', 'the intro video cannot be skipped', 'spectator camera is jittery', 'hit detection is off on goalie saves', 'i love this game so much']) {
+  assert.equal(top(t, 'bug'), null, `no answer is suggested for "${t}"`);
+}
+// platform awareness: asking about Quest must not rank the PC guide first, and the other way round
+assert.equal(top('how to install echo on quest step by step', 'install'), 'quest_install_howto');
+assert.equal(top('how do i install echo on my pc', 'install'), 'pc_install_howto');
+// issue grouping understands everyday rewordings
+const GDOCS = [{ id: 0, text: 'Game crashes every time I join an arena match on Quest 3' }, { id: 1, text: 'Microphone cuts out in voice chat when four people talk at once' }, { id: 2, text: 'Huge lag and high ping in combat, rubberbanding everywhere' }];
+const { rankSimilar } = await import('./similarity.js');
+const joins = (t) => { const b = rankSimilar(t, GDOCS)[0]; return b.score >= 0.25 ? b.id : -1; };
+assert.equal(joins('the game keeps closing itself when i enter arena on my quest'), 0);
+assert.equal(joins('it freezes and then quits when i load into an arena game'), 0);
+assert.equal(joins('voice chat randomly drops out when lots of players are speaking'), 1);
+assert.equal(joins('really bad ping and rubber banding while fighting'), 2);
+assert.equal(joins('the disc passes through the goal without scoring'), -1, 'unrelated reports are not grouped');
+// words that merely look like known terms are not "corrected" into them
+assert.equal(joins('after the patch the beta build lost the same match'), -1);
+
+// ---- learning from reactions: boosted answers rank higher, "not my problem" ones lower ----
+const base = sg('launcher uses lots of cpu', [], 3, 'bug');
+const up = sg('launcher uses lots of cpu', [], 3, 'bug', new Map([[base[0].id, 1.2]]));
+const down = sg('launcher uses lots of cpu', [], 3, 'bug', new Map([[base[0].id, 0.8]]));
+assert.ok(up[0].score > base[0].score && down[0].score < base[0].score, 'feedback nudges the score up or down');
+assert.ok(up[0].score <= 1);
+
 console.log('All tests passed.');

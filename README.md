@@ -64,6 +64,14 @@ A backup is made daily (newest 14 kept), whenever a developer presses **Back up 
 - Keep the bot token secret (rotate it if it was ever pasted anywhere), restrict who can see the issue channel/CSV exports, and tell Discord and affected users about any breach.
 - These documents are templates, not legal advice. Re-check Discord's current [Developer Terms](https://discord.com/developers/docs/policies-and-agreements/developer-terms-of-service) and [Developer Policy](https://discord.com/developers/docs/policies-and-agreements/developer-policy) before relying on them, especially if the bot is added to many servers.
 
+## How the matching works
+Used for the "is it one of these?" menu, for grouping similar reports, and for the duplicate review. No AI service – plain word comparison that runs on your own server:
+- **Typos** are fixed against a vocabulary of Echo VR terms (`src/lexicon.js`: EchoXR, nEVR, Quest, SteamVR, Proton, haptics…) and against words already used in existing issues, while ordinary words like "patch" or "beta" are left alone.
+- **Everyday phrasing** is understood: "won't start", "doesn't work", "black screen", "log in / sign in", "went away", "not moving", "game files", "steam vr", "cuts out / drops out", plus word endings (connect / connecting / connection) and synonym groups (crash, freeze, quits, closes; lag, ping, rubber banding…).
+- **Platform-aware**: someone who mentions Quest isn't pointed at the PC guide first, and vice versa.
+- **Learns from reactions**: an answer that often gets "That fixed it!" ranks a little higher, one that keeps getting "That's not my problem" a little lower (after 5 views, never by more than 20%).
+- Measured on sample player sentences (typos and loose wording, plus look-alike problems that have no answer): the original matcher found the right answer first 40–63% of the time; this one does 70–100% depending on how loosely the sentences are worded, with almost no wrong suggestions. A match only re-orders the menu, so a wrong guess never blocks anyone. Add words or phrases to `src/lexicon.js` and `PHRASES` in `src/similarity.js` as you see what players really write.
+
 ## Known-problem answers
 `src/kb.js` (built-in, typo tolerant; vocabulary in `src/lexicon.js`) – edit them as the community tooling changes, or add per-server articles from the panel.
 
