@@ -462,7 +462,7 @@ console.log('9a. attention');
   const answeredN = db.issues.list('G').filter((x) => ['seen', 'in_progress'].includes(x.status)).length;
   const kbN = db.articles.list('G').filter((a) => !a.draft).length;
   const panelText = JSON.stringify(plain(panel));
-  check(panelText.includes(`**${waitingN}** waiting for a reply`) && panelText.includes(`**${answeredN}** answered`), `the panel shows ${waitingN} waiting and ${answeredN} answered`);
+  check(panelText.includes(`**${waitingN}** waiting for a developer reply`) && panelText.includes(`**${answeredN}** answered`), `the panel shows ${waitingN} waiting and ${answeredN} answered`);
   check(panelText.includes(`**${kbN}** written by the team`) && panelText.includes(`**${KB.length}** built-in`), `the panel shows ${kbN} stored knowledge articles`);
   const menu = await press(dev, panelScreen, 'dev:menu');
   check(has(menu.out.payload, /Needs attention/) && labelsOf(menu.out.payload).some((l) => /Board \(\d+ new\)/.test(l)), 'the developer menu says what needs attention and the Board button shows the new count');

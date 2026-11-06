@@ -149,14 +149,20 @@ function attention(guildId) {
 
 /** Redraw the public panel so its Developer button shows the current count. Debounced: a burst of reports edits it once. */
 const panelTimers = new Map();
+const panelShown = new Map(); // what each panel last showed, so the live counts are only re-posted when they change
 function refreshPanel(guildId) {
   if (panelTimers.has(guildId)) return;
   const t = setTimeout(async () => {
     panelTimers.delete(guildId);
     const cfg = settings.get(guildId);
     if (!cfg?.panel_channel_id || !cfg.panel_message_id) return;
-    try { await (await (await client.channels.fetch(cfg.panel_channel_id)).messages.fetch(cfg.panel_message_id)).edit(panelPayload(guildId)); }
-    catch (e) { console.error(`Could not refresh the panel in ${guildId}: ${e.message}`); }
+    try {
+      const payload = panelPayload(guildId);
+      const key = JSON.stringify(payload.embeds[0].toJSON()) + JSON.stringify(payload.components.map((c) => c.toJSON()));
+      if (panelShown.get(guildId) === key) return; // nothing changed: don't edit the message
+      await (await (await client.channels.fetch(cfg.panel_channel_id)).messages.fetch(cfg.panel_message_id)).edit(payload);
+      panelShown.set(guildId, key);
+    } catch (e) { console.error(`Could not refresh the panel in ${guildId}: ${e.message}`); }
   }, 5000);
   t.unref?.();
   panelTimers.set(guildId, t);
@@ -190,7 +196,7 @@ function panelPayload(guildId) {
       '',
       '📝 **Report a problem** – we\'ll first show quick fixes for common problems. If none help, you can send a report.',
       '📋 **Known issues** – see what has already been reported and how it\'s going.',
-      `⏳ **${waiting}** waiting for a reply · 💬 **${answered}** answered, still being worked on`,
+      `Open issues: ⏳ **${waiting}** waiting for a developer reply · 💬 **${answered}** answered, still being worked on`,
       '📌 **My reports** – follow your reports, add details, and turn update messages on or off.',
       `📚 **Knowledge articles** – **${kbCount + KB.length}** answers stored (**${KB.length}** built-in + **${kbCount}** written by the team).`,
       '',
@@ -1619,6 +1625,9 @@ client.once('clientReady', async () => {
     try { await (await (await client.channels.fetch(cfg.panel_channel_id)).messages.fetch(cfg.panel_message_id)).edit(panelPayload(cfg.guild_id)); }
     catch (e) { console.error(`Could not refresh the panel in ${cfg.guild_id}: ${e.message}`); }
   }
+
+  // Counts on the panel come straight from the database; re-check every minute so merges, removals, withdrawals and article changes show up too.
+  setInterval(() => { for (const cfg of settings.all()) if (cfg.panel_message_id) refreshPanel(cfg.guild_id); }, 60_000).unref?.();
 
   // Self-update (AUTO_UPDATE=on): look for a newer version every 10 minutes; install it and restart.
   if (process.env.AUTO_UPDATE === 'on') {
