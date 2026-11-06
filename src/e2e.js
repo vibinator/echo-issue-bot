@@ -361,9 +361,12 @@ console.log('8. developer workflow');
   // a new report on the fixed issue reopens it, and separating it puts it back
   db.settings.update('G', { cooldown_sec: 0 });
   const reopen = await submit(carol, panelScreen, 'report:install', { text: 'Problem parsing the package when I tap install on my Quest again', platform: '', version: '0.13.20', links: '' });
-  check(db.issues.get(aliceIssueId).status === 'new', 'a matching report reopens a fixed issue');
+  check(has(reopen.out.payload, /already been fixed/) && labelsOf(reopen.out.payload).some((l) => /Still happening/.test(l)) && labelsOf(reopen.out.payload).some((l) => /That fixed it/.test(l)), 'a report that matches a fixed issue first says it was fixed, with the choice to send it anyway');
+  check(db.issues.get(aliceIssueId).status === 'fixed' && !db.reports.forIssue(aliceIssueId).some((x) => x.user_id === 'carol'), 'nothing is filed until the player chooses');
+  const sent = await press(carol, reopen.screen, `fxsend:${aliceIssueId}`);
+  check(db.issues.get(aliceIssueId).status === 'new', 'choosing Still happening files the report and reopens the fixed issue');
   const carolReport = db.reports.forIssue(aliceIssueId).find((x) => x.user_id === 'carol');
-  const undo = await press(carol, reopen.screen, `split:${carolReport.id}`);
+  const undo = await press(carol, sent.screen, `split:${carolReport.id}`);
   check(db.issues.get(aliceIssueId).status === 'fixed', 'separating that report puts the issue back to Fixed');
   db.settings.update('G', { cooldown_sec: 60 });
 }
@@ -459,7 +462,7 @@ console.log('9a. attention');
   const panel = ui.panelPayload('G');
   check(buttonsOf(plain(panel)).some((c) => /need attention/.test(c.label ?? '') && c.style === 4), 'the Developer button on the panel turns red and shows how many need attention');
   const waitingN = db.issues.list('G').filter((x) => x.status === 'new').length;
-  const answeredN = db.issues.list('G').filter((x) => x.status === 'seen').length;
+  const answeredN = db.issues.list('G').filter((x) => ['seen', 'fixed', 'cannot_reproduce', 'wont_fix'].includes(x.status)).length;
   const workingN = db.issues.list('G').filter((x) => x.status === 'in_progress').length;
   const kbN = db.articles.list('G').filter((a) => !a.draft).length;
   const panelText = JSON.stringify(plain(panel));

@@ -13,7 +13,7 @@ import { errorMessage, explainError, fileFailureReason } from './errors.js';
 import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored } from './evidenceStore.js';
 import {
-  attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
+  attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
   eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
@@ -135,6 +135,21 @@ const getDraft = (userId) => {
   return d && d.exp > Date.now() ? d.text : '';
 };
 
+// A report waiting on the "this was already fixed" screen: kept in memory only, for 30 minutes, until the player decides.
+const pendingFixed = new Map();
+
+/** Shown before a report is filed when it looks like a problem developers already fixed. */
+function alreadyFixedPayload(issue) {
+  const embed = new EmbedBuilder().setColor(0x2ecc71).setTitle(trunc(`✅ Already fixed: #${issue.id} · ${issue.title}`, 256))
+    .addFields({ name: 'Fixed in', value: issue.fixed_version ? `\`${issue.fixed_version}\` (or newer)` : 'The next update', inline: true });
+  if (issue.dev_note) embed.addFields({ name: 'Developer note', value: trunc(issue.dev_note, 1000) });
+  return {
+    content: `✅ **This looks like a problem that has already been fixed.**\n${issue.fixed_version ? `Update to version \`${issue.fixed_version}\` (or newer) and check if it still happens.` : 'Check if it still happens after the next update.'}\nYour report has **not** been sent yet.`,
+    embeds: [embed],
+    components: [row(btn(`fxok:${issue.id}`, 'That fixed it', '🎉', ButtonStyle.Success), btn(`fxsend:${issue.id}`, 'Still happening – send my report', '📝'))],
+  };
+}
+
 // ---------- panel, modals & forms ----------
 
 /** What developers should look at: brand-new issues nobody has opened, issues gone quiet, and open high-priority ones. */
@@ -188,7 +203,7 @@ function panelPayload(guildId) {
   const todo = guildId ? attention(guildId).total : 0;
   const open = guildId ? issues.list(guildId) : [];
   const waiting = open.filter((x) => x.status === 'new').length;
-  const answered = open.filter((x) => x.status === 'seen').length;
+  const answered = open.filter((x) => ['seen', 'fixed', 'cannot_reproduce', 'wont_fix'].includes(x.status)).length;
   const working = open.filter((x) => x.status === 'in_progress').length;
   const kbCount = guildId ? articles.list(guildId).filter((a) => !a.draft).length : 0;
   const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('Echo VR – Problem Tracker').setFooter({ text: `Bot ${versionLabel()}` })
@@ -196,14 +211,17 @@ function panelPayload(guildId) {
       'Something not working? Let the developers know here.',
       '',
       '📝 **Report a problem** – we\'ll first show quick fixes for common problems. If none help, you can send a report.',
+      '',
       '📋 **Known issues** – see what has already been reported and how it\'s going.',
       `- ⏳ **${waiting}** waiting for a developer reply`,
       `- 💬 **${answered}** answered by a developer`,
       `- 🛠️ **${working}** being worked on`,
+      '',
       '📌 **My reports** – follow your reports, add details, and turn update messages on or off.',
+      '',
       '📚 **Knowledge articles** – quick fixes players see before sending a report.',
-      `- 🧰 **${KB.length}** built-in answers`,
-      `- ✍️ **${kbCount}** written by the team`,
+      `- **${KB.length}** built-in answers`,
+      `- **${kbCount}** written by the team`,
       '',
       '_Everything you open from these buttons is private – only you can see it._',
     ].join('\n'));
@@ -1049,10 +1067,31 @@ async function handleInteraction(i) {
       };
       const wait = cooldownLeft(i);
       if (wait) return i.reply(waitMsg(wait));
+      // Does this look like a problem that has already been fixed? Say so first, and let them send the report anyway.
+      const fixedMatch = findFixedMatch({ guildId: i.guildId, text: `${data.text} ${data.platform}`, kind: data.kind, threshold: cfgOf(i.guildId).threshold });
+      if (fixedMatch) {
+        pendingFixed.set(i.user.id, { data, exp: Date.now() + 30 * 60_000 });
+        return show(i, alreadyFixedPayload(fixedMatch));
+      }
       // The player already went through the known-problems list and chose to report: file it, no more searching.
       setDraft(i.user.id, '');
       await deferHidden(i); // re-hosting files can take longer than Discord's 3s limit
       const payload = await submitReport(i, data); // (not inlined: submitReport may wrap i.editReply, so look it up afterwards)
+      return i.editReply(payload);
+    }
+    if (i.isButton() && id.startsWith('fxok:')) {
+      pendingFixed.delete(i.user.id); setDraft(i.user.id, '');
+      return i.update({ content: 'Great, glad that is sorted! 🎉 No report was needed.', embeds: [], components: [] });
+    }
+    if (i.isButton() && id.startsWith('fxsend:')) {
+      if (!canReport(i)) return noReportAccess(i);
+      const p = pendingFixed.get(i.user.id);
+      if (!p || p.exp < Date.now()) return i.update({ content: 'That took a while, so your report was not kept. Open **Report a problem** to start again.', embeds: [], components: [] });
+      const wait = cooldownLeft(i);
+      if (wait) return i.reply(waitMsg(wait));
+      pendingFixed.delete(i.user.id); setDraft(i.user.id, '');
+      await deferHidden(i);
+      const payload = await submitReport(i, p.data);
       return i.editReply(payload);
     }
     if (i.isButton() && id.startsWith('keep:')) {
@@ -1630,6 +1669,7 @@ client.once('clientReady', async () => {
     for (const cfg of settings.all()) refreshPanel(cfg.guild_id); // issues go quiet with time, so the count can change without any click
     try { const f = maybeBackup(); if (f) console.log(`Backup written: ${f}`); } catch (e) { console.error('Backup failed:', e.message); }
     for (const [k, v] of drafts) if (v.exp < Date.now()) drafts.delete(k);
+    for (const [k, v] of pendingFixed) if (v.exp < Date.now()) pendingFixed.delete(k);
   };
   setTimeout(tick, 30_000);
   setInterval(tick, 3_600_000);

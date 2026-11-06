@@ -56,6 +56,14 @@ export function fileReport({ guildId, userId, text, platform, version, kind = 'b
   return { issue: issues.get(id), reportId, created: true, reopened: false, fixedVersion: null, score: best?.score ?? 0 };
 }
 
+/** If this text would join an issue that is already marked fixed, return that issue (so the reporter can be told first). */
+export function findFixedMatch({ guildId, text, kind = 'bug', threshold = MATCH_THRESHOLD }) {
+  const best = rankSimilar(text, issues.withText(guildId, kind))[0];
+  if (!best || best.score < threshold) return null;
+  const issue = issues.get(best.id);
+  return issue?.status === 'fixed' ? issue : null;
+}
+
 /** Undo an auto-match: move one report into its own new issue. */
 export function splitReport(reportId) {
   const r = reports.get(reportId);
