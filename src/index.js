@@ -13,8 +13,8 @@ import {
   attachEvidence, purgeEvidence, duplicatePairs, fileReport, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
   eraseUser, purgeExpired, rematchReport, splitReport, syncMessage, threadSay,
 } from './service.js';
-import { KB, suggest } from './kb.js';
-import { boardPayload, postBoard } from './board.js';
+import { faqEntries, KB, suggest } from './kb.js';
+import { boardPayload, dropBoard } from './board.js';
 import { buildDigest, postDigest, runDigests } from './digest.js';
 import { exportCsv } from './export.js';
 import { backupNow, maybeBackup } from './backup.js';
@@ -98,6 +98,16 @@ function cooldownLeft(i) {
 }
 const waitMsg = (s) => ({ content: `⏳ Please wait ${s}s before sending another report.`, flags: EPH });
 
+// ---- "one public message, everything else hidden" helpers ----
+/** Is this interaction coming from a hidden (ephemeral) message? */
+const hidden = (i) => !!i.message?.flags?.has(MessageFlags.Ephemeral);
+/** Show a screen privately: replace the hidden menu we came from, or open a new hidden message from a public one. */
+const show = (i, payload) => (hidden(i) ? i.update(payload) : i.reply({ ...payload, flags: EPH }));
+const deferHidden = (i) => (hidden(i) ? i.deferUpdate() : i.deferReply({ flags: EPH }));
+/** If an issue card was opened from a menu, keep its Back button when the card is redrawn. */
+const backOf = (i) => i.message?.components?.flatMap((r) => r.components ?? []).find((c) => ['browse', 'dev:board'].includes(c.customId))?.customId;
+const card = (i, issue) => renderIssue(issue, { back: backOf(i) });
+
 // Reports held while a user decides whether a suggested fix solved their problem.
 const pending = new Map();
 function stash(data) {
@@ -119,15 +129,26 @@ function take(key) {
 
 function panelPayload() {
   const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('Echo VR – Problem Tracker')
-    .setDescription('Something broken? Report it here. Known problems get an instant suggested fix, similar reports are grouped together, and developers update the status as they work on it.');
+    .setDescription('Something broken? Report it here. Known problems get an instant suggested fix, similar reports are grouped together, and developers update the status as they work on it.\n\n_Everything you open from these buttons is private – only you can see it._');
   return {
     embeds: [embed],
     components: [
       row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Browse issues', '📋'), btn('mine', 'My reports', '📌'),
         btn('legal:privacy', 'Data & privacy', '🔒'), btn('legal:terms', 'Terms of use', '📜')),
-      row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:digest', 'Digest', '📊'),
-        btn('dev:export', 'Export CSV', '📤'), btn('dev:backup', 'Back up now', '💾')),
-      row(btn('dev:board', 'Post live board', '📌'), btn('dev:articles', 'Knowledge articles', '📚')),
+      row(btn('dev:menu', 'Developer', '🛠️')),
+    ],
+  };
+}
+
+/** Everything developers need, one hidden menu behind a single button on the panel. */
+function devMenuPayload() {
+  return {
+    content: '**🛠️ Developer menu** – only you can see this.',
+    embeds: [],
+    components: [
+      row(btn('dev:board', 'Board', '📌'), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:articles', 'Knowledge articles', '📚')),
+      row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊')),
+      row(btn('dev:export', 'Export CSV', '📤'), btn('dev:backup', 'Back up now', '💾')),
     ],
   };
 }
@@ -168,12 +189,44 @@ const reportModal = (kind = 'bug') => new ModalBuilder().setCustomId(`report:${k
       lText('text', { style: TextInputStyle.Paragraph, max: 1000, required: true, min: 15 })),
     platformField(), versionField(), ...evidenceFields());
 
-/** First step of reporting: is it an install problem or a bug in the game? */
+/** Step 1 of reporting: is it an install problem or a bug in the game? */
 const reportTypePayload = () => ({
   content: '**What kind of problem is it?**\n🔧 **Install issue** – installing, updating or downloading Echo VR or the installer/launcher\n🐞 **Bug in game** – something goes wrong while playing',
   embeds: [],
   components: [row(btn('rtype:install', 'Install issue', '🔧', ButtonStyle.Primary), btn('rtype:bug', 'Bug in game', '🐞', ButtonStyle.Primary))],
 });
+
+/** Step 2: try to answer it before any ticket exists – "is your problem one of these?" */
+function faqPayload(guildId, kind) {
+  const entries = faqEntries(kind, articles.list(guildId, { enabledOnly: true }));
+  const helped = (e) => kbStats.get(guildId, e.id).helped;
+  const sorted = [...entries.filter((e) => e.custom), ...entries.filter((e) => !e.custom).sort((a, b) => helped(b) - helped(a))].slice(0, 25);
+  const label = kind === 'install' ? '🔧 **Install issue**' : '🐞 **Bug in game**';
+  return {
+    content: `${label} – before opening a ticket, is your problem one of these? Pick it to see the fix.\nIf none fit, press **None of these** and describe it.`,
+    embeds: [],
+    components: [
+      row(new StringSelectMenuBuilder().setCustomId(`faq:${kind}`).setPlaceholder('Pick the one that matches…')
+        .addOptions(sorted.map((e) => ({ label: trunc(e.title, 100), value: e.id, emoji: e.custom ? '📚' : '💡' })))),
+      row(btn(`rform:${kind}`, 'None of these – report it', '📝', ButtonStyle.Primary)),
+    ],
+  };
+}
+
+/** The answer screen: did it fix it, is it not your problem (back to the list), or report it anyway. */
+function faqAnswerPayload(entry, kind) {
+  const embed = new EmbedBuilder().setColor(0xfee75c).setTitle(`💡 ${trunc(entry.title, 250)}`).setDescription(trunc(entry.fix, 4000))
+    .setFooter({ text: `Source: ${entry.source}` });
+  return {
+    content: 'Try this first:',
+    embeds: [embed],
+    components: [row(
+      btn(`faqok:${kind}:${entry.id}`, 'That fixed it', '✅', ButtonStyle.Success),
+      btn(`faqno:${kind}:${entry.id}`, 'Not my problem', '🙅'),
+      btn(`rform:${kind}:${entry.id}`, 'Still happening – report it', '📝'),
+    )],
+  };
+}
 
 const meTooModal = (issue) => new ModalBuilder().setCustomId(`plus:${issue.id}`).setTitle(`I have this too · #${issue.id}`).addLabelComponents(
   labelled('Anything to add? (optional)', lText('text', { style: TextInputStyle.Paragraph, max: 1000 })),
@@ -283,7 +336,7 @@ function dupSummary(it, tag) {
 function dupPayload(i) {
   const sk = skipped.get(i.user.id) ?? new Set();
   const pairs = duplicatePairs(i.guildId).filter((p) => !sk.has(`${p.a}-${p.b}`));
-  if (!pairs.length) return { content: '🎉 No duplicate candidates left to review.', embeds: [], components: [] };
+  if (!pairs.length) return { content: '🎉 No duplicate candidates left to review.', embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] };
   const p = pairs[0];
   return {
     content: `**Are these the same problem?** Pair 1 of ${pairs.length} · similarity ${Math.round(p.score * 100)}%`,
@@ -292,6 +345,7 @@ function dupPayload(i) {
       btn(`dupm:${p.a}:${p.b}`, 'Merge', '🔀', ButtonStyle.Success),
       btn(`dupk:${p.a}:${p.b}`, 'Keep separate', '↔️'),
       btn(`dups:${p.a}:${p.b}`, 'Skip', '⏭️'),
+      btn('dev:menu', 'Developer menu', '⬅️'),
     )],
   };
 }
@@ -474,7 +528,8 @@ function articlesPayload(guildId) {
       return { label: trunc(a.title, 100), description: trunc(`${a.enabled ? 'on' : 'off'} · shown ${s.shown} · helped ${s.helped} · denied ${s.denied}`, 100), value: String(a.id) };
     }))));
   }
-  components.push(row(btn('art:new', 'New article', '➕', ButtonStyle.Success), btn('art:stats', 'Results', '📊'), btn('art:test', 'Test matching', '🧪')));
+  components.push(row(btn('art:new', 'New article', '➕', ButtonStyle.Success), btn('art:stats', 'Results', '📊'), btn('art:test', 'Test matching', '🧪'),
+    btn('dev:menu', 'Developer menu', '⬅️')));
   return {
     content: `**📚 Knowledge articles** – ${list.length} of your own · ${KB.length} built-in.\nBefore a report is filed, players are shown the best-matching answers (typo tolerant). They can say **Not my problem** to see the next one or file anyway, and the results below show which articles actually help.`,
     embeds: [], components,
@@ -507,6 +562,7 @@ client.on('interactionCreate', async (i) => {
     if (i.isChatInputCommand() && i.commandName === 'setup') {
       const ch = i.options.getChannel('issues_channel', true);
       const role = i.options.getRole('dev_role', true);
+      const prev = settings.get(i.guildId);
       settings.set(i.guildId, ch.id, role.id);
       const reporter = i.options.getRole('reporter_role');
       if (reporter) settings.update(i.guildId, { reporter_role_id: reporter.id });
@@ -514,9 +570,15 @@ client.on('interactionCreate', async (i) => {
       if (statusR) settings.update(i.guildId, { status_role_id: statusR.id });
       const retention = i.options.getInteger('retention_days');
       if (retention !== null) settings.update(i.guildId, { retention_days: retention });
-      await i.channel.send(panelPayload());
+      // Only ONE public message: replace the previous panel (and any old live board) instead of adding another.
+      if (prev?.panel_message_id && prev.panel_channel_id) {
+        try { await (await (await client.channels.fetch(prev.panel_channel_id)).messages.fetch(prev.panel_message_id)).delete(); } catch { /* gone */ }
+      }
+      await dropBoard(client, i.guildId);
+      const panelMsg = await i.channel.send(panelPayload());
+      settings.update(i.guildId, { panel_channel_id: i.channel.id, panel_message_id: panelMsg.id });
       const rr = reporterRole(i.guildId);
-      return i.reply({ content: `✅ Issues will be posted in <#${ch.id}>. Developers: <@&${role.id}> (and anyone with Manage Server). Reports can be created by: ${rr ? `<@&${rr}>` : 'everyone'}. Status can be changed by: ${statusRole(i.guildId) ? `<@&${statusRole(i.guildId)}>` : 'developers'}. Use the ⚙️ **Settings** button on the panel for the digest/changelog channels, matching sensitivity and cooldown.`, flags: EPH });
+      return i.reply({ content: `✅ Each issue gets its own thread under <#${ch.id}>. Developers: <@&${role.id}> (and anyone with Manage Server). Reports can be created by: ${rr ? `<@&${rr}>` : 'everyone'}. Status can be changed by: ${statusRole(i.guildId) ? `<@&${statusRole(i.guildId)}>` : 'developers'}. Use the ⚙️ **Settings** button on the panel for the digest/changelog channels, matching sensitivity and cooldown.`, flags: EPH });
     }
 
     // ----- reporting -----
@@ -526,10 +588,35 @@ client.on('interactionCreate', async (i) => {
       const wait = cooldownLeft(i);
       return wait ? i.reply(waitMsg(wait)) : i.reply({ ...reportTypePayload(), flags: EPH });
     }
+    // Step 2: show the known problems for this ticket type before any form opens.
     if (i.isButton() && (id === 'rtype:install' || id === 'rtype:bug')) {
       if (!canReport(i)) return noReportAccess(i);
+      return i.update(faqPayload(i.guildId, id.slice(6)));
+    }
+    if (i.isStringSelectMenu() && id.startsWith('faq:')) {
+      const kind = id.slice(4);
+      const entry = faqEntries(kind, articles.list(i.guildId, { enabledOnly: true })).find((e) => e.id === i.values[0]);
+      if (!entry) return i.update(faqPayload(i.guildId, kind));
+      kbStats.bump(i.guildId, entry.id, 'shown');
+      return i.update(faqAnswerPayload(entry, kind));
+    }
+    if (i.isButton() && id.startsWith('faqok:')) {
+      const [, , ...rest] = id.split(':');
+      kbStats.bump(i.guildId, rest.join(':'), 'helped');
+      return i.update({ content: 'Glad that helped! 🎉 No ticket was opened.', embeds: [], components: [] });
+    }
+    if (i.isButton() && id.startsWith('faqno:')) {
+      const [, kind, ...rest] = id.split(':');
+      kbStats.bump(i.guildId, rest.join(':'), 'denied');
+      return i.update(faqPayload(i.guildId, kind));
+    }
+    // "None of these" / "Still happening": open the form.
+    if (i.isButton() && id.startsWith('rform:')) {
+      if (!canReport(i)) return noReportAccess(i);
+      const [, kind, ...rest] = id.split(':');
+      if (rest.length) kbStats.bump(i.guildId, rest.join(':'), 'filed');
       const wait = cooldownLeft(i);
-      return wait ? i.reply(waitMsg(wait)) : i.showModal(reportModal(id.slice(6)));
+      return wait ? i.reply(waitMsg(wait)) : i.showModal(reportModal(kind));
     }
     if (i.isModalSubmit() && (id === 'report:install' || id === 'report:bug')) {
       if (!canReport(i)) return noReportAccess(i);
@@ -547,9 +634,9 @@ client.on('interactionCreate', async (i) => {
       if (sugg.length) {
         const key = stash({ ...data, sugg, idx: 0 });
         kbStats.bump(i.guildId, sugg[0].id, 'shown');
-        return i.reply({ ...kbPayload(sugg, 0, key), flags: EPH });
+        return show(i, kbPayload(sugg, 0, key));
       }
-      await i.deferReply({ flags: EPH }); // re-hosting files can take longer than Discord's 3s limit
+      await deferHidden(i); // re-hosting files can take longer than Discord's 3s limit
       return i.editReply(await submitReport(i, data));
     }
     if (i.isButton() && id.startsWith('kbok:')) {
@@ -596,7 +683,7 @@ client.on('interactionCreate', async (i) => {
     }
 
     // ----- browsing -----
-    if (i.isButton() && id === 'browse') return i.reply({ ...browsePayload(i, { s: NONE, c: NONE, o: NONE }), flags: EPH });
+    if (i.isButton() && id === 'browse') return show(i, browsePayload(i, { s: NONE, c: NONE, o: NONE }));
     if (i.isStringSelectMenu() && id.startsWith('bfs:')) {
       const [c, o] = id.slice(4).split('|');
       return i.update(browsePayload(i, { s: i.values[0], c, o }));
@@ -611,7 +698,11 @@ client.on('interactionCreate', async (i) => {
     }
     if (i.isStringSelectMenu() && id === 'bfv') {
       const issue = await loadIssue(i, Number(i.values[0]));
-      return issue && i.reply({ ...renderIssue(issue), flags: EPH });
+      return issue && i.update(renderIssue(issue, { back: 'browse' }));
+    }
+    if (i.isStringSelectMenu() && id === 'bfb') { // a card picked on the developer board
+      const issue = await loadIssue(i, Number(i.values[0]));
+      return issue && i.update(renderIssue(issue, { back: 'dev:board' }));
     }
 
     // ----- issue message: status / priority / owner -----
@@ -621,7 +712,7 @@ client.on('interactionCreate', async (i) => {
       if (!issue) return;
       const status = i.values[0];
       if (status === 'fixed' && issue.status !== 'fixed') return i.showModal(fixedModal(issue));
-      return i.update(renderIssue(await applyStatus(i, issue, status)));
+      return i.update(card(i, await applyStatus(i, issue, status)));
     }
     if (i.isModalSubmit() && id.startsWith('fixed:')) {
       if (!canSetStatus(i)) return noStatusAccess(i);
@@ -631,7 +722,7 @@ client.on('interactionCreate', async (i) => {
         version: i.fields.getTextInputValue('version').trim(),
         note: i.fields.getTextInputValue('text').trim(),
       });
-      return i.isFromMessage() ? i.update(renderIssue(fresh)) : i.reply({ content: `Marked #${issue.id} fixed.`, flags: EPH });
+      return i.isFromMessage() ? i.update(card(i, fresh)) : i.reply({ content: `Marked #${issue.id} fixed.`, flags: EPH });
     }
     if (i.isStringSelectMenu() && id.startsWith('prio:')) {
       if (!isDev(i)) return devOnly(i, 'change priority');
@@ -640,7 +731,7 @@ client.on('interactionCreate', async (i) => {
       issues.setPriority(issue.id, i.values[0], i.user.id);
       events.add(issue.id, 'priority', i.user.id, `${PRIORITIES[issue.priority]?.label} → ${PRIORITIES[i.values[0]]?.label}`);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
-      return i.update(renderIssue(issues.get(issue.id)));
+      return i.update(card(i, issues.get(issue.id)));
     }
     if (i.isButton() && id.startsWith('assign:')) {
       if (!isDev(i)) return devOnly(i, 'take issues');
@@ -651,7 +742,7 @@ client.on('interactionCreate', async (i) => {
       events.add(issue.id, 'owner', i.user.id, mine ? 'unassigned' : 'took the issue');
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
       if (!mine) await threadSay(client, issue, `🙌 <@${i.user.id}> took this issue${issue.owner_id ? ` (from <@${issue.owner_id}>)` : ''}.`);
-      return i.update(renderIssue(issues.get(issue.id)));
+      return i.update(card(i, issues.get(issue.id)));
     }
 
     // ----- issue message: I have this too -----
@@ -832,7 +923,7 @@ client.on('interactionCreate', async (i) => {
       const report = reports.get(idOf(i));
       if (!report || report.user_id !== i.user.id) return i.reply({ content: 'That is not your report.', flags: EPH });
       if (!canReport(i)) return noReportAccess(i);
-      await i.deferReply({ flags: EPH });
+      await deferHidden(i); // replaces the "My reports" card in place when opened from there
       const editing = id.startsWith('edit:');
       if (editing) {
         reports.update(report.id, {
@@ -914,11 +1005,11 @@ client.on('interactionCreate', async (i) => {
       }
       if (i.isModalSubmit() && id === 'art:testm') {
         const found = suggest(i.fields.getTextInputValue('sample'), articles.list(i.guildId, { enabledOnly: true }));
-        return i.reply({
+        return show(i, {
           content: found.length
             ? `**Players writing that would be shown, in order:**\n${found.map((s, n) => `${n + 1}. ${s.custom ? '📚' : '💡'} **${trunc(s.title, 80)}** — ${Math.round(s.score * 100)}% match`).join('\n')}`
             : 'No suggestion would be shown for that text – the report would be filed straight away.',
-          flags: EPH,
+          embeds: [], components: [row(btn('art:back', 'Back', '⬅️'))],
         });
       }
       if (i.isModalSubmit() && id.startsWith('art:save:')) {
@@ -933,7 +1024,7 @@ client.on('interactionCreate', async (i) => {
           articles.update(a.id, data);
           a = articles.get(a.id);
         }
-        return i.reply({ ...articleView(a), flags: EPH });
+        return show(i, articleView(a));
       }
       if (i.isButton()) {
         const [, action] = id.split(':');
@@ -961,23 +1052,20 @@ client.on('interactionCreate', async (i) => {
     }
 
     // ----- developer board -----
-    if (i.isButton() && id === 'board:refresh') return i.update(boardPayload(i.guildId));
-    if (i.isButton() && id === 'board:mine') {
-      const payload = boardPayload(i.guildId, { owner: i.user.id, title: '🙌 Your cards' });
-      return i.message?.flags?.has(MessageFlags.Ephemeral) ? i.update(payload) : i.reply({ ...payload, flags: EPH });
+    if (i.isButton() && (id === 'board:refresh' || id === 'board:mine')) {
+      if (!isDev(i)) return devOnly(i, 'use the board');
+      return show(i, id === 'board:refresh' ? boardPayload(i.guildId) : boardPayload(i.guildId, { owner: i.user.id, title: '🙌 Your cards' }));
     }
 
-    // ----- developer tools on the panel -----
+    // ----- developer menu (one button on the panel; everything below is hidden) -----
     if (i.isButton() && id.startsWith('dev:')) {
       if (!isDev(i)) return devOnly(i, 'use these tools');
       switch (id) {
-        case 'dev:settings': return i.reply({ ...settingsPayload(i.guildId), flags: EPH });
-        case 'dev:dups': return i.reply({ ...dupPayload(i), flags: EPH });
-        case 'dev:articles': return i.reply({ ...articlesPayload(i.guildId), flags: EPH });
-        case 'dev:board': {
-          await postBoard(client, i.guildId, i.channel);
-          return i.reply({ content: '📌 Live board posted here. It updates by itself whenever an issue changes. Tip: post it in a developers-only channel.', flags: EPH });
-        }
+        case 'dev:menu': return show(i, devMenuPayload());
+        case 'dev:settings': return show(i, settingsPayload(i.guildId));
+        case 'dev:dups': return show(i, dupPayload(i));
+        case 'dev:articles': return show(i, articlesPayload(i.guildId));
+        case 'dev:board': return show(i, boardPayload(i.guildId));
         case 'dev:export': {
           const files = exportCsv(i.guildId);
           return i.reply({

@@ -97,10 +97,12 @@ addColumn('settings', 'status_role_id', 'TEXT');
 addColumn('settings', 'board_channel_id', 'TEXT');
 addColumn('settings', 'board_message_id', 'TEXT');
 addColumn('reports', 'edited_at', 'INTEGER');
+addColumn('settings', 'panel_channel_id', 'TEXT');   // the one public control-panel message
+addColumn('settings', 'panel_message_id', 'TEXT');
 addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = keep closed issues until deleted by hand
 
 const now = () => Date.now();
-const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days'];
+const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'panel_channel_id', 'panel_message_id'];
 
 export const settings = {
   get: (g) => db.prepare('SELECT * FROM settings WHERE guild_id = ?').get(g),

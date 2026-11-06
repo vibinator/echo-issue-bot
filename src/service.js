@@ -145,32 +145,44 @@ export function duplicatePairs(guildId, floor = 0.12) {
 
 // ---------- Discord messaging helpers ----------
 
-/** Create or refresh the tracker message (and its discussion thread) for an issue. */
+/**
+ * Keep an issue's control card up to date. Each issue lives in its own thread under the issues channel, with the
+ * card as the thread's first message – so the channel itself stays free of per-issue messages (only the one
+ * control panel is posted there). Older issues whose card is a normal channel message are still edited in place.
+ */
 export async function syncMessage(client, issue, channelId) {
-  const payload = renderIssue(issues.get(issue.id));
-  const targetChannel = issue.channel_id ?? channelId;
-  try {
-    if (issue.message_id && targetChannel) {
-      const ch = await client.channels.fetch(targetChannel);
-      const msg = await ch.messages.fetch(issue.message_id);
-      await msg.edit(payload);
-      refreshBoard(client, issue.guild_id);
+  const fresh = issues.get(issue.id);
+  if (!fresh) return;
+  const payload = renderIssue(fresh);
+
+  if (fresh.message_id && fresh.channel_id) {
+    try {
+      const ch = await client.channels.fetch(fresh.channel_id);
+      if (ch.archived) await ch.setArchived(false).catch(() => {}); // messages in an archived thread can't be edited
+      await (await ch.messages.fetch(fresh.message_id)).edit(payload);
+      refreshBoard(client, fresh.guild_id);
       return;
-    }
-  } catch { /* message deleted -> repost below */ }
+    } catch { /* card deleted -> recreate below */ }
+  }
   if (!channelId) return;
   try {
-    const ch = await client.channels.fetch(channelId);
-    const msg = await ch.send(payload);
-    issues.setMessage(issue.id, ch.id, msg.id);
+    const parent = await client.channels.fetch(channelId);
+    let card;
     try {
-      const thread = await msg.startThread({ name: trunc(`#${issue.id} ${issue.title}`, 100), autoArchiveDuration: 10080 });
-      issues.setThread(issue.id, thread.id);
+      const thread = await parent.threads.create({ name: trunc(`#${fresh.id} ${fresh.title}`, 100), autoArchiveDuration: 10080, reason: 'New Echo VR issue' });
+      card = await thread.send(payload);
+      issues.setMessage(fresh.id, thread.id, card.id);
+      issues.setThread(fresh.id, thread.id);
       await thread.send('💬 Use this thread for logs, screenshots and discussion about this issue.');
-    } catch { /* missing thread permissions – the tracker still works */ }
-    refreshBoard(client, issue.guild_id);
+    } catch (e) {
+      // No permission to create threads: fall back to a normal channel message so the issue is never lost.
+      console.error('Could not create the issue thread (give the bot Create Public Threads):', e.message);
+      card = await parent.send(payload);
+      issues.setMessage(fresh.id, parent.id, card.id);
+    }
+    refreshBoard(client, fresh.guild_id);
   } catch (e) {
-    console.error('Could not post tracker message:', e.message);
+    console.error('Could not post the issue card:', e.message);
   }
 }
 

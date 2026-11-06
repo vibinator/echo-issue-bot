@@ -23,7 +23,8 @@ export const PRIORITIES = {
 
 const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-export function renderIssue(issue) {
+/** `back`: custom id of a button to add that returns to the menu this card was opened from (hidden views only). */
+export function renderIssue(issue, { back } = {}) {
   const st = STATUSES[issue.status] ?? STATUSES.new;
   const pr = PRIORITIES[issue.priority] ?? PRIORITIES.normal;
   const stats = reports.stats(issue.id);
@@ -96,6 +97,9 @@ export function renderIssue(issue) {
 
   return {
     embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu), buttons, more],
+    components: [
+      new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu), buttons, more,
+      ...(back ? [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(back).setLabel('Back').setEmoji('⬅️').setStyle(ButtonStyle.Secondary))] : []),
+    ],
   };
 }

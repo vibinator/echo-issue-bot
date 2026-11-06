@@ -312,6 +312,19 @@ export function suggest(text, custom = [], max = 3, kind = null) {
     .map(({ p, score }) => ({ id: p.id, title: p.title, fix: p.fix, source: p.source, score, custom: p.custom }));
 }
 
+/**
+ * The "is it one of these?" list shown before a ticket form opens: every answer that fits the ticket type,
+ * the server's own articles first. Same shape as suggest() results.
+ */
+export function faqEntries(kind, custom = []) {
+  const mine = custom.map((a) => ({
+    id: `a:${a.id}`, title: a.title, fix: a.link ? `${a.body}\n\n🔗 ${a.link}` : a.body, source: 'Server knowledge base', custom: true,
+  }));
+  const builtIn = KB.filter((e) => (kind === 'install') === INSTALL_IDS.has(e.id))
+    .map((e) => ({ id: `kb:${e.id}`, title: e.title, fix: e.fix, source: e.source, custom: false }));
+  return [...mine, ...builtIn];
+}
+
 /** Best built-in match only: { entry, score } or null. (Kept for simple callers and tests.) */
 export function matchKb(text) {
   const best = suggest(text, [], 1)[0];

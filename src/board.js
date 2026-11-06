@@ -37,7 +37,7 @@ export function boardPayload(guildId, { owner, title } = {}) {
   const components = [];
   if (open.length) {
     components.push(new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder().setCustomId('bfv').setPlaceholder('Open a card…').addOptions(open.map((it) => ({
+      new StringSelectMenuBuilder().setCustomId('bfb').setPlaceholder('Open a card…').addOptions(open.map((it) => ({
         label: trunc(`#${it.id} ${it.title}`, 100),
         description: trunc(`${(PRIORITIES[it.priority] ?? PRIORITIES.normal).label} · ${it.category} · ${it.reporters} players${it.owner_id ? ' · assigned' : ''}`, 100),
         emoji: STATUSES[it.status].emoji,
@@ -47,12 +47,20 @@ export function boardPayload(guildId, { owner, title } = {}) {
   const b = (id, label, emoji) => new ButtonBuilder().setCustomId(id).setLabel(label).setEmoji(emoji).setStyle(ButtonStyle.Secondary);
   // On a personal ("My cards") view, Refresh keeps showing the personal view.
   components.push(new ActionRowBuilder().addComponents(...(owner
-    ? [b('board:mine', 'Refresh', '🔄'), b('board:refresh', 'Whole board', '📌')]
-    : [b('board:refresh', 'Refresh', '🔄'), b('board:mine', 'My cards', '🙌')])));
+    ? [b('board:mine', 'Refresh', '🔄'), b('board:refresh', 'Whole board', '📌'), b('dev:menu', 'Developer menu', '⬅️')]
+    : [b('board:refresh', 'Refresh', '🔄'), b('board:mine', 'My cards', '🙌'), b('dev:menu', 'Developer menu', '⬅️')])));
   return { content: '', embeds: [active, done], components };
 }
 
-/** Post the live board in `channel` (replacing the previous one) and remember it so it auto-updates. */
+/** Remove a leftover live board message (older versions posted one publicly; the board is now a hidden view). */
+export async function dropBoard(client, guildId) {
+  const cfg = settings.get(guildId);
+  if (!cfg?.board_message_id) return;
+  try { await (await (await client.channels.fetch(cfg.board_channel_id)).messages.fetch(cfg.board_message_id)).delete(); } catch { /* gone */ }
+  settings.update(guildId, { board_channel_id: null, board_message_id: null });
+}
+
+/** (Legacy) Post the live board in `channel` (replacing the previous one) and remember it so it auto-updates. */
 export async function postBoard(client, guildId, channel) {
   const cfg = settings.get(guildId);
   if (cfg?.board_message_id && cfg.board_channel_id) {

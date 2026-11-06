@@ -348,4 +348,58 @@ for (const p of [privacyPayload('123', 365), privacyPayload(null, 0), termsPaylo
 assert.ok(JSON.stringify(privacyPayload('123', 365)).includes('365 days'));
 assert.ok(JSON.stringify(privacyPayload('123', 0)).includes('/PRIVACY.md'));
 
+// ---- answers offered before a ticket form opens ----
+const { faqEntries } = await import('./kb.js');
+const installList = faqEntries('install');
+const bugList = faqEntries('bug');
+assert.ok(installList.some((e) => e.id === 'kb:quest_install_howto') && !installList.some((e) => e.id === 'kb:failed_to_load_level'));
+assert.ok(bugList.some((e) => e.id === 'kb:failed_to_load_level') && !bugList.some((e) => e.id === 'kb:quest_install_howto'));
+assert.ok(installList.length > 5 && bugList.length > 5);
+const withOwn = faqEntries('bug', [{ id: 9, title: 'Mine', body: 'Do X', link: 'https://example.com', symptoms: 's' }]);
+assert.equal(withOwn[0].id, 'a:9', "the server's own articles come first");
+assert.ok(withOwn[0].fix.includes('https://example.com'));
+assert.ok(new Set([...installList, ...bugList].map((e) => e.id)).size === installList.length + bugList.length, 'every answer is in exactly one list');
+
+// ---- one public message: issues live in threads, not as channel messages ----
+const { syncMessage } = await import('./service.js');
+const channelMsgs = [];
+const threadMsgs = [];
+const edits = [];
+const unarchived = [];
+let isArchived = false;
+const thr = {
+  id: 'th1',
+  get archived() { return isArchived; },
+  setArchived: async (v) => { isArchived = v; unarchived.push(v); },
+  send: async (p) => { threadMsgs.push(p); return { id: `card${threadMsgs.length}`, url: 'u' }; },
+  messages: { fetch: async () => ({ edit: async (p) => { edits.push(p); } }) },
+};
+const parentChan = { id: 'chan', threads: { create: async (o) => { parentChan.created = o; return thr; } }, send: async (p) => { channelMsgs.push(p); return { id: 'pub1' }; } };
+const tClient = { channels: { fetch: async (id) => (id === 'th1' ? thr : parentChan) } };
+const T = fileReport({ guildId: 'g8', userId: 't1', text: 'Disc sometimes disappears right after a goal is scored' });
+await syncMessage(tClient, T.issue, 'chan');
+const fresh8 = issues.get(T.issue.id);
+assert.equal(channelMsgs.length, 0, 'nothing is posted as a normal message in the issues channel');
+assert.equal(fresh8.thread_id, 'th1');
+assert.equal(fresh8.channel_id, 'th1', 'the control card lives inside the thread');
+assert.ok(fresh8.message_id);
+assert.ok(parentChan.created.name.startsWith(`#${T.issue.id} `));
+assert.ok(threadMsgs[0].components.length === 4, 'the first thread message is the issue card with its buttons');
+isArchived = true;
+await syncMessage(tClient, fresh8, 'chan');
+assert.equal(edits.length, 1, 'the second sync edits the card instead of posting another');
+assert.deepEqual(unarchived, [false], 'an archived thread is reopened so the card can be edited');
+assert.equal(threadMsgs.length, 2, 'only the card and the one intro line exist in the thread');
+// no thread permission: fall back to a channel message so the issue is never lost
+const T2 = fileReport({ guildId: 'g8', userId: 't2', text: 'Menu music keeps looping after I leave the lobby screen' });
+const noThreads = { id: 'chan2', threads: { create: async () => { throw new Error('Missing Permissions'); } }, send: async (p) => { channelMsgs.push(p); return { id: 'pub2' }; } };
+await syncMessage({ channels: { fetch: async () => noThreads } }, T2.issue, 'chan2');
+assert.equal(channelMsgs.length, 1);
+assert.equal(issues.get(T2.issue.id).message_id, 'pub2');
+// back button on cards opened from a hidden menu
+const withBack = renderIssue(issues.get(T.issue.id), { back: 'browse' });
+assert.equal(withBack.components.length, 5);
+assert.equal(withBack.components[4].toJSON().components[0].custom_id, 'browse');
+assert.equal(renderIssue(issues.get(T.issue.id)).components.length, 4, 'no Back button on the public card');
+
 console.log('All tests passed.');

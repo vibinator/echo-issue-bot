@@ -2,6 +2,8 @@
 
 Players report problems from a button panel. Known problems get an instant suggested fix (which they can deny), similar reports are grouped into one issue (typo tolerant), and developers manage priority, owner and status on a Trello-style board. Everything is buttons, menus and modals; the only slash command is `/setup`.
 
+**One public message.** The only message the bot keeps in the channel is the control panel; everything you open from it is private (only you see it) and navigates in place with Back buttons. Each issue is a **thread** under the issues channel, with its control card as the thread's first message – so the channel isn't flooded with one message per issue. Developer tools sit behind a single **🛠️ Developer** button. (Digest and changelog posts remain posts, as they are notifications.)
+
 ## Setup
 1. Create an app at https://discord.com/developers/applications → **Bot** → copy the token. No privileged intents are needed.
 2. Invite it with scopes `bot` + `applications.commands` and permissions: View Channels, Send Messages, Embed Links, Read Message History, **Create Public Threads**, **Send Messages in Threads**, Manage Threads.
@@ -12,18 +14,18 @@ Players report problems from a button panel. Known problems get an instant sugge
 6. Developers press ⚙️ **Settings** on the panel for the digest/changelog channels, matching sensitivity, stale-days and report cooldown.
 
 ## Reporting
-**📝 Report a problem** asks first: **🔧 Install issue** or **🐞 Bug in game**. The two types are never merged into each other (install issues share one *Install / Setup* category), and the install how-to answers are hidden from game-bug reports.
-Then a form (description, headset, version, links and up to 5 uploaded images/logs/videos). Before anything is filed the bot suggests known fixes – built-in answers (from the Echo VR community tooling docs and install guides) plus the developers' own knowledge articles. The player can press **That fixed it**, **Not my problem** (shows the next suggestion; after the last one the report is filed), or **Still happening – file my report**.
+**📝 Report a problem** goes: 1) **🔧 Install issue** or **🐞 Bug in game** → 2) *"is your problem one of these?"* – a menu of known problems for that type (the server's own articles first) with the fix and **That fixed it / Not my problem / Still happening** → 3) only if none fit, the form (description, headset, version, links and up to 5 uploaded images/logs/videos) → 4) a second automatic check of what they wrote against the known fixes (typo tolerant) before anything is filed. A ticket is only opened when the player says the problem remains. The two types are never merged into each other (install issues share one *Install / Setup* category), and install how-to answers are hidden from game-bug reports.
 Uploaded files are re-posted into the issue's thread (Discord's own upload links expire); very large videos should be pasted as links.
 
 ## My reports (players)
 📌 **My reports** lists everything you reported or follow, with a personal progress card (status, who is on it, fixed-in version, developer note, timeline). From there: ✏️ **Edit report**, 📎 **Add evidence**, 🔄 **Recalculate match** (re-checks which issue your edited report belongs to – it can move it or split it out), 🗑️ **Withdraw**, 🔔/🔕 follow an issue, and 🔕 turn progress DMs off.
 
-## Developer board & tools (roles below)
-- **📌 Post live board** – a Trello-style board (columns New | Seen | Fix in progress, then Fixed | Cannot reproduce | Won't fix) that updates itself whenever anything changes; ⏳ marks cards with no activity, 🙌 shows the owner, **My cards** filters to yours, the picker opens a card.
+## Developer menu (roles below)
+The panel's **🛠️ Developer** button opens a hidden menu: Board, Review duplicates, Knowledge articles, Settings, Digest, Export CSV, Back up now.
+- **📌 Board** – a Trello-style board (columns New | Seen | Fix in progress, then Fixed | Cannot reproduce | Won't fix); ⏳ marks cards with no activity, 🙌 shows the owner, **My cards** filters to yours, the picker opens a card (with a Back button), **Refresh** redraws it. It is a private view, not a public message.
 - On each issue: status (Fixed asks for the fixed-in version), priority, 🙌 assign to me, 💬 note, 🔀 merge, 🗑️ remove a spam report, 📜 history, 📚 **Make article** (turn a solved issue into a knowledge article).
 - **📚 Knowledge articles** – add/edit/disable articles (how players describe it, optional exact error text, the answer, a link). **Results** shows how often each suggestion was shown, helped, denied, or still led to a report; **Test matching** previews what a sample report would get.
-- 🔍 Review duplicates · 📊 Digest · 📤 Export CSV · 💾 Back up now · ⚙️ Settings.
+- 🔍 Review duplicates · 📊 Digest (posts to the digest channel) · 📤 Export CSV · 💾 Back up now · ⚙️ Settings.
 
 ## Roles
 `REPORTER_ROLE_ID` – only this role (and developers) can create reports. `STATUS_ROLE_ID` – **only** this role can change status (Manage Server does not bypass it). The developer role from `/setup` (or Manage Server) can use the other tools. Leave a variable empty for the default (anyone can report / any developer can change status).
