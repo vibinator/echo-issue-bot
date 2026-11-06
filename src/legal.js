@@ -22,7 +22,7 @@ export function privacyPayload(devRoleId, retentionDays) {
       '',
       '**Why:** to group and fix problems, show you progress, and DM you when an issue you reported or follow changes. Nothing else.',
       '',
-      '**Who can see it:** anyone who can see the issue channel sees your mention and the text of your report. **Your attachments and links are visible only to you (the *requester* – whoever sent the report) and the developers**, and the bot checks that each time they are opened. Developers also see a CSV export that includes user IDs.',
+      '**Who can see it:** anyone who can see the issue channel sees your mention and the text of your report. **Your attachments and links are visible only to you (the *requester* – whoever sent the report) and the developers**, and the bot checks that each time they are opened. Text in screenshots is read by the bot itself, on its own server (never sent to an outside service), to suggest known fixes; that text is stored with the screenshot, is visible only to you and the developers, and is deleted with it. Developers also see a CSV export that includes user IDs.',
       '',
       '**Not done:** no selling or sharing, no ads, no third-party analytics, no AI training. Matching uses simple word similarity run on our own server.',
       '',

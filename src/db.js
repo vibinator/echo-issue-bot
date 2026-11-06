@@ -130,6 +130,9 @@ addColumn('settings', 'article_role_id', 'TEXT');    // can manage knowledge art
 addColumn('settings', 'panel_channel_id', 'TEXT');   // the one public control-panel message
 addColumn('settings', 'panel_message_id', 'TEXT');
 addColumn('settings', 'auto_merge', 'INTEGER NOT NULL DEFAULT 0'); // 1 = merge near-identical open issues automatically
+addColumn('articles', 'draft', 'INTEGER NOT NULL DEFAULT 0');       // 1 = proposed from a resolved issue, waiting for a person to publish it
+addColumn('articles', 'source_issue_id', 'INTEGER');                 // the issue a draft was proposed from (one draft per issue)
+addColumn('evidence', 'ocr_text', 'TEXT');                           // text read from a screenshot ('' = looked, nothing found; NULL = not looked at yet)
 addColumn('issues', 'thread_archived', 'INTEGER NOT NULL DEFAULT 0'); // 1 = the bot archived this fixed issue's thread
 addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = keep closed issues until deleted by hand
 
@@ -226,6 +229,7 @@ export const evidence = {
   ).run(e.issue_id, e.report_id ?? null, e.user_id, e.kind, e.name, e.url ?? '', e.path ?? null, e.channel_id ?? null, e.message_id ?? null, now()).lastInsertRowid),
   forIssue: (issueId) => db.prepare('SELECT * FROM evidence WHERE issue_id = ? ORDER BY report_id, id').all(issueId),
   forReport: (reportId) => db.prepare('SELECT * FROM evidence WHERE report_id = ?').all(reportId),
+  setOcr: (id, text) => db.prepare('UPDATE evidence SET ocr_text = ? WHERE id = ?').run(text, id),
   moveReport: (reportId, to) => db.prepare('UPDATE evidence SET issue_id = ? WHERE report_id = ?').run(to, reportId),
   moveAll: (from, to) => db.prepare('UPDATE evidence SET issue_id = ? WHERE issue_id = ?').run(to, from),
   deleteForReport: (reportId) => db.prepare('DELETE FROM evidence WHERE report_id = ?').run(reportId),
@@ -306,7 +310,7 @@ export const events = {
  */
 const ARTICLES_FILE = process.env.ARTICLES_FILE ?? (DB_PATH === ':memory:' ? null : path.join(path.dirname(DB_PATH), 'knowledge-articles.json'));
 const ARTICLES_COPY = ARTICLES_FILE && !process.env.ARTICLES_FILE ? path.join(BACKUP_DIR, 'knowledge-articles.json') : null;
-const ARTICLE_FIELDS = ['guild_id', 'title', 'symptoms', 'phrases', 'body', 'link', 'enabled', 'created_by', 'created_at', 'updated_at'];
+const ARTICLE_FIELDS = ['guild_id', 'title', 'symptoms', 'phrases', 'body', 'link', 'enabled', 'draft', 'source_issue_id', 'created_by', 'created_at', 'updated_at'];
 let journalReady = false; // never overwrite the file before the first restore has had a chance to read it
 
 function writeJournal() {
@@ -338,9 +342,10 @@ ${String(a.title).toLowerCase()}`;
         seen.add(key);
         const have = db.prepare('SELECT 1 FROM articles WHERE guild_id = ? AND lower(title) = lower(?)').get(a.guild_id, a.title);
         if (have) continue;
-        db.prepare(`INSERT INTO articles (guild_id, title, symptoms, phrases, body, link, enabled, created_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(a.guild_id, a.title, a.symptoms, a.phrases ?? null, a.body, a.link ?? null, a.enabled === 0 ? 0 : 1, a.created_by ?? null, a.created_at ?? now(), a.updated_at ?? now());
+        db.prepare(`INSERT INTO articles (guild_id, title, symptoms, phrases, body, link, enabled, draft, source_issue_id, created_by, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(a.guild_id, a.title, a.symptoms, a.phrases ?? null, a.body, a.link ?? null, a.enabled === 0 ? 0 : 1, a.draft ? 1 : 0, a.source_issue_id ?? null,
+            a.created_by ?? null, a.created_at ?? now(), a.updated_at ?? now());
         restored++;
       }
     }
@@ -355,9 +360,10 @@ ${String(a.title).toLowerCase()}`;
 export const articles = {
   add: (a) => {
     const id = Number(db.prepare(
-      `INSERT INTO articles (guild_id, title, symptoms, phrases, body, link, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(a.guild_id, a.title, a.symptoms, a.phrases || null, a.body, a.link || null, a.created_by ?? null, now(), now()).lastInsertRowid);
+      `INSERT INTO articles (guild_id, title, symptoms, phrases, body, link, enabled, draft, source_issue_id, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(a.guild_id, a.title, a.symptoms, a.phrases || null, a.body, a.link || null, a.draft ? 0 : 1, a.draft ? 1 : 0, a.source_issue_id ?? null,
+      a.created_by ?? null, now(), now()).lastInsertRowid);
     writeJournal();
     return id;
   },
@@ -370,7 +376,11 @@ export const articles = {
       .run(a.title, a.symptoms, a.phrases || null, a.body, a.link || null, now(), id);
     writeJournal();
   },
-  setEnabled: (id, enabled) => { db.prepare('UPDATE articles SET enabled = ?, updated_at = ? WHERE id = ?').run(enabled ? 1 : 0, now(), id); writeJournal(); },
+  /** Turning an article on also publishes a draft (it stops being one). */
+  setEnabled: (id, enabled) => { db.prepare('UPDATE articles SET enabled = ?, draft = CASE WHEN ? = 1 THEN 0 ELSE draft END, updated_at = ? WHERE id = ?').run(enabled ? 1 : 0, enabled ? 1 : 0, now(), id); writeJournal(); },
+  drafts: (guild) => db.prepare('SELECT * FROM articles WHERE guild_id = ? AND draft = 1 ORDER BY id DESC').all(guild),
+  /** The article (draft or not) that was proposed from this issue, if any, so an issue only ever gets one. */
+  forIssue: (issueId) => db.prepare('SELECT * FROM articles WHERE source_issue_id = ?').get(issueId),
   delete: (id) => { db.prepare('DELETE FROM articles WHERE id = ?').run(id); writeJournal(); },
 };
 restoreArticles(); // on every start: bring back anything the database lost, then begin keeping the file up to date

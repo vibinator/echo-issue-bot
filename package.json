@@ -9,6 +9,11 @@
     "test": "node --no-warnings src/test.js && node --no-warnings src/e2e.js",
     "e2e": "node --no-warnings src/e2e.js"
   },
-  "engines": { "node": ">=22.5" },
-  "dependencies": { "discord.js": "^14.16.0" }
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.0",
+    "tesseract.js": "^7.0.0"
+  }
 }

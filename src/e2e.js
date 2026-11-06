@@ -9,6 +9,8 @@ process.env.EVIDENCE_MAX_MB = '1';
 process.env.BACKUP_DIR = mkdtempSync(join(tmpdir(), 'evr-e2e-backups-'));
 delete process.env.REPORTER_ROLE_ID; delete process.env.ARTICLE_ROLE_ID;
 
+const ocr = await import('./ocr.js');
+ocr.setRecognizer(async () => ''); // tests never run the real OCR engine; a block below plugs in a fake reader
 const ui = await import('./index.js');
 const S = await import('./sim.js');
 const db = await import('./db.js');
@@ -343,6 +345,18 @@ console.log('8. developer workflow');
   check(logCh.sent.some((m) => /0\.13\.20/.test(JSON.stringify(plain(m.payload)))), 'a "fixed" announcement with the version is posted');
   check(sim.dms.some((d) => d.to === 'alice' && /0\.13\.20/.test(d.content)), 'the reporter is told which version has the fix');
 
+  // the fix proposes a knowledge article: a draft players can't see, announced to developers, published by a person
+  const draft = db.articles.forIssue(aliceIssueId);
+  check(draft && draft.draft === 1 && draft.enabled === 0 && /new installer/.test(draft.body) && /0\.13\.20/.test(draft.body), 'marking fixed with a note proposes a draft article from the resolution');
+  check(!db.articles.list('G', { enabledOnly: true }).some((a) => a.id === draft.id), 'a draft is not shown to players');
+  const proposal = digestCh.sent.find((m) => /proposed/.test(JSON.stringify(plain(m.payload))));
+  check(proposal && labelsOf(plain(proposal.payload)).join('|').includes('Publish'), 'the proposal is posted to the developer channel with Publish / Review / Discard');
+  check(has((await press(dev, panelScreen, 'art:drafts')).out.payload, /Drafts to review/), 'the Drafts list opens');
+  r = await press(dev, panelScreen, `art:dpub:${draft.id}`);
+  check(db.articles.get(draft.id).enabled === 1 && db.articles.get(draft.id).draft === 0, 'Publish turns the draft into a live article');
+  await submit(dev, cardScreen(), `fixed:${aliceIssueId}`, { version: '0.13.20', text: 'Fixed in the new installer' });
+  check(db.articles.list('G').filter((a) => a.source_issue_id === aliceIssueId).length === 1, 'an issue never gets a second proposed article');
+
   // a new report on the fixed issue reopens it, and separating it puts it back
   db.settings.update('G', { cooldown_sec: 0 });
   const reopen = await submit(carol, panelScreen, 'report:install', { text: 'Problem parsing the package when I tap install on my Quest again', platform: '', version: '0.13.20', links: '' });
@@ -362,7 +376,7 @@ console.log('9. knowledge articles');
   const m = await press(editor, r.screen, 'art:new');
   check(m.out.modal, 'New article opens a form');
   const created = await submit(editor, r.screen, 'art:save:new', { title: 'Why am I suspended', symptoms: 'i am suspended\nmy account is banned\nwhy am i banned', phrases: 'account suspended', body: 'Check the rules channel, then appeal.', link: 'https://example.com/appeal' });
-  const art = db.articles.list('G')[0];
+  const art = db.articles.list('G').find((a) => a.title === 'Why am I suspended');
   check(art && art.created_by === 'editor', 'the article is saved with its author');
   check(has(created.out.payload, /Why am I suspended/), 'the article view is shown');
   // players now see it, ranked first for a matching sentence
@@ -393,6 +407,61 @@ console.log('9. knowledge articles');
   check(has(stranger.out.payload, /can only be changed by developers/), 'a player cannot delete articles');
 }
 
+// ================================================================= 9b. screenshot text → known fixes
+console.log('9b. screenshot text');
+{
+  ocr.setRecognizer(async () => 'There was a problem parsing the package\n@@ ## ..\nINSTALL_FAILED_UPDATE_INCOMPATIBLE');
+  db.settings.update('G', { cooldown_sec: 0 });
+  const png = [{ name: 'quest error.png', url: 'https://cdn.discordapp.com/a/quest-error.png', size: 12, contentType: 'image/png' }];
+  const r = await submit(carol, panelScreen, 'report:install', { text: 'my install keeps failing, see the screenshot', platform: 'Quest 3', version: '', links: '' }, png);
+  check(r.i.responses.some((x) => x.type === 'editReply'), 'the report is confirmed first');
+  await new Promise((res) => setTimeout(res, 100));
+  const order = r.i.responses.map((x) => x.type);
+  const follow = r.i.responses.find((x) => x.type === 'followUp');
+  check(follow && /problem parsing|Files/i.test(JSON.stringify(plain(follow.payload))) && /read the text in your screenshot/.test(JSON.stringify(plain(follow.payload))), 'the player is privately shown the known fix that matches the text in their screenshot');
+  check(order.indexOf('followUp') > order.indexOf('editReply'), 'the fix arrives after the confirmation, never before it');
+  check(follow.payload.flags !== undefined, 'the suggestion is private (ephemeral)');
+  const ev = db.evidence.forIssue(db.issues.list('G').find((x) => db.reports.forIssue(x.id).some((y) => y.user_id === 'carol')).id).find((e) => e.kind === 'image');
+  check(ev && /INSTALL_FAILED/.test(ev.ocr_text) && !/@@/.test(ev.ocr_text), 'the text is stored with the screenshot, symbol-only junk lines removed');
+  const dv = await press(dev, panelScreen, `evall:${ev.issue_id}`);
+  check(/Text read from the image/.test(JSON.stringify(dv.i.responses)), 'developers see the text next to the screenshot');
+  check(!/INSTALL_FAILED/.test(textOf(cardOf(ev.issue_id).payload)), 'the public card never shows text from a screenshot');
+
+  // nothing readable (or OCR unavailable) → no suggestion, report unaffected
+  ocr.setRecognizer(async () => '');
+  const r2 = await submit(carol, panelScreen, 'report:bug', { text: 'weird flicker in the lobby after the update', platform: 'PC', version: '', links: '' }, png);
+  await new Promise((res) => setTimeout(res, 50));
+  check(has(r2.out.payload, /report has been sent|added to/) && !r2.i.responses.some((x) => x.type === 'followUp'), 'a screenshot with no readable text changes nothing');
+  ocr.setRecognizer(async () => { throw new Error('engine crashed'); });
+  const r3 = await submit(carol, panelScreen, 'report:bug', { text: 'another unrelated hiccup with voice chat cutting out', platform: 'PC', version: '', links: '' }, png);
+  await new Promise((res) => setTimeout(res, 50));
+  check(has(r3.out.payload, /report has been sent|added to/), 'an OCR failure never breaks reporting');
+  ocr.setRecognizer(async () => '');
+  db.settings.update('G', { cooldown_sec: 60 });
+}
+
+// ================================================================= 9a. developers can't miss open problems
+console.log('9a. attention');
+{
+  db.settings.update('G', { cooldown_sec: 0 });
+  const before = digestCh.sent.length;
+  await submit(bob, panelScreen, 'report:bug', { text: 'the whole game crashes and freezes my headset every time the lobby loads', platform: 'PC', version: '', links: '' });
+  await new Promise((res) => setTimeout(res, 30));
+  const alert = digestCh.sent.slice(before).find((m) => /New issue/.test(JSON.stringify(plain(m.payload))));
+  check(alert && /alert:open:/.test(JSON.stringify(plain(alert.payload))), 'a new issue posts an alert with an Open card button in the developer channel');
+  check(alert && /<@&R_DEV>/.test(JSON.stringify(plain(alert.payload))), 'a high-priority (crash) issue pings the developer role');
+  const open = db.issues.list('G').find((x) => x.status === 'new');
+  const o = await press(dev, panelScreen, `alert:open:${open.id}`);
+  check(o.i.responses.some((x) => x.type === 'reply'), 'a developer can open the issue straight from the alert');
+  const no = await press(alice, panelScreen, `alert:open:${open.id}`);
+  check(/developer/i.test(JSON.stringify(no.i.responses)), 'a player pressing that button is refused');
+  const panel = ui.panelPayload('G');
+  check(buttonsOf(plain(panel)).some((c) => /need attention/.test(c.label ?? '') && c.style === 4), 'the Developer button on the panel turns red and shows how many need attention');
+  const menu = await press(dev, panelScreen, 'dev:menu');
+  check(has(menu.out.payload, /Needs attention/) && labelsOf(menu.out.payload).some((l) => /Board \(\d+ new\)/.test(l)), 'the developer menu says what needs attention and the Board button shows the new count');
+  db.settings.update('G', { cooldown_sec: 60 });
+}
+
 // ================================================================= 10. duplicates, merge, board, digest, export, backup
 console.log('10. dev tools');
 {
@@ -412,7 +481,7 @@ console.log('10. dev tools');
   r = await press(dev, r.screen, 'board:mine');
   check(has(r.out.payload, /Your cards/), '"Only mine" filters the board');
   r = await press(dev, panelScreen, 'dev:digest');
-  check(has(r.out.payload, /digest was posted/) && digestCh.sent.length === 1, 'the digest is posted to the digest channel');
+  check(has(r.out.payload, /digest was posted/) && digestCh.sent.filter((m) => !/proposed|New issue|Reopened/.test(JSON.stringify(plain(m.payload)))).length === 1, 'the digest is posted to the digest channel');
   r = await press(dev, panelScreen, 'dev:export');
   check(r.i.responses.some((x) => x.type === 'reply') && has(r.out.payload, /user IDs/), 'the export warns it contains user IDs');
   r = await press(dev, panelScreen, 'dev:backup');

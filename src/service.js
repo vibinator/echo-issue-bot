@@ -2,7 +2,8 @@ import { EmbedBuilder } from 'discord.js';
 import { decisions, events, evidence, issues, prefs, reports, watchers } from './db.js';
 import { refreshBoard } from './board.js';
 import { kindOfFile, kindOfLink, linkName } from './evidence.js';
-import { removeReportFiles, saveFromUrl } from './evidenceStore.js';
+import { readStored, removeReportFiles, saveFromUrl } from './evidenceStore.js';
+import { readImageText } from './ocr.js';
 import { rankSimilar, similarPairs } from './similarity.js';
 import { detectCategory, INSTALL_CATEGORY } from './categories.js';
 import { renderIssue } from './render.js';
@@ -225,6 +226,27 @@ export async function attachEvidence(client, issue, userId, reportId, { links = 
     }
   }
   return result;
+}
+
+const OCR_IMAGES_PER_REPORT = 4; // reading is CPU-heavy; a report rarely needs more than a few screenshots read
+
+/**
+ * Read the text in a report's screenshots (once each; the result is stored with the attachment, so it is erased with it).
+ * Returns all the text found, or '' if there's none or OCR isn't available.
+ */
+export async function readScreenshots(reportId) {
+  const found = [];
+  const images = evidence.forReport(reportId).filter((r) => r.kind === 'image' && r.path && /\.(png|jpe?g|bmp|webp)$/i.test(r.name));
+  for (const r of images.slice(0, OCR_IMAGES_PER_REPORT)) {
+    let text = r.ocr_text;
+    if (text == null) {
+      const data = readStored(r.path);
+      text = data ? await readImageText(data) : '';
+      evidence.setOcr(r.id, text);
+    }
+    if (text) found.push(text);
+  }
+  return found.join('\n').slice(0, 3000);
 }
 
 /** Remove a report's evidence: stored files, rows, and (for older reports) any thread message that held the files. */

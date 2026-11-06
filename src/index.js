@@ -13,7 +13,7 @@ import { errorMessage, explainError, fileFailureReason } from './errors.js';
 import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored } from './evidenceStore.js';
 import {
-  attachEvidence, purgeEvidence, duplicatePairs, fileReport, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
+  attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
   eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
@@ -136,7 +136,49 @@ const getDraft = (userId) => {
 
 // ---------- panel, modals & forms ----------
 
-function panelPayload() {
+/** What developers should look at: brand-new issues nobody has opened, issues gone quiet, and open high-priority ones. */
+function attention(guildId) {
+  const staleBefore = Date.now() - cfgOf(guildId).stale_days * 864e5;
+  const list = issues.list(guildId);
+  const fresh = list.filter((x) => x.status === 'new').length;
+  const stale = list.filter((x) => (x.status === 'seen' || x.status === 'in_progress') && x.updated_at < staleBefore).length;
+  const urgent = list.filter((x) => ['new', 'seen', 'in_progress'].includes(x.status) && ['critical', 'high'].includes(x.priority)).length;
+  return { fresh, stale, urgent, total: fresh + stale, days: cfgOf(guildId).stale_days };
+}
+
+/** Redraw the public panel so its Developer button shows the current count. Debounced: a burst of reports edits it once. */
+const panelTimers = new Map();
+function refreshPanel(guildId) {
+  if (panelTimers.has(guildId)) return;
+  const t = setTimeout(async () => {
+    panelTimers.delete(guildId);
+    const cfg = settings.get(guildId);
+    if (!cfg?.panel_channel_id || !cfg.panel_message_id) return;
+    try { await (await (await client.channels.fetch(cfg.panel_channel_id)).messages.fetch(cfg.panel_message_id)).edit(panelPayload(guildId)); }
+    catch (e) { console.error(`Could not refresh the panel in ${guildId}: ${e.message}`); }
+  }, 5000);
+  t.unref?.();
+  panelTimers.set(guildId, t);
+}
+
+/** A new issue was filed or a fixed one came back: tell the developers where they'll see it (pinging them only when it's urgent). */
+async function alertDevs(issue, why) {
+  try {
+    const chId = cfgOf(issue.guild_id).dev_channel_id;
+    if (!chId) return; // no developer channel chosen: the panel button and developer menu still show the count
+    const urgent = why === 'reopened' || ['critical', 'high'].includes(issue.priority);
+    const role = urgent ? settings.get(issue.guild_id)?.dev_role_id : null;
+    const pr = PRIORITIES[issue.priority] ?? PRIORITIES.normal;
+    await (await client.channels.fetch(chId)).send({
+      content: `${role ? `<@&${role}> ` : ''}${why === 'reopened' ? '⚠️ **Reopened**' : '🆕 **New issue**'} #${issue.id} · ${pr.emoji} ${pr.label} · ${trunc(issue.title.replace(/\s+/g, ' '), 150)}`,
+      components: [row(btn(`alert:open:${issue.id}`, 'Open card', '📋', ButtonStyle.Primary))],
+      allowedMentions: role ? { roles: [role] } : { parse: [] },
+    });
+  } catch (e) { console.error('Could not alert the developers:', e.message); }
+}
+
+function panelPayload(guildId) {
+  const todo = guildId ? attention(guildId).total : 0;
   const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('Echo VR – Problem Tracker')
     .setDescription([
       'Something not working? Let the developers know here.',
@@ -152,18 +194,20 @@ function panelPayload() {
     components: [
       row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Known issues', '📋'), btn('mine', 'My reports', '📌'),
         btn('legal:privacy', 'Data & privacy', '🔒'), btn('legal:terms', 'Terms of use', '📜')),
-      row(btn('dev:menu', 'Developer', '🛠️'), btn('dev:articles', 'Knowledge articles', '📚')),
+      row(todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️'), btn('dev:articles', 'Knowledge articles', '📚')),
     ],
   };
 }
 
 /** Everything developers need, one hidden menu behind a single button on the panel. */
-function devMenuPayload() {
+function devMenuPayload(guildId) {
+  const a = guildId ? attention(guildId) : null;
+  const parts = a ? [a.fresh && `🆕 **${a.fresh}** new issue${a.fresh === 1 ? '' : 's'} nobody has looked at`, a.stale && `⏳ **${a.stale}** quiet for ${a.days}+ days`, a.urgent && `🔴 **${a.urgent}** open with high or critical priority`].filter(Boolean) : [];
   return {
-    content: '**🛠️ Developer menu** – only you can see this.',
+    content: `**🛠️ Developer menu** – only you can see this.\n${parts.length ? `⚠️ **Needs attention:** ${parts.join(' · ')}` : '✅ Nothing needs attention right now.'}`,
     embeds: [],
     components: [
-      row(btn('dev:board', 'Board', '📌'), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:articles', 'Knowledge articles', '📚')),
+      row(btn('dev:board', a?.fresh ? `Board (${a.fresh} new)` : 'Board', '📌', a?.total ? ButtonStyle.Danger : ButtonStyle.Secondary), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:articles', 'Knowledge articles', '📚')),
       row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊')),
       row(btn('dev:export', 'Export CSV', '📤'), btn('dev:backup', 'Back up now', '💾')),
     ],
@@ -324,13 +368,46 @@ async function sendEvidence(i, rows, heading) {
     const emoji = KIND_EMOJI[r.kind] ?? '📎';
     if (r.path) {
       const data = readStored(r.path);
-      if (data) { files.push(new AttachmentBuilder(data, { name: r.name })); lines.push(`• ${emoji} ${trunc(r.name, 80)} _(attached)_`); }
+      if (data) {
+        files.push(new AttachmentBuilder(data, { name: r.name })); lines.push(`• ${emoji} ${trunc(r.name, 80)} _(attached)_`);
+        if (r.ocr_text) lines.push(`  🔎 _Text read from the image:_ ${trunc(r.ocr_text.replace(/\s+/g, ' '), 220)}`);
+      }
       else lines.push(`• ${emoji} ${trunc(r.name, 80)} _(file is no longer available)_`);
     } else lines.push(`• ${emoji} ${r.url}`);
   }
   const body = { content: trunc(lines.join('\n'), 1900), allowedMentions: { parse: [] } };
   await i.editReply({ ...body, files: files.slice(0, 10) });
   for (let n = 10; n < files.length; n += 10) await i.followUp({ files: files.slice(n, n + 10), flags: EPH }); // Discord allows 10 per message
+}
+
+/**
+ * Read the text in a report's screenshots and, if it matches a known fix, send the player that fix privately. Runs in the
+ * background after the confirmation reply, never throws, and never posts the screenshot text anywhere public.
+ */
+async function scanScreenshots(i, { reportId, text, kind }) {
+  try {
+    const found = await readScreenshots(reportId);
+    if (!found) return;
+    const matches = suggest(`${text}\n${found.slice(0, 800)}`, articles.list(i.guildId, { enabledOnly: true }), 3, kind, kbBoosts(i.guildId));
+    if (!matches.length) return;
+    for (const m of matches) kbStats.bump(i.guildId, m.id, 'shown');
+    await i.followUp({
+      content: `🔎 **I read the text in your screenshot** and found ${matches.length === 1 ? 'a known fix' : 'some known fixes'} that may help while the developers look at your report:`,
+      embeds: matches.map((m) => new EmbedBuilder().setColor(0xfee75c).setTitle(`💡 ${trunc(m.title, 250)}`).setDescription(trunc(m.fix, 4000)).setFooter({ text: `Source: ${m.source}` })),
+      flags: EPH,
+    });
+  } catch (e) { console.error('Reading the screenshot failed:', e.message); }
+}
+
+/** Start reading screenshots right after this interaction's confirmation reply has been sent (not before: Discord needs that first). */
+function scanAfterReply(i, info) {
+  const send = i.editReply.bind(i);
+  i.editReply = async (...args) => {
+    i.editReply = send;
+    const out = await send(...args);
+    scanScreenshots(i, info);
+    return out;
+  };
 }
 
 /** Links + uploaded files from a submitted report form. */
@@ -415,14 +492,14 @@ function settingsPayload(guildId) {
       `• Who can send reports: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} _(change with \`/setup\`)_ · developers can change an issue's status`,
       `• Who can edit knowledge articles: developers${articleRole(guildId) ? ` and <@&${articleRole(guildId)}>` : ''} _(editor role: \`/setup article_role:\`)_`,
       `• Closed issues are ${c.retention_days ? `deleted after **${c.retention_days} days** without activity` : '**kept** until deleted by hand'} _(change with \`/setup retention_days:\`)_`,
-      `• Weekly digest goes to: ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'} · fixed-issue announcements go to: ${c.changelog_channel_id ? `<#${c.changelog_channel_id}>` : '_not set_'}`,
+      `• Weekly digest and new-issue alerts go to: ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'} · fixed-issue announcements go to: ${c.changelog_channel_id ? `<#${c.changelog_channel_id}>` : '_not set_'}`,
     ].join('\n'),
     embeds: [],
     components: [
       pick('set_thr', 'How alike must reports be to group together?', [['Strict – fewer groups', 0.35, 'Keeps more reports as separate issues'], ['Balanced', 0.25, 'Recommended'], ['Loose – more groups', 0.18, 'Groups similar reports more eagerly']], c.threshold),
       pick('set_stale', 'Flag issues that go quiet after…', [['3 days', 3], ['7 days', 7], ['14 days', 14], ['30 days', 30]], c.stale_days),
       pick('set_cd', 'Pause between one player\'s reports', [['No pause', 0], ['30 seconds', 30], ['1 minute', 60], ['5 minutes', 300]], c.cooldown_sec),
-      chanMenu('set_devch', 'Where should the weekly digest go? (developers)', c.dev_channel_id),
+      chanMenu('set_devch', 'Where should the weekly digest and new-issue alerts go? (developers)', c.dev_channel_id),
       chanMenu('set_logch', 'Where should "fixed" announcements go? (public)', c.changelog_channel_id),
     ],
   };
@@ -488,7 +565,11 @@ async function applyStatus(i, issue, status, { version, note } = {}) {
       const devNote = fresh.dev_note ? `\n> ${fresh.dev_note}` : '';
       notifyReporters(client, fresh, `${STATUS_DM[status](`#${fresh.id} – ${trunc(fresh.title, 120)}`)}${update}${devNote}\n_You can turn these messages off under **My reports**._`).catch(() => {});
     }
-    if (status === 'fixed') await postChangelog(client, fresh, cfgOf(i.guildId).changelog_channel_id);
+    if (status === 'fixed') {
+      await postChangelog(client, fresh, cfgOf(i.guildId).changelog_channel_id);
+      await proposeArticle(fresh, i.user.id);
+    }
+    refreshPanel(i.guildId);
   }
   return fresh;
 }
@@ -499,11 +580,14 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
   await syncMessage(client, res.issue, cfg.channel_id);
   const ev = await attachEvidence(client, res.issue, i.user.id, res.reportId, evidence);
   const saved = ev.saved;
+  if (saved) scanAfterReply(i, { reportId: res.reportId, text, kind });
   if (saved) await syncMessage(client, issues.get(res.issue.id), cfg.channel_id);
   if (res.reopened) {
     await threadSay(client, res.issue, `⚠️ Reopened by a new report${res.fixedVersion ? ` (it was fixed in \`${res.fixedVersion}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
   }
   const fresh = issues.get(res.issue.id);
+  if (res.created) alertDevs(fresh, 'new'); else if (res.reopened) alertDevs(fresh, 'reopened');
+  refreshPanel(i.guildId);
   const where = fresh.channel_id ? ` You can follow the discussion in <#${fresh.channel_id}>.` : '';
   const evidenceLine = (saved ? `\n📎 Saved ${countLine(saved)} with your report – only you and the developers can see them.` : '') + failNote(ev);
   const next = '\nYou\'ll get a message when its status changes. See everything under **My reports**.';
@@ -644,16 +728,18 @@ const articleModal = (a, prefill = {}) => new ModalBuilder().setCustomId(`art:sa
 const canDeleteArticle = (i, a) => isDev(i) || (!!a.created_by && a.created_by === i.user.id); // editors may delete only articles they created
 function articleView(a, canDelete = true) {
   const s = kbStats.get(a.guild_id, `a:${a.id}`);
-  const embed = new EmbedBuilder().setColor(a.enabled ? 0xfee75c : 0x95a5a6).setTitle(`📚 ${trunc(a.title, 240)}${a.enabled ? '' : ' (disabled)'}`)
+  const embed = new EmbedBuilder().setColor(a.draft ? 0x3498db : a.enabled ? 0xfee75c : 0x95a5a6).setTitle(`📚 ${trunc(a.title, 240)}${a.draft ? ' (draft – players can\'t see it yet)' : a.enabled ? '' : ' (disabled)'}`)
     .addFields(
       { name: 'Matches players who write', value: trunc(a.symptoms, 1024) },
       ...(a.phrases ? [{ name: 'Always matches this exact text', value: trunc(a.phrases, 1024) }] : []),
       { name: 'Answer players see', value: trunc(a.link ? `${a.body}\n\n🔗 ${a.link}` : a.body, 1024) },
       { name: 'How it\'s doing', value: `Viewed ${s.shown}× · ✅ fixed it ${s.helped}× · 🙅 not their problem ${s.denied}× · 📝 sent a report anyway ${s.filed}×` },
     );
+  if (a.draft) embed.setFooter({ text: `Proposed from the fix for issue #${a.source_issue_id}. Check the wording, then press Publish.` });
   return {
     content: '', embeds: [embed],
-    components: [row(btn(`art:edit:${a.id}`, 'Edit', '✏️'), btn(`art:tog:${a.id}`, a.enabled ? 'Disable' : 'Enable', a.enabled ? '⏸️' : '▶️'),
+    components: [row(btn(`art:edit:${a.id}`, 'Edit', '✏️'),
+      a.draft ? btn(`art:tog:${a.id}`, 'Publish', '✅', ButtonStyle.Success) : btn(`art:tog:${a.id}`, a.enabled ? 'Disable' : 'Enable', a.enabled ? '⏸️' : '▶️'),
       ...(canDelete ? [btn(`art:del:${a.id}`, 'Delete', '🗑️')] : []), btn('art:back', 'Back', '⬅️'))],
   };
 }
@@ -673,6 +759,8 @@ function articlesPayload(guildId, page = 0) {
   }
   components.push(row(btn('art:new', 'New article', '➕', ButtonStyle.Success), btn('art:all:0', 'View all knowledge', '📖'), btn('art:stats', 'Results', '📊'),
     btn('art:test', 'Test matching', '🧪'), btn('dev:menu', 'Developer menu', '⬅️')));
+  const draftCount = articles.drafts(guildId).length;
+  if (draftCount) components.push(row(btn('art:drafts', `Drafts to review (${draftCount})`, '📝', ButtonStyle.Primary)));
   if (pages > 1) {
     components.push(row(btn(`art:page:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('art:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
       btn(`art:page:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
@@ -686,7 +774,7 @@ function articlesPayload(guildId, page = 0) {
 const ALL_PAGE = 10;
 /** Everything players can be shown: your own articles first (even disabled ones), then the built-in answers. */
 const allKnowledge = (guildId) => [
-  ...articles.list(guildId).map((a) => ({ value: String(a.id), title: a.title, own: true, off: !a.enabled })),
+  ...articles.list(guildId).map((a) => ({ value: String(a.id), title: a.title, own: true, off: !a.enabled, draft: !!a.draft })),
   ...KB.map((e) => ({ value: `kb:${e.id}`, title: e.title, own: false })),
 ];
 /** Paged list of all knowledge with a dropdown to open any of them. */
@@ -699,7 +787,7 @@ function allKnowledgePayload(guildId, page = 0) {
   const components = [];
   if (list.length) {
     components.push(row(new StringSelectMenuBuilder().setCustomId('art_pick').setPlaceholder(`Open an article… (${page * ALL_PAGE + 1}–${page * ALL_PAGE + list.length} of ${all.length})`)
-      .addOptions(list.map((e) => ({ label: trunc(e.title, 100), value: e.value, emoji: e.own ? '📚' : '💡', description: e.own ? (e.off ? 'your article · off' : 'your article') : 'built-in answer' })))));
+      .addOptions(list.map((e) => ({ label: trunc(e.title, 100), value: e.value, emoji: e.own ? '📚' : '💡', description: e.own ? (e.draft ? 'your article · draft' : e.off ? 'your article · off' : 'your article') : 'built-in answer' })))));
   }
   if (pages > 1) {
     components.push(row(btn(`art:all:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('art:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
@@ -709,7 +797,7 @@ function allKnowledgePayload(guildId, page = 0) {
   return {
     content: '', components,
     embeds: [new EmbedBuilder().setColor(0xfee75c).setTitle(`📖 All knowledge – ${ownCount} of your own, ${all.length - ownCount} built-in`)
-      .setDescription(list.map((e) => `${e.own ? '📚' : '💡'} ${e.own ? `**${trunc(e.title, 90)}**` : trunc(e.title, 90)}${e.off ? ' _(disabled)_' : ''}`).join('\n') || '_Nothing yet._')
+      .setDescription(list.map((e) => `${e.own ? '📚' : '💡'} ${e.own ? `**${trunc(e.title, 90)}**` : trunc(e.title, 90)}${e.draft ? ' _(draft)_' : e.off ? ' _(disabled)_' : ''}`).join('\n') || '_Nothing yet._')
       .setFooter({ text: '📚 = your article (editable) · 💡 = built-in answer (read-only)' })],
   };
 }
@@ -725,6 +813,50 @@ function builtInView(guildId, entry) {
         { name: 'How it\'s doing', value: `Viewed ${s.shown}× · ✅ fixed it ${s.helped}× · 🙅 not their problem ${s.denied}× · 📝 sent a report anyway ${s.filed}×` })
       .setFooter({ text: `Built-in answer – it can't be edited. Source: ${entry.source}` })],
   };
+}
+
+/** Drafts proposed from resolved issues, waiting for a person to publish them. */
+function draftsPayload(guildId) {
+  const list = articles.drafts(guildId).slice(0, 25);
+  const components = [];
+  if (list.length) {
+    components.push(row(new StringSelectMenuBuilder().setCustomId('art_pick').setPlaceholder('Open a draft to review…')
+      .addOptions(list.map((a) => ({ label: trunc(a.title, 100), description: trunc(`from the fix for issue #${a.source_issue_id}`, 100), value: String(a.id) })))));
+  }
+  components.push(row(btn('art:back', 'Back', '⬅️')));
+  return {
+    content: list.length
+      ? "**📝 Drafts to review** – answers proposed from issues that were marked fixed. Players can't see them until you press **Publish**. Open one to edit the wording, publish it, or delete it."
+      : '🎉 No drafts waiting – every proposed answer has been reviewed.',
+    embeds: [], components,
+  };
+}
+
+/**
+ * When an issue is marked Fixed and the developer wrote a note, propose a knowledge article from it – saved as a draft that
+ * players can't see, and announced to the developers (digest channel) for review. One draft per issue; never throws.
+ */
+async function proposeArticle(issue, byUserId) {
+  try {
+    if (!issue.dev_note?.trim() || articles.forIssue(issue.id)) return;
+    const sample = reports.forIssue(issue.id).slice(0, 3).map((r) => trunc(r.text.replace(/\s+/g, ' '), 200));
+    const seen = evidence.forIssue(issue.id).flatMap((e) => (e.ocr_text ?? '').split('\n')).filter((l) => /error|fail|exception|cannot|can't|unable|crash|denied|invalid/i.test(l)).slice(0, 3).map((l) => trunc(l, 150));
+    const ver = issue.fixed_version ? `\n\n_Fixed in version ${issue.fixed_version} – update to it if you haven't._` : '';
+    const id = articles.add({
+      guild_id: issue.guild_id, title: trunc(issue.title, 100), symptoms: trunc([issue.title, ...sample, ...seen].join('\n'), 1000),
+      body: trunc(`${issue.dev_note.trim()}${ver}`, 1500), created_by: byUserId, draft: true, source_issue_id: issue.id,
+    });
+    const chId = cfgOf(issue.guild_id).dev_channel_id;
+    if (!chId) return; // no developer channel set: the draft still waits under Knowledge articles → Drafts to review
+    const a = articles.get(id);
+    await (await client.channels.fetch(chId)).send({
+      content: `📝 **A knowledge article was proposed** from the fix for issue #${issue.id}. Players won't see it until it's published.`,
+      embeds: [new EmbedBuilder().setColor(0x3498db).setTitle(`📚 ${trunc(a.title, 240)}`).addFields(
+        { name: 'Matches players who write', value: trunc(a.symptoms, 1024) }, { name: 'Answer players would see', value: trunc(a.body, 1024) })],
+      components: [row(btn(`art:dpub:${id}`, 'Publish', '✅', ButtonStyle.Success), btn(`art:drev:${id}`, 'Review / edit', '✏️'), btn(`art:ddis:${id}`, 'Discard', '🗑️'))],
+      allowedMentions: { parse: [] },
+    });
+  } catch (e) { console.error('Could not propose an article for issue', issue.id, e.message); }
 }
 
 function articleStats(guildId) {
@@ -795,7 +927,7 @@ async function handleInteraction(i) {
         try { await (await (await client.channels.fetch(prev.panel_channel_id)).messages.fetch(prev.panel_message_id)).delete(); } catch { /* gone */ }
       }
       await dropBoard(client, i.guildId);
-      const panelMsg = await i.channel.send(panelPayload());
+      const panelMsg = await i.channel.send(panelPayload(i.guildId));
       settings.update(i.guildId, { panel_channel_id: i.channel.id, panel_message_id: panelMsg.id });
       const rr = reporterRole(i.guildId);
       // Check up front what the bot can't do in the issues channel and say why it matters, instead of failing later.
@@ -892,7 +1024,8 @@ async function handleInteraction(i) {
       // The player already went through the known-problems list and chose to report: file it, no more searching.
       setDraft(i.user.id, '');
       await deferHidden(i); // re-hosting files can take longer than Discord's 3s limit
-      return i.editReply(await submitReport(i, data));
+      const payload = await submitReport(i, data); // (not inlined: submitReport may wrap i.editReply, so look it up afterwards)
+      return i.editReply(payload);
     }
     if (i.isButton() && id.startsWith('keep:')) {
       const report = reports.get(idOf(i));
@@ -941,6 +1074,11 @@ async function handleInteraction(i) {
     if (i.isStringSelectMenu() && id === 'bfv') {
       const issue = await loadIssue(i, Number(i.values[0]));
       return issue && i.update(renderIssue(issue, { back: 'browse', viewer: viewerOf(i) }));
+    }
+    if (i.isButton() && id.startsWith('alert:open:')) { // from the "new issue" alert in the developer channel
+      if (!isDev(i)) return devOnly(i, 'open this issue');
+      const issue = await loadIssue(i, Number(id.split(':')[2]));
+      return issue && i.reply({ ...renderIssue(issue, { viewer: viewerOf(i) }), flags: EPH });
     }
     if (i.isStringSelectMenu() && id === 'bfb') { // a card picked on the developer board
       const issue = await loadIssue(i, Number(i.values[0]));
@@ -1013,6 +1151,7 @@ async function handleInteraction(i) {
       const reportId = reports.add(issue.id, i.user.id, i.fields.getTextInputValue('text').trim() || '(me too)', i.fields.getTextInputValue('platform').trim(), version);
       const ev = await attachEvidence(client, issue, i.user.id, reportId, readEvidence(i));
       const saved = ev.saved;
+      if (saved) scanAfterReply(i, { reportId, text: i.fields.getTextInputValue('text').trim(), kind: issue.kind });
       if (issue.status === 'fixed') {
         issues.setStatus(issue.id, 'new', null);
         await threadSay(client, issue, `⚠️ Reopened by another report${issue.fixed_version ? ` (it was fixed in \`${issue.fixed_version}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
@@ -1216,6 +1355,7 @@ async function handleInteraction(i) {
       const issue = issues.get(report.issue_id);
       const ev = await attachEvidence(client, issue, i.user.id, report.id, readEvidence(i));
       const saved = ev.saved;
+      if (saved) scanAfterReply(i, { reportId: report.id, text: report.text, kind: issue.kind });
       issues.touch(issue.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
       const added = saved ? ` and added ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'}` : '';
@@ -1318,6 +1458,7 @@ async function handleInteraction(i) {
         const [, action, arg] = id.split(':');
         if (action === 'page') return i.update(articlesPayload(i.guildId, Number(arg) || 0));
         if (action === 'back') return i.update(articlesPayload(i.guildId));
+        if (action === 'drafts') return i.update(draftsPayload(i.guildId));
         if (action === 'all') return i.update(allKnowledgePayload(i.guildId, Number(arg) || 0));
         if (action === 'new') return i.showModal(articleModal(null));
         if (action === 'stats') return i.update(articleStats(i.guildId));
@@ -1327,6 +1468,14 @@ async function handleInteraction(i) {
         }
         const a = artFromId();
         if (!own(a)) return i.update({ content: 'That article no longer exists.', embeds: [], components: [] });
+        // buttons on the proposal posted in the developer channel
+        if (action === 'dpub') { articles.setEnabled(a.id, true); return i.update({ content: `✅ **${trunc(a.title, 100)}** was published by <@${i.user.id}>. Players can see it now.`, embeds: [], components: [], allowedMentions: { parse: [] } }); }
+        if (action === 'drev') return i.reply({ ...articleView(a, canDeleteArticle(i, a)), flags: EPH });
+        if (action === 'ddis') {
+          if (!canDeleteArticle(i, a)) return i.reply({ content: "🔒 You can only discard drafts you created yourself. Ask a developer to remove this one.", flags: EPH });
+          articles.delete(a.id);
+          return i.update({ content: `🗑️ The proposed article **${trunc(a.title, 100)}** was discarded by <@${i.user.id}>.`, embeds: [], components: [], allowedMentions: { parse: [] } });
+        }
         if (action === 'edit') return i.showModal(articleModal(a));
         if (action === 'view') return i.update(articleView(a, canDeleteArticle(i, a)));
         if (action === 'tog') { articles.setEnabled(a.id, !a.enabled); return i.update(articleView(articles.get(a.id), canDeleteArticle(i, a))); }
@@ -1360,7 +1509,7 @@ async function handleInteraction(i) {
     if (i.isButton() && id.startsWith('dev:')) {
       if (!isDev(i)) return devOnly(i, 'use these tools');
       switch (id) {
-        case 'dev:menu': return show(i, devMenuPayload());
+        case 'dev:menu': return show(i, devMenuPayload(i.guildId));
         case 'dev:settings': return show(i, settingsPayload(i.guildId));
         case 'dev:dups': return show(i, dupPayload(i));
         case 'dev:articles': return show(i, articlesPayload(i.guildId));
@@ -1450,6 +1599,7 @@ client.once('clientReady', async () => {
       if (cfg.auto_merge) autoMergeDuplicates(client, cfg.guild_id, cfg.channel_id).catch((e) => console.error('Auto-merge error:', e.message));
       if (cfg.retention_days > 0) purgeExpired(client, cfg.guild_id, cfg.retention_days).catch((e) => console.error('Retention error:', e.message));
     }
+    for (const cfg of settings.all()) refreshPanel(cfg.guild_id); // issues go quiet with time, so the count can change without any click
     try { const f = maybeBackup(); if (f) console.log(`Backup written: ${f}`); } catch (e) { console.error('Backup failed:', e.message); }
     for (const [k, v] of drafts) if (v.exp < Date.now()) drafts.delete(k);
   };
@@ -1459,7 +1609,7 @@ client.once('clientReady', async () => {
   // Redraw each server's control panel so new buttons appear after an update without running /setup again.
   for (const cfg of settings.all()) {
     if (!cfg.panel_channel_id || !cfg.panel_message_id) continue;
-    try { await (await (await client.channels.fetch(cfg.panel_channel_id)).messages.fetch(cfg.panel_message_id)).edit(panelPayload()); }
+    try { await (await (await client.channels.fetch(cfg.panel_channel_id)).messages.fetch(cfg.panel_message_id)).edit(panelPayload(cfg.guild_id)); }
     catch (e) { console.error(`Could not refresh the panel in ${cfg.guild_id}: ${e.message}`); }
   }
 
