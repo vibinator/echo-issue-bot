@@ -92,7 +92,7 @@ export const KB = [
   {
     id: 'echoxr_logs', title: 'Which logs to send with a report',
     symptoms: 'where are the logs which logs should i send log files echoxr launcher log runtime log platform log r14logs bug report crash logs',
-    fix: 'â€¢ **EchoXR:** `bin\\win10\\EchoXR\\launcher.log`, `runtime.log` and `platform.log`.\nâ€¢ **Echo VR itself:** `_local\\r14logs\\*.log`.\nâ€¢ **Launcher:** use **Upload logs** (it collects Quest logs automatically).\nâ€¢ **Linux:** `~/.local/share/echoxr/echoxr-linux.log` (set `ECHOXR_DEBUG=1` for Proton/OpenXR loader logs).\nAttach them in the issue\'s thread after reporting.',
+    fix: 'â€¢ **EchoXR:** `bin\\win10\\EchoXR\\launcher.log`, `runtime.log` and `platform.log`.\nâ€¢ **Echo VR itself:** `_local\\r14logs\\*.log`.\nâ€¢ **Launcher:** use **Upload logs** (it collects Quest logs automatically).\nâ€¢ **Linux:** `~/.local/share/echoxr/echoxr-linux.log` (set `ECHOXR_DEBUG=1` for Proton/OpenXR loader logs).\nAdd them to your report with **Add screenshots / logs** after reporting.',
     source: XR,
   },
   {

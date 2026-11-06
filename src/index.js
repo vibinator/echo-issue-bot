@@ -33,7 +33,7 @@ const btn = (id, label, emoji, style = ButtonStyle.Secondary) =>
 const commands = [
   new SlashCommandBuilder().setName('setup').setDescription('Set up the issue tracker and post its control panel in this channel (admins)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addChannelOption((o) => o.setName('issues_channel').setDescription('Channel where each issue gets its own thread').addChannelTypes(ChannelType.GuildText).setRequired(true))
+    .addChannelOption((o) => o.setName('issues_channel').setDescription('Channel for the control panel').addChannelTypes(ChannelType.GuildText).setRequired(true))
     .addRoleOption((o) => o.setName('dev_role').setDescription('Developer role – can manage issues and use the Developer menu').setRequired(true))
     .addRoleOption((o) => o.setName('reporter_role').setDescription('Only this role can send reports (leave empty to keep the current setting)'))
     .addRoleOption((o) => o.setName('article_role').setDescription('Can create, edit and delete knowledge articles without being a developer'))
@@ -121,7 +121,9 @@ const show = (i, payload) => (hidden(i) ? i.update(payload) : i.reply({ ...paylo
 const deferHidden = (i) => (hidden(i) ? i.deferUpdate() : i.deferReply({ flags: EPH }));
 /** If an issue card was opened from a menu, keep its Back button when the card is redrawn. */
 const backOf = (i) => i.message?.components?.flatMap((r) => r.components ?? []).find((c) => ['browse', 'dev:board'].includes(c.customId))?.customId;
-const card = (i, issue) => renderIssue(issue, { back: backOf(i) });
+/** What this person may do, so an issue card only shows the controls they can use. */
+const viewerOf = (i) => ({ dev: isDev(i), report: canReport(i), article: canManageArticles(i), userId: i.user.id });
+const card = (i, issue) => renderIssue(issue, { back: backOf(i), viewer: viewerOf(i) });
 
 // The one-line "describe it" a player typed while looking through known problems. Kept in memory only (never
 // stored in the database), for 15 minutes, to rank the list and to pre-fill the report form.
@@ -140,7 +142,7 @@ function panelPayload() {
       'Something not working? Let the developers know here.',
       '',
       '📝 **Report a problem** – we\'ll first show quick fixes for common problems. If none help, you can send a report.',
-      '📋 **Browse issues** – see what has already been reported and how it\'s going.',
+      '📋 **Known issues** – see what has already been reported and how it\'s going.',
       '📌 **My reports** – follow your reports, add details, and turn update messages on or off.',
       '',
       '_Everything you open from these buttons is private – only you can see it._',
@@ -148,7 +150,7 @@ function panelPayload() {
   return {
     embeds: [embed],
     components: [
-      row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Browse issues', '📋'), btn('mine', 'My reports', '📌'),
+      row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Known issues', '📋'), btn('mine', 'My reports', '📌'),
         btn('legal:privacy', 'Data & privacy', '🔒'), btn('legal:terms', 'Terms of use', '📜')),
       row(btn('dev:menu', 'Developer', '🛠️'), btn('dev:articles', 'Knowledge articles', '📚')),
     ],
@@ -197,7 +199,7 @@ const lText = (id, { style = TextInputStyle.Short, max = 100, required = false, 
   return t;
 };
 const platformField = () => labelled('Headset / platform (optional)', lText('platform', { max: 60, placeholder: 'e.g. Quest 3 via Link, Rift S, Index' }));
-const versionField = () => labelled('Game / launcher version (optional)', lText('version', { max: 40, placeholder: 'e.g. 0.13.14' }));
+const versionField = () => labelled('When did you last update / Version Number', lText('version', { max: 60, placeholder: 'e.g. 0.13.14, or last week' }), 'Optional');
 const evidenceFields = () => [
   labelled('Links: screenshots, logs, videos (optional)',
     lText('links', { style: TextInputStyle.Paragraph, max: 1000, placeholder: 'https://…  (one per line)' }),
@@ -588,7 +590,7 @@ function trackPayload(i, issue) {
 const editModal = (report) => new ModalBuilder().setCustomId(`edit:${report.id}`).setTitle(`Edit your report · #${report.issue_id}`).addLabelComponents(
   labelled('What went wrong?', lText('text', { style: TextInputStyle.Paragraph, max: 1000, required: true, min: 15, value: report.text })),
   labelled('Headset / platform (optional)', lText('platform', { max: 60, value: report.platform })),
-  labelled('Game / launcher version (optional)', lText('version', { max: 40, value: report.version })),
+  labelled('When did you last update / Version Number', lText('version', { max: 60, value: report.version }), 'Optional'),
   ...evidenceFields());
 
 const addEvidenceModal = (report) => new ModalBuilder().setCustomId(`addevr:${report.id}`).setTitle('Add screenshots, logs or video')
@@ -734,10 +736,9 @@ async function handleInteraction(i) {
         const me = await i.guild.members.fetchMe();
         const missing = ch.permissionsFor(me)?.missing([
           PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.ReadMessageHistory,
-          PermissionFlagsBits.CreatePublicThreads, PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.ManageThreads,
         ]) ?? [];
         if (missing.length) {
-          permissionWarning = `\n⚠️ **The bot is missing permissions in <#${ch.id}>:** ${missing.map((m) => m.replace(/([a-z])([A-Z])/g, '$1 $2')).join(', ')}. Without them, new issues can't get their own thread (they fall back to a plain message) and old threads can't be locked or reopened. Please grant them in the channel's permission settings.`;
+          permissionWarning = `\n⚠️ **The bot is missing permissions in <#${ch.id}>:** ${missing.map((m) => m.replace(/([a-z])([A-Z])/g, '$1 $2')).join(', ')}. Please grant them in the channel's permission settings.`;
         }
       } catch { /* couldn't check – not critical */ }
       const have = summary(i.guildId);
@@ -747,7 +748,7 @@ async function handleInteraction(i) {
       return i.editReply({
         content: [
           '✅ **All set!** The control panel is posted above.',
-          `• Each issue gets its own thread in <#${ch.id}>`,
+          `• Issues are not posted in <#${ch.id}> – everything is opened from **Known issues** on the control panel`,
           `• Developers: <@&${role.id}> (and anyone with Manage Server) – they can change an issue's status and use the Developer menu`,
           `• Who can send reports: ${rr ? `<@&${rr}>` : 'everyone'}`,
           `• Who can edit knowledge articles: developers${articleRole(i.guildId) ? ` and <@&${articleRole(i.guildId)}>` : ' (add a separate editor role with `/setup article_role:`)'}`,
@@ -861,11 +862,11 @@ async function handleInteraction(i) {
     }
     if (i.isStringSelectMenu() && id === 'bfv') {
       const issue = await loadIssue(i, Number(i.values[0]));
-      return issue && i.update(renderIssue(issue, { back: 'browse' }));
+      return issue && i.update(renderIssue(issue, { back: 'browse', viewer: viewerOf(i) }));
     }
     if (i.isStringSelectMenu() && id === 'bfb') { // a card picked on the developer board
       const issue = await loadIssue(i, Number(i.values[0]));
-      return issue && i.update(renderIssue(issue, { back: 'dev:board' }));
+      return issue && i.update(renderIssue(issue, { back: 'dev:board', viewer: viewerOf(i) }));
     }
 
     // ----- issue message: status / priority / owner -----
@@ -875,7 +876,7 @@ async function handleInteraction(i) {
       if (!issue) return;
       const status = i.values[0];
       if (status === 'fixed' && issue.status !== 'fixed') return i.showModal(fixedModal(issue));
-      await i.deferUpdate(); // acknowledge first: changing a status edits the card, posts in the thread and sends DMs
+      await i.deferUpdate(); // acknowledge first: changing a status edits the card and sends DMs
       return i.editReply(card(i, await applyStatus(i, issue, status)));
     }
     if (i.isModalSubmit() && id.startsWith('fixed:')) {
@@ -969,7 +970,7 @@ async function handleInteraction(i) {
         .map((x) => ({ ...x, likely: (scores.get(x.id) ?? 0) >= 0.12 }));
       if (!others.length) return i.reply({ content: 'There are no other issues to merge this one into yet.', flags: EPH });
       return i.reply({
-        content: `Merge **#${issue.id} – ${trunc(issue.title, 80)}** into which issue? Its reports move over and its thread is locked. ⭐ marks issues that look alike.`,
+        content: `Merge **#${issue.id} – ${trunc(issue.title, 80)}** into which issue? Its reports move over and it is removed from the list. ⭐ marks issues that look alike.`,
         components: [row(new StringSelectMenuBuilder().setCustomId(`mergeto:${issue.id}`).setPlaceholder('Choose the issue to keep…').addOptions(others.map(issueOption)))],
         flags: EPH,
       });
@@ -1034,7 +1035,7 @@ async function handleInteraction(i) {
       await i.deferUpdate();
       const { removed, anonymised } = await eraseUser(client, i.guildId, i.user.id);
       return i.editReply({
-        content: `🗑️ Done. Removed ${removed} report${removed === 1 ? '' : 's'}${anonymised ? ` and removed your details from ${anonymised} issue${anonymised === 1 ? '' : 's'} developers had already worked on` : ''}, plus your follows and settings.\nMessages you wrote yourself in issue threads are separate – ask a moderator to remove them.`,
+        content: `🗑️ Done. Removed ${removed} report${removed === 1 ? '' : 's'}${anonymised ? ` and removed your details from ${anonymised} issue${anonymised === 1 ? '' : 's'} developers had already worked on` : ''}, plus your follows and settings.\nMessages you wrote yourself in Discord channels are separate – ask a moderator to remove them.`,
         embeds: [], components: [],
       });
     }

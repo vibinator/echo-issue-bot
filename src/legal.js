@@ -16,7 +16,7 @@ export function privacyPayload(devRoleId, retentionDays) {
       '',
       '**What is stored (in this server)**',
       '• Your Discord user ID and the issues you report or follow',
-      '• What you write: description, headset/platform, game/launcher version',
+      '• What you write: description, headset/platform, last update / version number',
       '• Links you add, and files you upload (screenshots, logs, video) – these are saved privately on the server that runs this bot, **not** posted in any channel',
       '• When you reported or edited, your DM preference, and each issue\'s status history',
       '',

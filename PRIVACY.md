@@ -11,7 +11,7 @@ Per server, in a database on the operator's own hardware:
 | Data | Why |
 |---|---|
 | Your Discord **user ID** | to attribute reports, show you your own reports, and DM you about them |
-| What you submit: description, headset/platform, game or launcher version | to understand, group and fix the problem |
+| What you submit: description, headset/platform, last update / version number | to understand, group and fix the problem |
 | **Links** you add and **files** you upload (screenshots, logs, video) | as evidence. Files are copied into a private folder on the operator's server (not posted in any channel or thread); links are stored as text. Files are limited in size (25 MB each by default) |
 | Timestamps; whether a report was edited | to show history |
 | Issues you **follow** | to DM you when they change |

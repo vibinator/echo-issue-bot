@@ -30,8 +30,13 @@ function requesterText(issueId, stats) {
   return others ? `${who} + ${others} other${others === 1 ? '' : 's'}` : who;
 }
 
-/** `back`: custom id of a button to add that returns to the menu this card was opened from (hidden views only). */
-export function renderIssue(issue, { back } = {}) {
+/**
+ * `back`: custom id of a button to add that returns to the menu this card was opened from (hidden views only).
+ * `viewer`: { dev, report, article, userId } – when given, controls the viewer can't use are left out. Without it
+ * (the shared card of an older issue, which everyone sees) every control is shown and the click is checked instead.
+ */
+export function renderIssue(issue, { back, viewer } = {}) {
+  const may = (k) => !viewer || !!viewer[k];
   const st = STATUSES[issue.status] ?? STATUSES.new;
   const pr = PRIORITIES[issue.priority] ?? PRIORITIES.normal;
   const stats = reports.stats(issue.id);
@@ -84,30 +89,33 @@ export function renderIssue(issue, { back } = {}) {
     .addOptions(Object.entries(PRIORITIES).map(([value, p]) => ({ label: p.label, value, emoji: p.emoji, default: value === issue.priority })));
 
   const btn = (id, label, emoji) => new ButtonBuilder().setCustomId(`${id}:${issue.id}`).setLabel(label).setEmoji(emoji).setStyle(ButtonStyle.Secondary);
-  const buttons = new ActionRowBuilder().addComponents(
-    btn('plus', 'I have this too', '🙋'),
-    btn('assign', 'Assign to me', '🙌'),
-    btn('note', 'Developer note', '💬'),
-    btn('merge', 'Merge into…', '🔀'),
-    btn('rmrep', 'Remove a report', '🗑️'),
-  );
-
-  const more = new ActionRowBuilder().addComponents(
-    btn('follow', 'Follow', '🔔'),
-    btn('editmine', 'Edit my report', '✏️'),
-    btn('addev', 'Add screenshots / logs', '📎'),
-    btn('history', 'History', '📜'),
-    btn('mkart', 'Make knowledge article', '📚'),
-  );
-
-  // Last row: open the private attachments (the bot only shows them to the reporter and developers), plus Back in menus.
-  const last = new ActionRowBuilder().addComponents(
-    btn('evall', 'View attachments', '📎'),
-    ...(back ? [new ButtonBuilder().setCustomId(back).setLabel('Back').setEmoji('⬅️').setStyle(ButtonStyle.Secondary)] : []),
-  );
+  const mine = !viewer || reports.forIssue(issue.id).some((r) => r.user_id === viewer.userId);
+  const rows = [
+    ...(may('dev') ? [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu)] : []),
+    [
+      may('report') && btn('plus', 'I have this too', '🙋'),
+      may('dev') && btn('assign', 'Assign to me', '🙌'),
+      may('dev') && btn('note', 'Developer note', '💬'),
+      may('dev') && btn('merge', 'Merge into…', '🔀'),
+      may('dev') && btn('rmrep', 'Remove a report', '🗑️'),
+    ],
+    [
+      btn('follow', 'Follow', '🔔'),
+      may('report') && mine && btn('editmine', 'Edit my report', '✏️'),
+      may('report') && btn('addev', 'Add screenshots / logs', '📎'),
+      btn('history', 'History', '📜'),
+      (may('dev') || may('article')) && btn('mkart', 'Make knowledge article', '📚'),
+    ],
+    // Last row: open the private attachments (the bot only shows them to the reporter and developers), plus Back in menus.
+    [
+      btn('evall', 'View attachments', '📎'),
+      back && new ButtonBuilder().setCustomId(back).setLabel('Back').setEmoji('⬅️').setStyle(ButtonStyle.Secondary),
+    ],
+  ].map((r) => (Array.isArray(r) ? r.filter(Boolean) : r)).filter((r) => (r.components ? r.components.length : r.length))
+    .map((r) => (r.components ? r : new ActionRowBuilder().addComponents(r)));
 
   return {
     embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu), buttons, more, last],
+    components: rows,
   };
 }

@@ -392,7 +392,7 @@ assert.equal(withOwn[0].id, 'a:9', "the server's own articles come first");
 assert.ok(withOwn[0].fix.includes('https://example.com'));
 assert.ok(new Set([...installList, ...bugList].map((e) => e.id)).size === installList.length + bugList.length, 'every answer is in exactly one list');
 
-// ---- one public message: issues live in threads, not as channel messages ----
+// ---- one public message: new issues post nothing in the channel ----
 const { syncMessage } = await import('./service.js');
 const channelMsgs = [];
 const threadMsgs = [];
@@ -406,34 +406,37 @@ const thr = {
   send: async (p) => { threadMsgs.push(p); return { id: `card${threadMsgs.length}`, url: 'u' }; },
   messages: { edit: async (_id, p) => { edits.push(p); } },
 };
-const parentChan = { id: 'chan', threads: { create: async (o) => { parentChan.created = o; return thr; } }, send: async (p) => { channelMsgs.push(p); return { id: 'pub1' }; } };
+const parentChan = { id: 'chan', threads: { create: async () => { throw new Error('threads must not be created'); } }, send: async (p) => { channelMsgs.push(p); return { id: 'pub1' }; } };
 const tClient = { channels: { fetch: async (id) => (id === 'th1' ? thr : parentChan) } };
 const T = fileReport({ guildId: 'g8', userId: 't1', text: 'Disc sometimes disappears right after a goal is scored' });
 await syncMessage(tClient, T.issue, 'chan');
 const fresh8 = issues.get(T.issue.id);
-assert.equal(channelMsgs.length, 0, 'nothing is posted as a normal message in the issues channel');
-assert.equal(fresh8.thread_id, 'th1');
-assert.equal(fresh8.channel_id, 'th1', 'the control card lives inside the thread');
-assert.ok(fresh8.message_id);
-assert.ok(parentChan.created.name.startsWith(`#${T.issue.id} `));
-assert.ok(threadMsgs[0].components.length === 5, 'the first thread message is the issue card with its buttons');
+assert.equal(channelMsgs.length + threadMsgs.length, 0, 'a new issue posts nothing in Discord');
+assert.ok(!fresh8.thread_id && !fresh8.message_id, 'and has no thread or card');
+// an older issue that still has a thread keeps its card edited in place (and the thread reopened)
+issues.setMessage(fresh8.id, 'th1', 'card1');
+issues.setThread(fresh8.id, 'th1');
 isArchived = true;
-await syncMessage(tClient, fresh8, 'chan');
-assert.equal(edits.length, 1, 'the second sync edits the card instead of posting another');
+await syncMessage(tClient, issues.get(fresh8.id), 'chan');
+assert.equal(edits.length, 1, 'an older issue card is edited rather than a new one posted');
 assert.deepEqual(unarchived, [false], 'an archived thread is reopened so the card can be edited');
-assert.equal(threadMsgs.length, 2, 'only the card and the one intro line exist in the thread');
-// no thread permission: fall back to a channel message so the issue is never lost
-const T2 = fileReport({ guildId: 'g8', userId: 't2', text: 'Menu music keeps looping after I leave the lobby screen' });
-const noThreads = { id: 'chan2', threads: { create: async () => { throw new Error('Missing Permissions'); } }, send: async (p) => { channelMsgs.push(p); return { id: 'pub2' }; } };
-await syncMessage({ channels: { fetch: async () => noThreads } }, T2.issue, 'chan2');
-assert.equal(channelMsgs.length, 1);
-assert.equal(issues.get(T2.issue.id).message_id, 'pub2');
 // back button on cards opened from a hidden menu
 const withBack = renderIssue(issues.get(T.issue.id), { back: 'browse' });
 assert.equal(withBack.components.length, 5);
 const lastRowIds = (p) => p.components[4].toJSON().components.map((c) => c.custom_id);
 assert.deepEqual(lastRowIds(withBack), [`evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
 assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`evall:${T.issue.id}`], 'no Back button on the public card');
+// controls the viewer can't use are left out
+const idsOf = (p) => p.components.flatMap((r) => r.toJSON().components.map((c) => c.custom_id.split(':')[0]));
+const asPlayer = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'someone' } }));
+assert.ok(asPlayer.includes('plus') && asPlayer.includes('follow') && asPlayer.includes('addev'));
+assert.ok(!['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'editmine'].some((x) => asPlayer.includes(x)), 'a player sees no developer controls (and no edit on a report that is not theirs)');
+const asOwner = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 't1' } }));
+assert.ok(asOwner.includes('editmine'), 'the reporter can edit their own report');
+const asReadOnly = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: false, article: false, userId: 'x' } }));
+assert.ok(!['plus', 'addev', 'editmine'].some((x) => asReadOnly.includes(x)) && asReadOnly.includes('history'), 'someone who cannot report only reads');
+const asDev = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: true, report: true, article: true, userId: 'd' } }));
+assert.ok(['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart'].every((x) => asDev.includes(x)), 'a developer sees everything');
 
 // ---- recovery: re-run /setup keeps settings; a re-created bot reuses existing threads ----
 const { settings: S2, summary } = await import('./db.js');
@@ -461,12 +464,11 @@ assert.equal(created9, 0, 'no duplicate thread is created');
 assert.equal(sent9.length, 1, 'a fresh card is posted inside the existing thread');
 assert.equal(issues.get(R9.issue.id).message_id, 'newcard', 'and remembered for later edits');
 assert.equal(issues.get(R9.issue.id).thread_id, 'oldthread');
-// if the thread itself is gone, a new one is created
+// if the thread itself is gone, nothing new is posted (the issue is still in Known issues)
 let made9 = 0;
-const parent10 = { id: 'chanB', threads: { create: async () => { made9++; return { id: 'brandnew', send: async () => ({ id: 'c2' }) }; } }, send: async () => ({ id: 'x' }) };
+const parent10 = { id: 'chanB', threads: { create: async () => { made9++; return { id: 'brandnew', send: async () => ({ id: 'c2' }) }; } }, send: async () => { made9++; return { id: 'x' }; } };
 await syncMessage({ channels: { fetch: async (id) => { if (id === 'chanB') return parent10; throw new Error('Unknown Channel'); } } }, issues.get(R9.issue.id), 'chanB');
-assert.equal(made9, 1);
-assert.equal(issues.get(R9.issue.id).thread_id, 'brandnew');
+assert.equal(made9, 0, 'a vanished thread is not replaced');
 
 // ---- the pre-form description ranks the menu (fuzzy), nothing is searched after submit ----
 assert.equal(sg('game crashes when the lobby loads, d3d device removed', [], 25, 'bug')[0].id, 'kb:gpu_hang');
@@ -478,7 +480,7 @@ assert.ok(sg('download stuck on quest', [], 25, 'install').length <= 25);
 // ---- errors say WHY, in plain words ----
 const { explainError, errorMessage, fileFailureReason } = await import('./errors.js');
 const mk = (code, message, extra = {}) => Object.assign(new Error(message), { code, ...extra });
-assert.match(errorMessage(mk(50013, 'Missing Permissions')), /isn't allowed to do that in this channel.*Create Public Threads/s);
+assert.match(errorMessage(mk(50013, 'Missing Permissions')), /isn't allowed to do that in this channel.*View Channel.*Read Message History/s);
 assert.match(errorMessage(mk(50001, 'Missing Access')), /can't see that channel/);
 assert.match(errorMessage(mk(10062, 'Unknown interaction')), /expired or was already used.*Press the button/s);
 assert.match(errorMessage(mk('EAI_AGAIN', 'getaddrinfo EAI_AGAIN discord.com')), /couldn't reach Discord.*network problem/s);

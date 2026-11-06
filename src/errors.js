@@ -2,7 +2,7 @@
 // "something went wrong".
 import { trunc } from './text.js';
 
-const NEEDED_PERMISSIONS = 'View Channel, Send Messages, Embed Links, Read Message History, Create Public Threads, Send Messages in Threads and Manage Threads';
+const NEEDED_PERMISSIONS = 'View Channel, Send Messages, Embed Links, Read Message History';
 
 /** { reason, fix } for any error. `reason` completes "That didn't work because …". */
 export function explainError(err) {

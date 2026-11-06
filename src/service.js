@@ -152,9 +152,8 @@ export function duplicatePairs(guildId, floor = 0.12) {
 // ---------- Discord messaging helpers ----------
 
 /**
- * Keep an issue's control card up to date. Each issue lives in its own thread under the issues channel, with the
- * card as the thread's first message – so the channel itself stays free of per-issue messages (only the one
- * control panel is posted there). Older issues whose card is a normal channel message are still edited in place.
+ * Keep an issue's card up to date. New issues have no Discord message at all (they are opened from "Known issues"),
+ * so this only refreshes the board. Older issues that still have a thread or channel card keep that card edited in place.
  */
 export function syncMessage(client, issue, channelId) {
   // Updates for the SAME issue run one after another. Without this, two people reporting the same new problem at the
@@ -193,26 +192,8 @@ async function syncMessageNow(client, issue, channelId) {
       return;
     } catch { /* thread is gone too -> create a new one below */ }
   }
-  if (!channelId) return;
-  try {
-    const parent = await client.channels.fetch(channelId);
-    let card;
-    try {
-      const thread = await parent.threads.create({ name: trunc(`#${fresh.id} ${fresh.title}`, 100), autoArchiveDuration: 10080, reason: 'New Echo VR issue' });
-      card = await thread.send(payload);
-      issues.setMessage(fresh.id, thread.id, card.id);
-      issues.setThread(fresh.id, thread.id);
-      await thread.send('💬 This is the discussion space for this issue. Extra details, logs and screenshots are welcome here, and developers will post updates as they work on it.');
-    } catch (e) {
-      // No permission to create threads: fall back to a normal channel message so the issue is never lost.
-      console.error('Could not create the issue thread (give the bot Create Public Threads):', e.message);
-      card = await parent.send(payload);
-      issues.setMessage(fresh.id, parent.id, card.id);
-    }
-    refreshBoard(client, fresh.guild_id);
-  } catch (e) {
-    console.error('Could not post the issue card:', e.message);
-  }
+  // New issues post nothing in Discord: they live in the database and are opened from "Known issues".
+  refreshBoard(client, fresh.guild_id);
 }
 
 export async function threadSay(client, issue, text) {

@@ -14,6 +14,7 @@ const S = await import('./sim.js');
 const db = await import('./db.js');
 const { sim, FakeChannel, interaction, outcome, person, plain, textOf, embedChars, buttonsOf } = S;
 const { client, handleInteraction } = ui;
+const { renderIssue } = await import('./render.js');
 S.installClient(client);
 
 // ---------------------------------------------------------------- bookkeeping
@@ -89,6 +90,8 @@ async function submit(who, screen, customId, fields, files = []) {
 }
 const labelsOf = (payload) => buttonsOf(payload).map((c) => c.label).filter(Boolean);
 const has = (payload, re) => re.test(textOf(payload));
+/** The issue card as a private screen (what Known issues shows). `viewer` filters the controls; without it every control is present. */
+const cardOf = (iid, viewer) => ({ payload: plain(renderIssue(db.issues.get(iid), viewer ? { back: 'browse', viewer } : {})), ephemeral: true, id: `CARD${iid}` });
 
 // ================================================================= 1. admin sets the bot up
 console.log('1. /setup');
@@ -110,10 +113,10 @@ let panelScreen;
   check(has(out.payload, /Existing data found|All set/), 'second setup still succeeds');
   const p2 = panelCh.sent.at(-1); panelScreen = { payload: plain(p2.payload), ephemeral: false, id: p2.id };
 
-  const noThreads = new FakeChannel('nothreads', 'nothreads', { permissionsMissing: ['CreatePublicThreads', 'ManageThreads'] });
+  const noThreads = new FakeChannel('nothreads', 'nothreads', { permissionsMissing: ['EmbedLinks'] });
   sim.registry.set('nothreads', noThreads);
   out = await run(setup(noThreads), '/setup with missing permissions');
-  check(has(out.payload, /missing permissions.*Create Public Threads/s), 'setup names the missing permissions and why they matter');
+  check(has(out.payload, /missing permissions.*Embed Links/s), 'setup names the missing permissions');
   out = await run(setup(issuesCh), '/setup restored');
   const p3 = panelCh.sent.at(-1); panelScreen = { payload: plain(p3.payload), ephemeral: false, id: p3.id };
   check(db.settings.get('G').channel_id === 'issues', 'issues channel saved');
@@ -177,17 +180,15 @@ let aliceIssueId; let aliceReportId;
   const issue = db.issues.list('G')[0];
   aliceIssueId = issue?.id; aliceReportId = db.reports.forIssue(issue.id)[0].id;
   check(issue.kind === 'install' && issue.category === 'Install / Setup', 'stored as an install issue');
-  check(issuesCh.threadsList.length === 1, 'the issue got its own thread');
-  const thread = issuesCh.threadsList[0];
-  const card = [...thread.messages.map.values()][0];
-  check(card && buttonsOf(plain(card.payload)).some((c) => c.custom_id === `status:${issue.id}`), 'the thread starts with the control card');
-  const cardText = textOf(plain(card.payload));
+  check(issuesCh.threadsList.length === 0 && issuesCh.sent.length === 0, 'the issue posted nothing in the issues channel and made no thread');
+  const card = cardOf(issue.id);
+  check(buttonsOf(card.payload).some((c) => c.custom_id === `status:${issue.id}`), 'the issue opens as a card with its controls');
+  const cardText = textOf(card.payload);
   check(/Requested by[\s\S]*<@alice>/.test(cardText), 'the card names the requester');
   check(!/youtu\.be|crash log/.test(cardText), 'the public card does not reveal attachment names or links');
   check(/2 attached/.test(cardText), 'the public card only counts the attachments');
   check(existsSync(join(process.env.EVIDENCE_DIR, String(aliceReportId))), 'the uploaded file was saved privately on disk');
-  check(!thread.sent.some((m) => JSON.stringify(plain(m.payload)).includes('crash.txt')), 'the file was not posted in the thread');
-  check(textOf(plain(card.payload)).length > 0 && embedChars(plain(card.payload).embeds) <= 6000, 'the card fits Discord limits');
+  check(textOf(card.payload).length > 0 && embedChars(card.payload.embeds) <= 6000, 'the card fits Discord limits');
 }
 
 // ================================================================= 4. a second player hits the same problem
@@ -203,9 +204,8 @@ let bobReportId; let bobR;
   check(btns.includes('Yes, same problem') && btns.includes('Make it a separate issue'), '…offering to keep it or separate it');
   check(db.issues.list('G').length === 1, 'no duplicate issue was created');
   bobReportId = db.reports.forIssue(aliceIssueId).find((x) => x.user_id === 'bob')?.id;
-  const card = [...issuesCh.threadsList[0].messages.map.values()][0];
-  check(/<@alice> \+ 1 other/.test(textOf(plain(card.payload))), 'the card still names alice as requester, "+ 1 other"');
-  check(issuesCh.threadsList.length === 1, 'still one thread for the issue');
+  check(/<@alice> \+ 1 other/.test(textOf(cardOf(aliceIssueId).payload)), 'the card still names alice as requester, "+ 1 other"');
+  check(issuesCh.threadsList.length === 0, 'still no thread');
 
   let r = await press(bob, bobR.screen, `keep:${bobReportId}`);
   check(has(r.out.payload, /stays with/), '"Yes, same problem" confirms');
@@ -216,7 +216,7 @@ let bobReportId; let bobR;
   check(r.i.responses[0].type === 'deferUpdate', 'separating answers Discord first');
   check(db.issues.list('G').length === 2, 'a second issue exists after separating');
   check(db.reports.forIssue(aliceIssueId).every((x) => x.user_id === 'alice'), 'alice\'s issue lost bob\'s report');
-  check(issuesCh.threadsList.length === 2, 'the separated issue got its own thread');
+  check(issuesCh.threadsList.length === 0 && db.issues.list('G').length === 2, 'the separated issue is simply another entry in Known issues');
 }
 
 // ================================================================= 5. cooldown
@@ -233,8 +233,7 @@ console.log('5. cooldown');
 // ================================================================= 6. private attachments
 console.log('6. attachment privacy');
 {
-  const issueCard = (iid) => ({ payload: plain([...issuesCh.threadsList.find((t) => [...t.messages.map.values()][0] && JSON.stringify(plain([...t.messages.map.values()][0].payload)).includes(`status:${iid}`)).messages.map.values()][0].payload), ephemeral: false, id: 'CARD' });
-  const cardScreen = issueCard(aliceIssueId);
+  const cardScreen = cardOf(aliceIssueId);
   let r = await press(alice, cardScreen, `evall:${aliceIssueId}`);
   check(r.i.responses[0].type === 'deferReply', 'viewing attachments answers Discord first');
   check(r.i.responses.some((x) => x.type === 'editReply' && /crash log|crash\.txt/.test(JSON.stringify(x.payload))) || has(r.out.payload, /crash log/), 'the requester can open their own attachments');
@@ -284,8 +283,7 @@ console.log('7. My reports');
 // ================================================================= 8. developer workflow
 console.log('8. developer workflow');
 {
-  const cardMsg = [...issuesCh.threadsList[0].messages.map.values()][0];
-  const cardScreen = () => ({ payload: plain(cardMsg.payload), ephemeral: false, id: cardMsg.id });
+  const cardScreen = () => cardOf(aliceIssueId);
   const blocked = [['status:%', 'select', ['seen'], /developers only/], ['prio:%', 'select', ['high'], /developers only/], ['assign:%', 'button', null, /developers only/],
     ['note:%', 'button', null, /developers only/], ['merge:%', 'button', null, /developers only/], ['rmrep:%', 'button', null, /developers only/]];
   for (const [pattern, kind, values, re] of blocked) {
@@ -296,7 +294,7 @@ console.log('8. developer workflow');
   let r = await press(alice, cardScreen(), `mkart:${aliceIssueId}`);
   check(has(r.out.payload, /can only be changed by developers/), 'a player cannot turn an issue into an article');
 
-  // status → DM to the reporter, thread note, ack first
+  // status → DM to the reporter, ack first
   sim.dms.length = 0;
   r = await choose(dev, cardScreen(), `status:${aliceIssueId}`, ['in_progress']);
   check(r.i.responses[0].type === 'deferUpdate', 'a status change answers Discord first');
@@ -304,7 +302,7 @@ console.log('8. developer workflow');
   await new Promise((res) => setTimeout(res, 20));
   check(sim.dms.some((d) => d.to === 'alice' && /started working/.test(d.content)), 'the reporter is messaged, in plain words');
   check(!sim.dms.some((d) => d.to === 'bob'), 'bob left that issue, so he is not messaged');
-  check(issuesCh.threadsList[0].sent.some((m) => /set the status to/.test(JSON.stringify(plain(m.payload)))), 'the thread records who changed the status');
+  check(db.issues.get(aliceIssueId).handled_by === 'dev', 'the card records who changed the status');
 
   // DM opt-out respected
   db.prefs.setDmOff('alice', true); sim.dms.length = 0;
@@ -420,13 +418,11 @@ console.log('10. dev tools');
   r = await press(dev, panelScreen, 'dev:backup');
   check(has(r.out.payload, /Backup saved/), 'a backup can be made on demand');
   // merge i2 into i1 from the issue card
-  const t2 = issuesCh.threadsList.find((t) => JSON.stringify(plain([...t.messages.map.values()][0].payload)).includes(`status:${i2.id}`));
-  const c2 = { payload: plain([...t2.messages.map.values()][0].payload), ephemeral: false, id: 'C2' };
+  const c2 = cardOf(i2.id);
   r = await press(dev, c2, `merge:${i2.id}`);
   r = await choose(dev, r.screen, `mergeto:${i2.id}`, [String(i1.id)]);
   check(db.issues.get(i2.id) === undefined && r.i.responses[0].type === 'deferUpdate', 'merge works (answering first)');
-  check(t2.locked && t2.archived, 'the merged issue\'s thread is locked');
-  check(/merged into/.test(JSON.stringify(plain([...t2.messages.map.values()][0].payload))), '…and its card points to the issue it joined');
+  check(issuesCh.threadsList.length === 0 && issuesCh.sent.length === 0, 'merging posts nothing in the channel');
 }
 
 // ================================================================= 11. withdraw & erase my data
@@ -450,13 +446,13 @@ console.log('11. withdraw and erase');
 // ================================================================= 12. robustness
 console.log('12. robustness');
 {
-  // two people report the same new problem at the same moment → still one issue, ONE thread
+  // two people report the same new problem at the same moment → still one issue
   db.settings.update('G', { cooldown_sec: 0 });
-  const before = issuesCh.threadsList.length; const issuesBefore = db.issues.list('G').length;
+  const issuesBefore = db.issues.list('G').length;
   const text = 'Spectator camera jitters badly whenever the disc is near the goal in arena';
   await Promise.all([carol, alice].map((who) => submit(who, panelScreen, 'report:bug', { text, platform: '', version: '', links: '' })));
   check(db.issues.list('G').length === issuesBefore + 1, 'two simultaneous matching reports make ONE issue');
-  check(issuesCh.threadsList.length === before + 1, 'and ONE thread (not two) for it');
+  check(issuesCh.threadsList.length === 0 && issuesCh.sent.length === 0, 'and nothing is posted in the channel');
 
   // stale buttons (things that were deleted since the menu was drawn) fail politely
   for (const [kind, id, who, values] of [['button', 'evall:99999', dev], ['button', 'follow:99999', alice], ['select', 'status:99999', dev, ['seen']], ['button', 'assign:99999', dev],
@@ -467,18 +463,9 @@ console.log('12. robustness');
     check(r.out.responded && !/TypeError|undefined|Cannot read/.test(textOf(r.out.payload)), `a stale ${id} gets a polite answer, not a crash`);
   }
 
-  // no permission to make threads → the report is still saved and shown (fallback), not lost
-  const old = db.settings.get('G').channel_id;
-  const noThread = new FakeChannel('nt', 'nt', { canThread: false }); sim.registry.set('nt', noThread);
-  db.settings.update('G', { cooldown_sec: 0 }); db.settings.set('G', 'nt', ROLE.dev);
-  await submit(carol, panelScreen, 'report:bug', { text: 'Teammates are invisible after the lobby loads for the second round', platform: '', version: '', links: '' });
-  check(noThread.sent.length === 1, 'without thread permission the issue card falls back to a normal message');
-  db.settings.set('G', old, ROLE.dev);
-
   // the bot being too slow: every Discord call 2 s → handlers that did work before answering would be late
   sim.LATENCY = 2000;
-  const cardMsg = [...issuesCh.threadsList[0].messages.map.values()][0];
-  const slow = await choose(dev, { payload: plain(cardMsg.payload), ephemeral: false, id: 'SL' }, `prio:${aliceIssueId}`, ['high']);
+  const slow = await choose(dev, cardOf(aliceIssueId), `prio:${aliceIssueId}`, ['high']);
   check(slow.i.ackAfterMs <= 3000, 'even on a very slow network a priority change is acknowledged in time');
   sim.LATENCY = 700;
 }
@@ -522,12 +509,8 @@ console.log('12b. security and unusual input');
     const res = await submit(carol, panelScreen, 'report:bug', { text, platform: '', version: '', links: '' });
     check(has(res.out.payload, /report has been|similar issue/), `an unusual report is accepted: ${text.slice(0, 30)}…`);
   }
-  for (const t of issuesCh.threadsList) {
-    check(t.name.length <= 100 && t.name.isWellFormed(), `thread names fit and are valid text: ${t.name.slice(0, 40)}`);
-    for (const m of t.messages.map.values()) {
-      const s = JSON.stringify(plain(m.payload));
-      check(!/\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])/i.test(s), 'no half-emoji ended up in a card');
-    }
+  for (const it of db.issues.list('G')) {
+    check(!/\ud[89ab][0-9a-f]{2}(?!\ud[c-f])/i.test(JSON.stringify(plain(renderIssue(it)))), 'no half-emoji ended up in a card');
   }
 }
 
@@ -542,8 +525,7 @@ const FIELD = (c) => {
 async function crawl(who, name) {
   const seen = new Set(); const screens = new Set();
   // start from the public panel AND from a public issue card (so every card button is pressed as every kind of user)
-  const firstCard = [...issuesCh.threadsList[0].messages.map.values()][0];
-  const queue = [{ screen: panelScreen, depth: 0 }, { screen: { payload: plain(firstCard.payload), ephemeral: false, id: 'CRAWL-CARD' }, depth: 0 }];
+  const queue = [{ screen: panelScreen, depth: 0 }, { screen: cardOf(db.issues.list('G')[0].id), depth: 0 }];
   let pressed = 0;
   while (queue.length) {
     const { screen, depth } = queue.shift();
