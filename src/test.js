@@ -435,6 +435,9 @@ assert.ok(!['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'edit
 const asOwner = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 't1' } }));
 assert.ok(asOwner.includes('editmine'), 'the reporter can edit their own report');
 assert.ok(asOwner.includes('addev'), 'and add attachments to it');
+watchers.add(T.issue.id, 'fol1');
+const asFollower = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'fol1' } }));
+assert.ok(asFollower.includes('addev') && !asFollower.includes('editmine'), 'a follower can attach files (but has no report to edit)');
 const asReadOnly = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: false, article: false, userId: 'x' } }));
 assert.ok(!['plus', 'addev', 'editmine'].some((x) => asReadOnly.includes(x)) && asReadOnly.includes('history'), 'someone who cannot report only reads');
 assert.ok(!asPlayer.includes('evall') && !asReadOnly.includes('evall'), 'someone with no attachments of their own is not offered View attachments');
@@ -505,13 +508,33 @@ assert.match(fileFailureReason('download failed (404)', 25), /error 404/);
 // ---- every screen and form builds, and fits Discord's limits (label/description lengths, 5 rows, 5 fields…) ----
 const ui = await import('./index.js');
 const fi = { guildId: 'g5', user: { id: 'viewer' } };
+// ---- Known issues: open issues by default, paged 25 at a time ----
+{
+  const pg = 'gpage';
+  for (let n = 0; n < 30; n++) issues.create(pg, `Paged issue ${n}`, 'Other');
+  const closedId = issues.create(pg, 'Old fixed issue', 'Other'); issues.setStatus(closedId, 'fixed', 'dev');
+  const view = { guildId: pg, user: { id: 'viewer' }, memberPermissions: { has: () => false }, member: { roles: [] } };
+  const pick = (pl) => pl.components.map((r) => r.toJSON().components).find((c) => c[0].custom_id === 'bfv');
+  const nav = (pl) => pl.components.map((r) => r.toJSON().components).find((c) => c[0].custom_id?.startsWith('bfp:'));
+  const p0 = ui.browsePayload(view, { s: 'open', c: '-', o: '-', p: 0 });
+  assert.equal(pick(p0)[0].options.length, 25, 'the first page holds 25');
+  assert.ok(p0.content.includes('30** open issues') && /hidden/.test(p0.content), 'closed issues are hidden by default and the list says so');
+  assert.equal(nav(p0)[0].disabled, true, 'no Previous on the first page');
+  const p1 = ui.browsePayload(view, { s: 'open', c: '-', o: '-', p: 1 });
+  assert.equal(pick(p1)[0].options.length, 5, 'the second page holds the rest');
+  assert.equal(nav(p1)[2].disabled, true, 'no Next on the last page');
+  assert.ok(!pick(p0)[0].options.some((o) => o.value === String(closedId)) && !pick(p1)[0].options.some((o) => o.value === String(closedId)), 'the fixed issue is not in the open list');
+  const all = ui.browsePayload(view, { s: '-', c: '-', o: '-', p: 0 });
+  assert.ok(pick(all)[0].options.some((o) => o.value === String(closedId)), 'Any status includes closed issues');
+  assert.equal(ui.browsePayload(view, { s: 'open', c: '-', o: '-', p: 99 }).components.length, 5, 'an out-of-range page is clamped');
+}
 const sampleIssue = issues.list('g5')[0];
 const sampleReport = R.forIssue(sampleIssue.id)[0];
 const screens = {
   panel: ui.panelPayload(), devMenu: ui.devMenuPayload(), type: ui.reportTypePayload(),
   quickBug: ui.quickModal('bug'), quickInstall: ui.quickModal('install'), reportBug: ui.reportModal('bug'), reportInstall: ui.reportModal('install', 'prefilled text'),
   meToo: ui.meTooModal(sampleIssue), edit: ui.editModal(sampleReport), addEvidence: ui.addEvidenceModal(sampleReport), note: ui.noteModal(sampleIssue), fixed: ui.fixedModal(sampleIssue),
-  faqBug: ui.faqPayload('g5', 'bug'), faqInstall: ui.faqPayload('g5', 'install'), browse: ui.browsePayload(fi, { s: '-', c: '-', o: '-' }),
+  faqBug: ui.faqPayload('g5', 'bug'), faqInstall: ui.faqPayload('g5', 'install'), browse: ui.browsePayload(fi, { s: 'open', c: '-', o: '-', p: 0 }),
   settings: ui.settingsPayload('g5'), dups: ui.dupPayload(fi), mine: ui.minePayload(fi), track: ui.trackPayload(fi, sampleIssue),
   articles: ui.articlesPayload('g5'), articleNew: ui.articleModal(null), card: renderIssue(sampleIssue), cardBack: renderIssue(sampleIssue, { back: 'browse' }),
   privacy: privacyPayload('1', 90), terms: termsPayload('1'), erase: erasePayload(), board: boardPayload('g5'), slash: ui.commands,

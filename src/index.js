@@ -351,26 +351,43 @@ const issueOption = (it) => ({
   value: String(it.id),
 });
 
-/** Browse view: status / category / owner filters + issue picker. f = {s, c, o} (each NONE or a value). */
+const OPEN = 'open'; // status filter value: everything that is not closed yet (the default)
+const CLOSED = new Set(['fixed', 'wont_fix', 'cannot_reproduce']);
+const BROWSE_PAGE = 25; // a select menu holds at most 25 options
+
+/** Known issues: status / category / owner filters + issue picker, 25 per page. f = {s, c, o, p} (s/c/o: NONE or a value; p: page, from 0). */
 function browsePayload(i, f) {
   const owner = f.o === 'me' ? i.user.id : f.o === 'unassigned' ? 'none' : undefined;
-  const list = issues.list(i.guildId, { status: f.s === NONE ? undefined : f.s, category: f.c === NONE ? undefined : f.c, owner });
-  const menu = (id, placeholder, allLabel, current, opts) => new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder)
-    .addOptions([{ label: allLabel, value: NONE, default: current === NONE }, ...opts.map((o) => ({ ...o, default: o.value === current }))]);
+  const list = issues.list(i.guildId, { status: f.s === NONE || f.s === OPEN ? undefined : f.s, category: f.c === NONE ? undefined : f.c, owner })
+    .filter((it) => f.s !== OPEN || !CLOSED.has(it.status));
+  const pages = Math.max(1, Math.ceil(list.length / BROWSE_PAGE));
+  const page = Math.min(Math.max(0, f.p ?? 0), pages - 1);
+  const shown = list.slice(page * BROWSE_PAGE, (page + 1) * BROWSE_PAGE);
+  const menu = (id, placeholder, allLabel, current, opts, first = []) => new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder)
+    .addOptions([...first, { label: allLabel, value: NONE }, ...opts].map((o) => ({ ...o, default: o.value === current })));
   const components = [
     row(menu(`bfs:${f.c}|${f.o}`, 'Show: status', 'Any status', f.s,
-      Object.entries(STATUSES).map(([value, s]) => ({ label: s.label, emoji: s.emoji, value })))),
+      Object.entries(STATUSES).map(([value, s]) => ({ label: s.label, emoji: s.emoji, value })), [{ label: 'Open issues', value: OPEN, emoji: '📂' }])),
     row(menu(`bfc:${f.s}|${f.o}`, 'Show: category', 'Any category', f.c,
       [...Object.keys(CATEGORIES), 'Other'].map((c) => ({ label: c, value: c })))),
-    row(menu(`bfo:${f.s}|${f.c}`, 'Show: who\'s on it', 'Anyone', f.o,
+    row(menu(`bfo:${f.s}|${f.c}`, "Show: who's on it", 'Anyone', f.o,
       [{ label: 'Nobody yet', value: 'unassigned', emoji: '🙈' }, ...(isDev(i) ? [{ label: 'Assigned to me', value: 'me', emoji: '🙌' }] : [])])), // only developers take issues
   ];
-  if (list.length) {
-    components.push(row(new StringSelectMenuBuilder().setCustomId('bfv').setPlaceholder('Pick an issue to open…').addOptions(list.slice(0, 25).map(issueOption))));
+  if (shown.length) {
+    components.push(row(new StringSelectMenuBuilder().setCustomId('bfv').setPlaceholder('Pick an issue to open…').addOptions(shown.map(issueOption))));
   }
+  if (pages > 1) {
+    const go = (p) => `bfp:${f.s}|${f.c}|${f.o}|${p}`;
+    components.push(row(
+      btn(go(page - 1), 'Previous', '⬅️').setDisabled(page === 0),
+      btn('bfn', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
+      btn(go(page + 1), 'Next', '➡️').setDisabled(page >= pages - 1),
+    ));
+  }
+  const what = f.s === OPEN ? 'open issue' : 'issue';
   const content = list.length
-    ? `**${list.length}** issue${list.length === 1 ? '' : 's'} found – the most important and most-reported are first${list.length > 25 ? ' (showing the top 25)' : ''}. Pick one to see the details.`
-    : 'No issues match those filters. Try choosing "All" in one of the menus.';
+    ? `**${list.length}** ${what}${list.length === 1 ? '' : 's'} found – the most important and most-reported are first${pages > 1 ? ` (showing ${page * BROWSE_PAGE + 1}–${page * BROWSE_PAGE + shown.length})` : ''}. Pick one to see the details.${f.s === OPEN ? ' Fixed and closed issues are hidden – change **Show: status** to see them.' : ''}`
+    : 'No issues match those filters. Try choosing "Any" in one of the menus.';
   return { content, embeds: [], components };
 }
 
@@ -847,19 +864,24 @@ async function handleInteraction(i) {
     }
 
     // ----- browsing -----
-    if (i.isButton() && id === 'browse') return show(i, browsePayload(i, { s: NONE, c: NONE, o: NONE }));
+    if (i.isButton() && id === 'browse') return show(i, browsePayload(i, { s: OPEN, c: NONE, o: NONE, p: 0 }));
     if (i.isStringSelectMenu() && id.startsWith('bfs:')) {
       const [c, o] = id.slice(4).split('|');
-      return i.update(browsePayload(i, { s: i.values[0], c, o }));
+      return i.update(browsePayload(i, { s: i.values[0], c, o, p: 0 }));
     }
     if (i.isStringSelectMenu() && id.startsWith('bfc:')) {
       const [s, o] = id.slice(4).split('|');
-      return i.update(browsePayload(i, { s, c: i.values[0], o }));
+      return i.update(browsePayload(i, { s, c: i.values[0], o, p: 0 }));
     }
     if (i.isStringSelectMenu() && id.startsWith('bfo:')) {
       const [s, c] = id.slice(4).split('|');
-      return i.update(browsePayload(i, { s, c, o: i.values[0] }));
+      return i.update(browsePayload(i, { s, c, o: i.values[0], p: 0 }));
     }
+    if (i.isButton() && id.startsWith('bfp:')) {
+      const [s, c, o, p] = id.slice(4).split('|');
+      return i.update(browsePayload(i, { s, c, o, p: Number(p) || 0 }));
+    }
+    if (i.isButton() && id === 'bfn') return i.deferUpdate(); // the page counter
     if (i.isStringSelectMenu() && id === 'bfv') {
       const issue = await loadIssue(i, Number(i.values[0]));
       return issue && i.update(renderIssue(issue, { back: 'browse', viewer: viewerOf(i) }));
@@ -1108,7 +1130,12 @@ async function handleInteraction(i) {
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
       const mine = reports.latestByUser(issue.id, i.user.id);
-      if (!mine) return i.reply({ content: "You haven't added a report to this issue yet – press **I have this too** first.", flags: EPH });
+      // Following but never reported: the same form as "I have this too" – it adds their report and saves the files with it.
+      if (!mine) {
+        if (id.startsWith('editmine:')) return i.reply({ content: "You haven't added a report to this issue yet – press **I have this too** first.", flags: EPH });
+        const wait = cooldownLeft(i);
+        return wait ? i.reply(waitMsg(wait)) : i.showModal(meTooModal(issue));
+      }
       return i.showModal(id.startsWith('editmine:') ? editModal(mine) : addEvidenceModal(mine));
     }
     if (i.isButton() && (id.startsWith('edit:') || id.startsWith('addevr:'))) {

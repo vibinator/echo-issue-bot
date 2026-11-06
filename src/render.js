@@ -1,7 +1,7 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder,
 } from 'discord.js';
-import { evidence, issues, reports } from './db.js';
+import { evidence, issues, reports, watchers } from './db.js';
 import { relatedIssues } from './related.js';
 import { trunc } from './text.js';
 
@@ -102,7 +102,7 @@ export function renderIssue(issue, { back, viewer } = {}) {
     [
       btn('follow', 'Follow', '🔔'),
       may('report') && mine && btn('editmine', 'Edit my report', '✏️'),
-      may('report') && mine && btn('addev', 'Add screenshots / logs', '📎'), // on issues you reported; others use "I have this too"
+      may('report') && (mine || watchers.has(issue.id, viewer.userId)) && btn('addev', 'Add screenshots / logs', '📎'), // your own issues, or ones you follow
       btn('history', 'History', '📜'),
       (may('dev') || may('article')) && btn('mkart', 'Make knowledge article', '📚'),
     ],
