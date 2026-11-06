@@ -2,10 +2,10 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder } from 'discord.js';
 import { issues, settings } from './db.js';
 import { PRIORITIES, STATUSES } from './render.js';
+import { trunc } from './text.js';
 
 const DAY = 864e5;
 const MAX_CARDS = 7;
-const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const ACTIVE = ['new', 'seen', 'in_progress'];
 const DONE = ['fixed', 'cannot_reproduce', 'wont_fix'];
 

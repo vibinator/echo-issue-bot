@@ -1,0 +1,591 @@
+// End-to-end test: drives the bot's REAL handlers through a simulated Discord (see sim.js) – journeys for each kind of
+// user, then a crawler that presses every button and menu option it can reach. Run with: npm run e2e
+process.env.DB_PATH = ':memory:';
+const { mkdtempSync, existsSync } = await import('node:fs');
+const { tmpdir } = await import('node:os');
+const { join } = await import('node:path');
+process.env.EVIDENCE_DIR = mkdtempSync(join(tmpdir(), 'evr-e2e-'));
+process.env.EVIDENCE_MAX_MB = '1';
+process.env.BACKUP_DIR = mkdtempSync(join(tmpdir(), 'evr-e2e-backups-'));
+delete process.env.REPORTER_ROLE_ID; delete process.env.ARTICLE_ROLE_ID;
+
+const ui = await import('./index.js');
+const S = await import('./sim.js');
+const db = await import('./db.js');
+const { sim, FakeChannel, interaction, outcome, person, plain, textOf, embedChars, buttonsOf } = S;
+const { client, handleInteraction } = ui;
+S.installClient(client);
+
+// ---------------------------------------------------------------- bookkeeping
+const failures = [];
+const check = (cond, message) => { if (!cond) failures.push(message); return !!cond; };
+const logged = [];
+const realError = console.error;
+console.error = (...a) => { logged.push(a.map(String).join(' ')); };
+let interactions = 0; let worstAck = 0;
+
+globalThis.fetch = async (url) => {
+  const body = Buffer.from(`file:${String(url).split('/').pop()}`);
+  return { ok: true, status: 200, headers: { get: () => String(body.length) }, arrayBuffer: async () => body };
+};
+
+const ROLE = { dev: 'R_DEV', users: 'R_USERS', editor: 'R_EDITOR' };
+const admin = person('admin', { manageGuild: true });
+const dev = person('dev', { roles: [ROLE.dev] });
+const editor = person('editor', { roles: [ROLE.editor] });
+const alice = person('alice', { roles: [ROLE.users] });
+const bob = person('bob', { roles: [ROLE.users] });
+const carol = person('carol', { roles: [ROLE.users] });
+const outsider = person('outsider');
+
+const panelCh = new FakeChannel('panel', 'panel'); sim.registry.set('panel', panelCh);
+const issuesCh = new FakeChannel('issues', 'issues'); sim.registry.set('issues', issuesCh);
+const digestCh = new FakeChannel('digest', 'digest'); sim.registry.set('digest', digestCh);
+const logCh = new FakeChannel('changelog', 'changelog'); sim.registry.set('changelog', logCh);
+
+let screenSeq = 0;
+/** Runs one interaction through the real handler and checks the rules every interaction must obey. */
+async function run(i, label = i.customId ?? i.commandName) {
+  const before = logged.length;
+  interactions++;
+  await handleInteraction(i);
+  const out = outcome(i);
+  const failed = logged.slice(before).filter((l) => /^Interaction .* failed/.test(l));
+  check(out.responded, `[${label}] the bot never answered (Discord would show "This interaction failed")`);
+  check(!i.lateAck, `[${label}] answered after ${i.ackAfterMs} ms – too late for Discord's 3 s limit`);
+  check(failed.length === 0, `[${label}] the handler failed: ${failed[0] ?? ''}`);
+  if (i.ackAfterMs !== null) worstAck = Math.max(worstAck, i.ackAfterMs);
+  for (const r of i.responses) {
+    if (!r.payload) continue;
+    check(embedChars(r.payload.embeds) <= 6000, `[${label}] embeds total ${embedChars(r.payload.embeds)} characters (Discord's limit is 6000)`);
+    const ids = buttonsOf(r.payload).map((c) => c.custom_id).filter(Boolean);
+    check(new Set(ids).size === ids.length, `[${label}] duplicate custom ids on one message: ${ids.filter((x, n) => ids.indexOf(x) !== n)}`);
+  }
+  return out;
+}
+
+/** The message a person is looking at after an interaction (ephemeral replies create a new one; updates keep it). */
+function nextScreen(prev, i, out) {
+  if (!out.payload) return prev;
+  const reused = out.type !== 'reply' && prev;
+  return { payload: out.payload, ephemeral: reused ? prev.ephemeral : true, id: reused ? prev.id : `S${++screenSeq}` };
+}
+const fresh = (payload, ephemeral = true) => ({ payload, ephemeral, id: `S${++screenSeq}` });
+
+async function press(who, screen, customId) {
+  const i = interaction({ kind: 'button', customId, who, screen, channel: panelCh });
+  const out = await run(i);
+  return { i, out, screen: nextScreen(screen, i, out) };
+}
+async function choose(who, screen, customId, values, kind = 'select') {
+  const i = interaction({ kind, customId, who, values, screen, channel: panelCh });
+  const out = await run(i);
+  return { i, out, screen: nextScreen(screen, i, out) };
+}
+async function submit(who, screen, customId, fields, files = []) {
+  const i = interaction({ kind: 'modal', customId, who, fields, files, screen, channel: panelCh });
+  const out = await run(i);
+  return { i, out, screen: nextScreen(screen, i, out) };
+}
+const labelsOf = (payload) => buttonsOf(payload).map((c) => c.label).filter(Boolean);
+const has = (payload, re) => re.test(textOf(payload));
+
+// ================================================================= 1. admin sets the bot up
+console.log('1. /setup');
+let panelScreen;
+{
+  const setup = (channel = issuesCh) => interaction({ kind: 'command', commandName: 'setup', who: admin, channel: panelCh,
+    options: { issues_channel: channel, dev_role: { id: ROLE.dev }, reporter_role: { id: ROLE.users }, article_role: { id: ROLE.editor } } });
+  let i = setup();
+  let out = await run(i, '/setup');
+  check(has(out.payload, /All set/), 'setup confirms it is done');
+  check(has(out.payload, new RegExp(`<@&${ROLE.editor}>`)), 'setup names the article editor role');
+  const panelMsg = panelCh.sent.at(-1);
+  check(panelMsg && labelsOf(plain(panelMsg.payload)).includes('Report a problem'), 'the control panel was posted');
+  panelScreen = { payload: plain(panelMsg.payload), ephemeral: false, id: panelMsg.id };
+  check(panelCh.messages.map.size === 1, 'exactly one panel message exists');
+
+  i = setup(); out = await run(i, '/setup again');
+  check(panelCh.messages.map.size === 1, 're-running /setup replaces the panel instead of adding a second one');
+  check(has(out.payload, /Existing data found|All set/), 'second setup still succeeds');
+  const p2 = panelCh.sent.at(-1); panelScreen = { payload: plain(p2.payload), ephemeral: false, id: p2.id };
+
+  const noThreads = new FakeChannel('nothreads', 'nothreads', { permissionsMissing: ['CreatePublicThreads', 'ManageThreads'] });
+  sim.registry.set('nothreads', noThreads);
+  out = await run(setup(noThreads), '/setup with missing permissions');
+  check(has(out.payload, /missing permissions.*Create Public Threads/s), 'setup names the missing permissions and why they matter');
+  out = await run(setup(issuesCh), '/setup restored');
+  const p3 = panelCh.sent.at(-1); panelScreen = { payload: plain(p3.payload), ephemeral: false, id: p3.id };
+  check(db.settings.get('G').channel_id === 'issues', 'issues channel saved');
+}
+const cfgSet = (patch) => db.settings.update('G', patch);
+cfgSet({ cooldown_sec: 60 });
+
+// ================================================================= 2. who may do what at the front door
+console.log('2. access control on the panel');
+{
+  let r = await press(outsider, panelScreen, 'report');
+  check(has(r.out.payload, /limited to members with the/), 'someone without the reporter role is told why they cannot report');
+  check(!r.out.modal && buttonsOf(r.out.payload).length === 0, '…and is not offered the report buttons');
+  r = await press(outsider, panelScreen, 'browse');
+  check(has(r.out.payload, /issues|No issues match/), 'but they can still browse');
+  r = await press(outsider, panelScreen, 'dev:menu');
+  check(has(r.out.payload, /developers only/), 'a stranger cannot open the Developer menu');
+  r = await press(alice, panelScreen, 'dev:menu');
+  check(has(r.out.payload, /developers only/), 'a normal player cannot open the Developer menu');
+  r = await press(alice, panelScreen, 'dev:articles');
+  check(has(r.out.payload, /can only be changed by developers/), 'a normal player cannot open the article tools');
+  r = await press(editor, panelScreen, 'dev:menu');
+  check(JSON.stringify(labelsOf(r.out.payload)) === JSON.stringify(['Knowledge articles']), 'an article editor sees only the article tools');
+  for (const id of ['dev:settings', 'dev:board', 'dev:export', 'dev:backup', 'dev:digest', 'dev:dups']) {
+    r = await press(editor, panelScreen, id);
+    check(has(r.out.payload, /developers only/), `an article editor cannot use ${id}`);
+  }
+  r = await press(dev, panelScreen, 'dev:menu');
+  check(labelsOf(r.out.payload).length >= 7, 'a developer sees the full developer menu');
+}
+
+// ================================================================= 3. a player reports a problem (the whole path)
+console.log('3. reporting');
+let aliceIssueId; let aliceReportId;
+{
+  let r = await press(alice, panelScreen, 'report');
+  check(labelsOf(r.out.payload).join() === 'Install issue,Bug in game', 'step 1 offers Install issue / Bug in game');
+  r = await press(alice, r.screen, 'rtype:install');
+  check(r.out.modal && /faqq:install/.test(JSON.stringify(r.out.modal)), 'step 2 opens the one-line description box');
+  r = await submit(alice, r.screen, 'faqq:install', { text: 'problem parsing the package when i tap install on my quest' });
+  const select = buttonsOf(r.out.payload).find((c) => c.custom_id === 'faq:install');
+  check(select && select.options[0].value === 'kb:quest_parse_package', 'the closest known problem is listed first');
+  check(select?.options[0].emoji?.name === '⭐', '…and marked as the closest match');
+  r = await choose(alice, r.screen, 'faq:install', ['kb:quest_parse_package']);
+  check(has(r.out.payload, /Package Installer/), 'picking it shows the fix');
+  const back = await press(alice, r.screen, 'faqno:install:kb:quest_parse_package');
+  check(buttonsOf(back.out.payload).some((c) => c.custom_id === 'faq:install'), '"That\'s not my problem" returns to the list');
+  const fixed = await press(alice, r.screen, 'faqok:install:kb:quest_parse_package');
+  check(has(fixed.out.payload, /No report was needed/), '"That fixed it!" ends without creating a report');
+  check(db.issues.list('G').length === 0, 'no issue was created when the fix worked');
+
+  r = await press(alice, back.screen, 'rform:install');
+  check(r.out.modal && /report:install/.test(JSON.stringify(r.out.modal)), '"None of these" opens the report form');
+  const form = plain(r.out.modal);
+  check(form.components.length <= 5 && form.components.some((c) => c.component?.type === 19), 'the form has a file upload box');
+  const files = [{ name: 'crash log.txt', url: 'https://cdn.discordapp.com/a/crash.txt', size: 12, contentType: 'text/plain' }];
+  r = await submit(alice, back.screen, 'report:install', { text: 'Problem parsing the package when I tap install on my Quest', platform: 'Quest 3', version: '0.13.14', links: 'https://youtu.be/abc123' }, files);
+  check(has(r.out.payload, /report has been sent/), 'the confirmation says the report was sent');
+  check(has(r.out.payload, /only you and the developers/), '…and says who can see the attachments');
+  check(r.i.responses[0].type === 'deferUpdate', 'the form answers Discord immediately (defers) before the slow work');
+  const issue = db.issues.list('G')[0];
+  aliceIssueId = issue?.id; aliceReportId = db.reports.forIssue(issue.id)[0].id;
+  check(issue.kind === 'install' && issue.category === 'Install / Setup', 'stored as an install issue');
+  check(issuesCh.threadsList.length === 1, 'the issue got its own thread');
+  const thread = issuesCh.threadsList[0];
+  const card = [...thread.messages.map.values()][0];
+  check(card && buttonsOf(plain(card.payload)).some((c) => c.custom_id === `status:${issue.id}`), 'the thread starts with the control card');
+  const cardText = textOf(plain(card.payload));
+  check(/Requested by[\s\S]*<@alice>/.test(cardText), 'the card names the requester');
+  check(!/youtu\.be|crash log/.test(cardText), 'the public card does not reveal attachment names or links');
+  check(/2 attached/.test(cardText), 'the public card only counts the attachments');
+  check(existsSync(join(process.env.EVIDENCE_DIR, String(aliceReportId))), 'the uploaded file was saved privately on disk');
+  check(!thread.sent.some((m) => JSON.stringify(plain(m.payload)).includes('crash.txt')), 'the file was not posted in the thread');
+  check(textOf(plain(card.payload)).length > 0 && embedChars(plain(card.payload).embeds) <= 6000, 'the card fits Discord limits');
+}
+
+// ================================================================= 4. a second player hits the same problem
+console.log('4. similar report → joins, can be separated');
+let bobReportId; let bobR;
+{
+  sim.t += 61_000; // past alice's cooldown… (bob has his own anyway)
+  bobR = await submit(bob, panelScreen, 'report:install', { text: 'Quest installer says problem parsing the package after I tap install', platform: '', version: '', links: '' });
+  const t = textOf(bobR.out.payload);
+  check(/similar issue/i.test(t), 'a matching report is shown as joining an existing issue');
+  check(/\d+%/.test(t), '…with how alike they are');
+  const btns = labelsOf(bobR.out.payload);
+  check(btns.includes('Yes, same problem') && btns.includes('Make it a separate issue'), '…offering to keep it or separate it');
+  check(db.issues.list('G').length === 1, 'no duplicate issue was created');
+  bobReportId = db.reports.forIssue(aliceIssueId).find((x) => x.user_id === 'bob')?.id;
+  const card = [...issuesCh.threadsList[0].messages.map.values()][0];
+  check(/<@alice> \+ 1 other/.test(textOf(plain(card.payload))), 'the card still names alice as requester, "+ 1 other"');
+  check(issuesCh.threadsList.length === 1, 'still one thread for the issue');
+
+  let r = await press(bob, bobR.screen, `keep:${bobReportId}`);
+  check(has(r.out.payload, /stays with/), '"Yes, same problem" confirms');
+  r = await press(carol, bobR.screen, `split:${bobReportId}`);
+  check(has(r.out.payload, /only change your own reports/), 'someone else cannot separate bob\'s report');
+  r = await press(bob, bobR.screen, `split:${bobReportId}`);
+  check(has(r.out.payload, /now its own issue/), 'bob can make it a separate issue');
+  check(r.i.responses[0].type === 'deferUpdate', 'separating answers Discord first');
+  check(db.issues.list('G').length === 2, 'a second issue exists after separating');
+  check(db.reports.forIssue(aliceIssueId).every((x) => x.user_id === 'alice'), 'alice\'s issue lost bob\'s report');
+  check(issuesCh.threadsList.length === 2, 'the separated issue got its own thread');
+}
+
+// ================================================================= 5. cooldown
+console.log('5. cooldown');
+{
+  let r = await press(alice, panelScreen, 'report');
+  check(/Hang on a moment|Install issue/.test(textOf(r.out.payload)), 'cooldown message or type screen shown');
+  r = await submit(alice, panelScreen, 'report:install', { text: 'Another install problem happening right now on my quest headset', platform: '', version: '', links: '' });
+  check(has(r.out.payload, /Hang on a moment/), 'sending a second report too fast is paused, with a reason');
+  r = await press(dev, panelScreen, 'report');
+  check(labelsOf(r.out.payload).includes('Install issue'), 'developers are not slowed by the cooldown');
+}
+
+// ================================================================= 6. private attachments
+console.log('6. attachment privacy');
+{
+  const issueCard = (iid) => ({ payload: plain([...issuesCh.threadsList.find((t) => [...t.messages.map.values()][0] && JSON.stringify(plain([...t.messages.map.values()][0].payload)).includes(`status:${iid}`)).messages.map.values()][0].payload), ephemeral: false, id: 'CARD' });
+  const cardScreen = issueCard(aliceIssueId);
+  let r = await press(alice, cardScreen, `evall:${aliceIssueId}`);
+  check(r.i.responses[0].type === 'deferReply', 'viewing attachments answers Discord first');
+  check(r.i.responses.some((x) => x.type === 'editReply' && /crash log|crash\.txt/.test(JSON.stringify(x.payload))) || has(r.out.payload, /crash log/), 'the requester can open their own attachments');
+  r = await press(bob, cardScreen, `evall:${aliceIssueId}`);
+  check(has(r.out.payload, /private/), 'another player is told attachments are private');
+  check(!/crash/.test(textOf(r.out.payload)), '…and sees none of them');
+  r = await press(outsider, cardScreen, `evall:${aliceIssueId}`);
+  check(has(r.out.payload, /private/), 'an outsider is told attachments are private');
+  r = await press(bob, panelScreen, `evview:${aliceReportId}`);
+  check(has(r.out.payload, /only open the attachments of your own/), 'bob cannot open alice\'s report attachments directly either');
+  r = await press(dev, cardScreen, `evall:${aliceIssueId}`);
+  check(/requested by <@alice>/.test(textOf(r.out.payload)) && /crash log/.test(JSON.stringify(r.i.responses)), 'a developer can open everyone\'s attachments, labelled with the requester');
+  r = await press(alice, panelScreen, `evview:${aliceReportId}`);
+  check(r.i.responses[0].type === 'deferReply', 'My attachments also answers first');
+}
+
+// ================================================================= 7. My reports
+console.log('7. My reports');
+{
+  let r = await press(alice, panelScreen, 'mine');
+  check(buttonsOf(r.out.payload).some((c) => c.custom_id === 'mine_view'), 'My reports lists alice\'s report');
+  check(buttonsOf(r.out.payload).some((c) => c.custom_id === 'dm:toggle'), '…with the update-messages switch');
+  let s = await choose(alice, r.screen, 'mine_view', [String(aliceIssueId)]);
+  const lab = labelsOf(s.out.payload);
+  check(['Edit my report', 'Add screenshots / logs', 'Recalculate match', 'Withdraw'].every((x) => lab.includes(x)), 'the personal card offers edit / add / recalculate / withdraw');
+  check(lab.some((x) => /My attachments \(2\)/.test(x)), '…and My attachments');
+  const e = await press(alice, s.screen, `edit:${aliceReportId}`);
+  check(e.out.modal && /Edit your report/.test(JSON.stringify(e.out.modal)), 'Edit opens the pre-filled form');
+  check(plain(e.out.modal).components[0].component.value.includes('Problem parsing'), 'the form is pre-filled with the report');
+  const ed = await submit(alice, s.screen, `edit:${aliceReportId}`, { text: 'Problem parsing the package when I tap install on my Quest (updated, also on Quest 2)', platform: 'Quest 3', version: '0.13.15', links: '' });
+  check(has(ed.out.payload, /report was updated/), 'saving an edit confirms it');
+  check(ed.i.responses[0].type === 'deferUpdate', 'the edit replaces the personal card in place');
+  const rm = await press(alice, ed.screen, `rematch:${aliceReportId}`);
+  check(has(rm.out.payload, /still fits best|moved|own issue/), 'Recalculate match answers with a clear result');
+  check(rm.i.responses[0].type === 'deferUpdate', 'Recalculate answers first');
+  let f = await press(carol, panelScreen, `follow:${aliceIssueId}`);
+  check(has(f.out.payload, /now following/), 'a non-reporter can follow an issue');
+  f = await press(carol, panelScreen, `follow:${aliceIssueId}`);
+  check(has(f.out.payload, /stopped following/), '…and unfollow');
+  f = await press(alice, panelScreen, `follow:${aliceIssueId}`);
+  check(has(f.out.payload, /already get its updates/), 'a reporter is told they already get updates');
+  const dmOff = await press(alice, r.screen, 'dm:toggle');
+  check(has(dmOff.out.payload, /off/), 'turning updates off is reflected');
+  await press(alice, dmOff.screen, 'dm:toggle');
+}
+
+// ================================================================= 8. developer workflow
+console.log('8. developer workflow');
+{
+  const cardMsg = [...issuesCh.threadsList[0].messages.map.values()][0];
+  const cardScreen = () => ({ payload: plain(cardMsg.payload), ephemeral: false, id: cardMsg.id });
+  const blocked = [['status:%', 'select', ['seen'], /developers only/], ['prio:%', 'select', ['high'], /developers only/], ['assign:%', 'button', null, /developers only/],
+    ['note:%', 'button', null, /developers only/], ['merge:%', 'button', null, /developers only/], ['rmrep:%', 'button', null, /developers only/]];
+  for (const [pattern, kind, values, re] of blocked) {
+    const id = pattern.replace('%', aliceIssueId);
+    const r = kind === 'select' ? await choose(alice, cardScreen(), id, values) : await press(alice, cardScreen(), id);
+    check(re.test(textOf(r.out.payload)), `a player cannot use ${pattern.replace('%', '…')} (and is told why)`);
+  }
+  let r = await press(alice, cardScreen(), `mkart:${aliceIssueId}`);
+  check(has(r.out.payload, /can only be changed by developers/), 'a player cannot turn an issue into an article');
+
+  // status → DM to the reporter, thread note, ack first
+  sim.dms.length = 0;
+  r = await choose(dev, cardScreen(), `status:${aliceIssueId}`, ['in_progress']);
+  check(r.i.responses[0].type === 'deferUpdate', 'a status change answers Discord first');
+  check(db.issues.get(aliceIssueId).status === 'in_progress', 'status saved');
+  await new Promise((res) => setTimeout(res, 20));
+  check(sim.dms.some((d) => d.to === 'alice' && /started working/.test(d.content)), 'the reporter is messaged, in plain words');
+  check(!sim.dms.some((d) => d.to === 'bob'), 'bob left that issue, so he is not messaged');
+  check(issuesCh.threadsList[0].sent.some((m) => /set the status to/.test(JSON.stringify(plain(m.payload)))), 'the thread records who changed the status');
+
+  // DM opt-out respected
+  db.prefs.setDmOff('alice', true); sim.dms.length = 0;
+  await choose(dev, cardScreen(), `status:${aliceIssueId}`, ['seen']);
+  await new Promise((res) => setTimeout(res, 20));
+  check(!sim.dms.some((d) => d.to === 'alice'), 'turning updates off stops the messages');
+  db.prefs.setDmOff('alice', false);
+
+  // priority + assign
+  r = await choose(dev, cardScreen(), `prio:${aliceIssueId}`, ['critical']);
+  check(db.issues.get(aliceIssueId).priority === 'critical' && r.i.responses[0].type === 'deferUpdate', 'priority changes (answering first)');
+  r = await press(dev, cardScreen(), `assign:${aliceIssueId}`);
+  check(db.issues.get(aliceIssueId).owner_id === 'dev', 'assign-to-me works');
+  r = await press(dev, cardScreen(), `assign:${aliceIssueId}`);
+  check(db.issues.get(aliceIssueId).owner_id === null, 'pressing it again un-assigns');
+
+  // note
+  r = await press(dev, cardScreen(), `note:${aliceIssueId}`);
+  check(r.out.modal, 'the note button opens a form');
+  r = await submit(dev, cardScreen(), `note:${aliceIssueId}`, { text: 'Reproduced on Quest 3, fix is on the beta channel' });
+  check(db.issues.get(aliceIssueId).dev_note?.includes('beta channel') && r.i.responses[0].type === 'deferReply', 'the note is saved (answering first)');
+
+  // set channels through the settings menus, then fix with a version
+  const settingsScreen = (await press(dev, panelScreen, 'dev:settings')).screen;
+  r = await choose(dev, settingsScreen, 'set_logch', ['changelog'], 'channelselect');
+  check(db.settings.get('G').changelog_channel_id === 'changelog', 'the changelog channel can be chosen from the settings menu');
+  r = await choose(dev, settingsScreen, 'set_devch', ['digest'], 'channelselect');
+  r = await choose(dev, settingsScreen, 'set_thr', ['0.35']);
+  check(db.settings.get('G').threshold === 0.35, 'matching strictness can be changed'); await choose(dev, settingsScreen, 'set_thr', ['0.25']);
+
+  sim.dms.length = 0;
+  r = await choose(dev, cardScreen(), `status:${aliceIssueId}`, ['fixed']);
+  check(r.out.modal && /Mark fixed/.test(JSON.stringify(r.out.modal)), 'choosing Fixed asks for the version');
+  r = await submit(dev, cardScreen(), `fixed:${aliceIssueId}`, { version: '0.13.20', text: 'Fixed in the new installer' });
+  check(r.i.responses[0].type === 'deferUpdate', 'marking fixed answers first');
+  check(db.issues.get(aliceIssueId).status === 'fixed' && db.issues.get(aliceIssueId).fixed_version === '0.13.20', 'fixed + version saved');
+  await new Promise((res) => setTimeout(res, 20));
+  check(logCh.sent.some((m) => /0\.13\.20/.test(JSON.stringify(plain(m.payload)))), 'a "fixed" announcement with the version is posted');
+  check(sim.dms.some((d) => d.to === 'alice' && /0\.13\.20/.test(d.content)), 'the reporter is told which version has the fix');
+
+  // a new report on the fixed issue reopens it, and separating it puts it back
+  db.settings.update('G', { cooldown_sec: 0 });
+  const reopen = await submit(carol, panelScreen, 'report:install', { text: 'Problem parsing the package when I tap install on my Quest again', platform: '', version: '0.13.20', links: '' });
+  check(db.issues.get(aliceIssueId).status === 'new', 'a matching report reopens a fixed issue');
+  const carolReport = db.reports.forIssue(aliceIssueId).find((x) => x.user_id === 'carol');
+  const undo = await press(carol, reopen.screen, `split:${carolReport.id}`);
+  check(db.issues.get(aliceIssueId).status === 'fixed', 'separating that report puts the issue back to Fixed');
+  db.settings.update('G', { cooldown_sec: 60 });
+}
+
+// ================================================================= 9. knowledge articles
+console.log('9. knowledge articles');
+{
+  let r = await press(editor, panelScreen, 'dev:menu');
+  r = await press(editor, r.screen, 'dev:articles');
+  check(labelsOf(r.out.payload).includes('New article'), 'the editor reaches the article manager');
+  const m = await press(editor, r.screen, 'art:new');
+  check(m.out.modal, 'New article opens a form');
+  const created = await submit(editor, r.screen, 'art:save:new', { title: 'Why am I suspended', symptoms: 'i am suspended\nmy account is banned\nwhy am i banned', phrases: 'account suspended', body: 'Check the rules channel, then appeal.', link: 'https://example.com/appeal' });
+  const art = db.articles.list('G')[0];
+  check(art && art.created_by === 'editor', 'the article is saved with its author');
+  check(has(created.out.payload, /Why am I suspended/), 'the article view is shown');
+  // players now see it, ranked first for a matching sentence
+  let p = await press(bob, panelScreen, 'report'); sim.t += 61_000;
+  p = await press(bob, p.screen, 'rtype:bug');
+  p = await submit(bob, p.screen, 'faqq:bug', { text: 'why am i banned from the game' });
+  const sel = buttonsOf(p.out.payload).find((c) => c.custom_id === 'faq:bug');
+  check(sel.options[0].value === `a:${art.id}` && sel.options[0].emoji.name === '⭐', 'the new article is the closest match for a player describing it');
+  p = await choose(bob, p.screen, 'faq:bug', [`a:${art.id}`]);
+  check(has(p.out.payload, /rules channel/) && has(p.out.payload, /example\.com\/appeal/), 'the article answer and link are shown');
+  await press(bob, p.screen, `faqno:bug:a:${art.id}`);
+  check(db.kbStats.get('G', `a:${art.id}`).shown >= 1 && db.kbStats.get('G', `a:${art.id}`).denied === 1, 'views and "not my problem" are counted');
+  // edit, disable, test, delete
+  const view = await choose(editor, created.screen, 'art_pick', [String(art.id)]);
+  const tog = await press(editor, view.screen, `art:tog:${art.id}`);
+  check(db.articles.get(art.id).enabled === 0, 'an article can be disabled');
+  const fl = await press(bob, panelScreen, 'report');
+  const test = await press(editor, r.screen, 'art:test');
+  check(test.out.modal, 'Test matching opens a form');
+  const tr = await submit(editor, r.screen, 'art:testm', { sample: 'i keep getting banned' });
+  check(has(tr.out.payload, /full list|first/), 'Test matching reports what a player would see');
+  await press(editor, tog.screen, `art:tog:${art.id}`);
+  const del = await press(editor, tog.screen, `art:del:${art.id}`);
+  check(has(del.out.payload, /Delete/), 'delete asks to confirm');
+  const gone = await press(editor, del.screen, `art:delok:${art.id}`);
+  check(db.articles.get(art.id) === undefined, 'the article is deleted');
+  const stranger = await press(alice, view.screen, `art:delok:${art.id}`);
+  check(has(stranger.out.payload, /can only be changed by developers/), 'a player cannot delete articles');
+}
+
+// ================================================================= 10. duplicates, merge, board, digest, export, backup
+console.log('10. dev tools');
+{
+  const { fileReport } = await import('./service.js');
+  fileReport({ guildId: 'G', userId: 'x1', threshold: 0.99, text: 'Arena crashes with a black screen when joining on Quest 3 headset' });
+  fileReport({ guildId: 'G', userId: 'x2', threshold: 0.99, text: 'Arena crashes with a black screen when joining the match on Quest 3' });
+  const [i1, i2] = db.issues.list('G').filter((x) => x.kind === 'bug').slice(0, 2);
+  for (const x of [i1, i2]) await (await import('./service.js')).syncMessage(client, x, 'issues');
+  let r = await press(dev, panelScreen, 'dev:dups');
+  check(has(r.out.payload, /same problem/), 'the duplicate review shows a pair');
+  const pairBtns = buttonsOf(r.out.payload).map((c) => c.custom_id);
+  const keep = pairBtns.find((x) => x?.startsWith('dupk:'));
+  const k = await press(dev, r.screen, keep);
+  check(k.i.responses[0].type === 'deferUpdate', 'a duplicate decision answers first');
+  r = await press(dev, panelScreen, 'dev:board');
+  check(r.out.payload.embeds.length === 2 && embedChars(r.out.payload.embeds) <= 6000, 'the board shows its two columns sets within limits');
+  r = await press(dev, r.screen, 'board:mine');
+  check(has(r.out.payload, /Your cards/), '"Only mine" filters the board');
+  r = await press(dev, panelScreen, 'dev:digest');
+  check(has(r.out.payload, /digest was posted/) && digestCh.sent.length === 1, 'the digest is posted to the digest channel');
+  r = await press(dev, panelScreen, 'dev:export');
+  check(r.i.responses.some((x) => x.type === 'reply') && has(r.out.payload, /user IDs/), 'the export warns it contains user IDs');
+  r = await press(dev, panelScreen, 'dev:backup');
+  check(has(r.out.payload, /Backup saved/), 'a backup can be made on demand');
+  // merge i2 into i1 from the issue card
+  const t2 = issuesCh.threadsList.find((t) => JSON.stringify(plain([...t.messages.map.values()][0].payload)).includes(`status:${i2.id}`));
+  const c2 = { payload: plain([...t2.messages.map.values()][0].payload), ephemeral: false, id: 'C2' };
+  r = await press(dev, c2, `merge:${i2.id}`);
+  r = await choose(dev, r.screen, `mergeto:${i2.id}`, [String(i1.id)]);
+  check(db.issues.get(i2.id) === undefined && r.i.responses[0].type === 'deferUpdate', 'merge works (answering first)');
+  check(t2.locked && t2.archived, 'the merged issue\'s thread is locked');
+  check(/merged into/.test(JSON.stringify(plain([...t2.messages.map.values()][0].payload))), '…and its card points to the issue it joined');
+}
+
+// ================================================================= 11. withdraw & erase my data
+console.log('11. withdraw and erase');
+{
+  const bobsIssue = db.issues.list('G').find((x) => db.reports.forIssue(x.id).some((r) => r.user_id === 'bob'));
+  const bobRep = db.reports.forIssue(bobsIssue.id).find((r) => r.user_id === 'bob');
+  let r = await press(bob, panelScreen, `wd:${bobRep.id}`);
+  check(has(r.out.payload, /Take back your report|already working/), 'withdraw asks for confirmation (or explains why it cannot)');
+  const priv = await press(bob, panelScreen, 'legal:privacy');
+  check(has(priv.out.payload, /Data & privacy/) && labelsOf(priv.out.payload).includes('Delete my data'), 'the privacy notice offers Delete my data');
+  const ask = await press(bob, priv.screen, 'legal:erase');
+  check(has(ask.out.payload, /can't be undone/), 'erasing asks for confirmation');
+  const done = await press(bob, ask.screen, 'legal:eraseok');
+  check(has(done.out.payload, /Done/), 'erasing confirms');
+  check(db.reports.byUser('G', 'bob').length === 0, 'none of bob\'s reports remain');
+  const terms = await press(bob, panelScreen, 'legal:terms');
+  check(has(terms.out.payload, /Terms of use/), 'the terms are available');
+}
+
+// ================================================================= 12. robustness
+console.log('12. robustness');
+{
+  // two people report the same new problem at the same moment → still one issue, ONE thread
+  db.settings.update('G', { cooldown_sec: 0 });
+  const before = issuesCh.threadsList.length; const issuesBefore = db.issues.list('G').length;
+  const text = 'Spectator camera jitters badly whenever the disc is near the goal in arena';
+  await Promise.all([carol, alice].map((who) => submit(who, panelScreen, 'report:bug', { text, platform: '', version: '', links: '' })));
+  check(db.issues.list('G').length === issuesBefore + 1, 'two simultaneous matching reports make ONE issue');
+  check(issuesCh.threadsList.length === before + 1, 'and ONE thread (not two) for it');
+
+  // stale buttons (things that were deleted since the menu was drawn) fail politely
+  for (const [kind, id, who, values] of [['button', 'evall:99999', dev], ['button', 'follow:99999', alice], ['select', 'status:99999', dev, ['seen']], ['button', 'assign:99999', dev],
+    ['button', 'wd:99999', alice], ['button', 'rematch:99999', alice], ['button', 'edit:99999', alice], ['button', 'split:99999', alice], ['button', 'keep:99999', alice],
+    ['button', 'trk:99999', alice], ['select', 'mine_view', alice, ['99999']], ['select', 'bfv', alice, ['99999']], ['button', 'art:edit:99999', dev], ['button', 'dupm:99999:99998', dev],
+    ['select', 'faq:bug', alice, ['kb:does_not_exist']], ['button', 'history:99999', alice], ['button', 'mkart:99999', dev]]) {
+    const r = kind === 'select' ? await choose(who, panelScreen, id, values) : await press(who, panelScreen, id);
+    check(r.out.responded && !/TypeError|undefined|Cannot read/.test(textOf(r.out.payload)), `a stale ${id} gets a polite answer, not a crash`);
+  }
+
+  // no permission to make threads → the report is still saved and shown (fallback), not lost
+  const old = db.settings.get('G').channel_id;
+  const noThread = new FakeChannel('nt', 'nt', { canThread: false }); sim.registry.set('nt', noThread);
+  db.settings.update('G', { cooldown_sec: 0 }); db.settings.set('G', 'nt', ROLE.dev);
+  await submit(carol, panelScreen, 'report:bug', { text: 'Teammates are invisible after the lobby loads for the second round', platform: '', version: '', links: '' });
+  check(noThread.sent.length === 1, 'without thread permission the issue card falls back to a normal message');
+  db.settings.set('G', old, ROLE.dev);
+
+  // the bot being too slow: every Discord call 2 s → handlers that did work before answering would be late
+  sim.LATENCY = 2000;
+  const cardMsg = [...issuesCh.threadsList[0].messages.map.values()][0];
+  const slow = await choose(dev, { payload: plain(cardMsg.payload), ephemeral: false, id: 'SL' }, `prio:${aliceIssueId}`, ['high']);
+  check(slow.i.ackAfterMs <= 3000, 'even on a very slow network a priority change is acknowledged in time');
+  sim.LATENCY = 700;
+}
+
+// ================================================================= 12b. security and unusual input
+console.log('12b. security and unusual input');
+{
+  const before = JSON.stringify(db.settings.get('G'));
+  const setupAs = (who, devRole = { id: ROLE.dev }) => interaction({ kind: 'command', commandName: 'setup', who, channel: panelCh,
+    options: { issues_channel: issuesCh, dev_role: devRole } });
+  let out = await run(setupAs(alice), '/setup by a player');
+  check(has(out.payload, /Manage Server/), 'a player cannot run /setup even if Discord lets them see the command');
+  out = await run(setupAs(dev), '/setup by a developer without Manage Server');
+  check(has(out.payload, /Manage Server/), 'a developer role alone is not enough to run /setup');
+  check(JSON.stringify(db.settings.get('G')) === before, 'a refused /setup changed nothing');
+  out = await run(setupAs(admin, { id: 'G' }), '/setup with @everyone as the developer role');
+  check(has(out.payload, /@everyone.*can't be the developer/), '@everyone cannot be chosen as the developer role');
+  check(JSON.stringify(db.settings.get('G')) === before, '…and nothing changed');
+
+  check(Array.isArray(client.options.allowedMentions?.parse) && client.options.allowedMentions.parse.length === 0, 'the bot cannot ping anyone by accident (@everyone in a title, etc.)');
+
+  const listAdmin = person('listadmin', { roles: [ROLE.dev] }); listAdmin.rolesAsList = true;
+  let r = await press(listAdmin, panelScreen, 'dev:menu');
+  check(labelsOf(r.out.payload).length >= 7, 'roles supplied as a plain list of ids still make someone a developer');
+
+  const dm = interaction({ kind: 'command', commandName: 'setup', who: admin, channel: panelCh, guildId: null });
+  await handleInteraction(dm);
+  check(dm.responses.length === 1 && /inside a server/.test(JSON.stringify(dm.responses[0].payload)), 'using the command in a private message gets a polite answer, not silence');
+
+  // unusual report text: mentions, emoji at the cut-off, very long words, other languages
+  db.settings.update('G', { cooldown_sec: 0 });
+  const odd = [
+    '@everyone @here <@&123> this is a test of mentions in a report title that should never ping anybody at all',
+    `${'x'.repeat(86)}😀😀😀😀 emoji sits right where the title gets cut`,
+    `${'verylongwordwithoutspaces'.repeat(12)} and some more words after it`,
+    'El juego se cierra cuando entro en la arena con mi Quest, la música desaparece también',
+    '日本語のテキストだけのレポートです。ゲームが起動しません。',
+    '```code block``` and **bold** and [link](https://example.com) and `ticks` all in one report body',
+  ];
+  for (const text of odd) {
+    const res = await submit(carol, panelScreen, 'report:bug', { text, platform: '', version: '', links: '' });
+    check(has(res.out.payload, /report has been|similar issue/), `an unusual report is accepted: ${text.slice(0, 30)}…`);
+  }
+  for (const t of issuesCh.threadsList) {
+    check(t.name.length <= 100 && t.name.isWellFormed(), `thread names fit and are valid text: ${t.name.slice(0, 40)}`);
+    for (const m of t.messages.map.values()) {
+      const s = JSON.stringify(plain(m.payload));
+      check(!/\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])/i.test(s), 'no half-emoji ended up in a card');
+    }
+  }
+}
+
+// ================================================================= 13. crawler: press every reachable control
+console.log('13. crawling every button, menu option and form');
+const SKIP = [/^legal:eraseok/, /^wdok:/, /^art:delok:/, /^dupm:/, /^mergeto:/, /^rmsel:/, /^dev:backup/, /^dev:export/, /^dev:digest/, /^board:/, /^set_/];
+const FIELD = (c) => {
+  if (c.type === 19) return null;
+  const min = c.min_length ?? 0;
+  return (c.value && c.value.length >= min ? c.value : 'Sample text for testing this form properly').padEnd(min, 'x').slice(0, c.max_length ?? 4000);
+};
+async function crawl(who, name) {
+  const seen = new Set(); const screens = new Set();
+  // start from the public panel AND from a public issue card (so every card button is pressed as every kind of user)
+  const firstCard = [...issuesCh.threadsList[0].messages.map.values()][0];
+  const queue = [{ screen: panelScreen, depth: 0 }, { screen: { payload: plain(firstCard.payload), ephemeral: false, id: 'CRAWL-CARD' }, depth: 0 }];
+  let pressed = 0;
+  while (queue.length) {
+    const { screen, depth } = queue.shift();
+    for (const c of buttonsOf(screen.payload)) {
+      if (!c.custom_id || c.style === 5) continue;
+      const targets = c.type === 3 ? (c.options ?? []).slice(0, 3).map((o) => o.value) : [null];
+      for (const value of targets) {
+        const key = `${name}|${screen.id}|${c.custom_id}|${value}`;
+        const loose = `${name}|${c.custom_id}|${value}`;
+        if (seen.has(key) || seen.has(loose) || SKIP.some((re) => re.test(c.custom_id))) continue;
+        seen.add(key); seen.add(loose); pressed++;
+        const i = interaction({ kind: c.type === 3 ? 'select' : c.type === 8 ? 'channelselect' : 'button', customId: c.custom_id, who, values: value ? [value] : undefined, screen, channel: panelCh });
+        const out = await run(i, `${name}: ${c.custom_id}${value ? ` = ${value}` : ''}`);
+        let next = nextScreen(screen, i, out);
+        if (out.modal) {
+          const comps = plain(out.modal).components.map((x) => x.component ?? x.components?.[0]);
+          const fields = Object.fromEntries(comps.filter((x) => x && x.type === 4).map((x) => [x.custom_id, FIELD(x)]));
+          if (!/^(report:|faqq:)/.test(out.modal.custom_id)) {
+            const mi = interaction({ kind: 'modal', customId: out.modal.custom_id, who, fields, screen, channel: panelCh });
+            const mo = await run(mi, `${name}: form ${out.modal.custom_id}`);
+            next = nextScreen(screen, mi, mo);
+          }
+        }
+        const sig = JSON.stringify([textOf(next.payload).slice(0, 200), buttonsOf(next.payload).map((x) => x.custom_id)]);
+        if (next.payload && depth < 5 && !screens.has(sig)) { screens.add(sig); queue.push({ screen: next, depth: depth + 1 }); }
+      }
+    }
+  }
+  return pressed;
+}
+const counts = {};
+db.settings.update('G', { cooldown_sec: 0 });
+for (const [who, name] of [[outsider, 'outsider'], [alice, 'player'], [editor, 'editor'], [dev, 'developer']]) counts[name] = await crawl(who, name);
+
+// ================================================================= result
+console.error = realError;
+const unexpected = logged.filter((l) => /Unhandled|TypeError|ReferenceError|Cannot read|is not a function|failed because of an unexpected/.test(l));
+for (const l of unexpected) failures.push(`unexpected error in the log: ${l.slice(0, 220)}`);
+console.log(`\nran ${interactions} interactions · slowest acknowledgement ${worstAck} ms (limit 3000) · pressed ${Object.entries(counts).map(([k, v]) => `${v} controls as ${k}`).join(', ')}`);
+if (failures.length) {
+  console.log(`\n${failures.length} PROBLEM${failures.length === 1 ? '' : 'S'}:`);
+  for (const f of failures) console.log(`  ✗ ${f}`);
+  process.exit(1);
+}
+console.log('End-to-end test passed.');

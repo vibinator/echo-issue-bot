@@ -1,7 +1,6 @@
 // Turns technical failures into a plain explanation of the reason (and what to do), so people never just see
 // "something went wrong".
-
-const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+import { trunc } from './text.js';
 
 const NEEDED_PERMISSIONS = 'View Channel, Send Messages, Embed Links, Read Message History, Create Public Threads, Send Messages in Threads and Manage Threads';
 

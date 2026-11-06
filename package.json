@@ -6,7 +6,8 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node --no-warnings --env-file=.env src/index.js",
-    "test": "node --no-warnings src/test.js"
+    "test": "node --no-warnings src/test.js && node --no-warnings src/e2e.js",
+    "e2e": "node --no-warnings src/e2e.js"
   },
   "engines": { "node": ">=22.5" },
   "dependencies": { "discord.js": "^14.16.0" }

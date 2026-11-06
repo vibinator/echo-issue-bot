@@ -159,7 +159,8 @@ const TEXT_CACHE = new Map();
 function unigrams(text) {
   const hit = TEXT_CACHE.get(text);
   if (hit) return hit;
-  const out = normalize(text).replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+  // Keep letters and numbers of ANY language (accented letters, Cyrillic, …) – only punctuation and symbols are dropped.
+  const out = normalize(text).replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/)
     .filter((w) => w && !STOP.has(w) && !/^\d$/.test(w)) // single digits ("quest 3") are noise; error codes like 78 stay
     .map(canonWord);
   if (TEXT_CACHE.size >= 3000) TEXT_CACHE.delete(TEXT_CACHE.keys().next().value); // drop the oldest

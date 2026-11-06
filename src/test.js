@@ -650,4 +650,21 @@ assert.match(told[0], /isn't allowed to do that in this channel/, 'and the messa
   assert.ok(timed(() => sg('problm parseing the pakage on my qest', [], 25, 'install')) < 100, 'looking up known problems is quick');
 }
 
+// ---- shortening text never splits an emoji; other languages keep their letters and still group ----
+const { trunc: safeTrunc } = await import('./text.js');
+for (let n = 90; n <= 100; n++) {
+  const cut = safeTrunc(`${'a'.repeat(94)}😀😀😀😀😀😀😀😀`, n);
+  assert.ok(cut.isWellFormed() && cut.length <= n, `shortened to ${n} characters without half an emoji`);
+}
+assert.equal(safeTrunc('short', 10), 'short');
+const { tokenize } = await import('./similarity.js');
+assert.ok(tokenize('La música se corta en el chat de voz').includes('música'), 'accented letters are kept (not split into "m sica")');
+const es = rankSimilar('la música se corta en el chat de voz', [
+  { id: 1, text: 'La música se corta en el chat de voz cuando hablan muchos jugadores' },
+  { id: 2, text: 'el marcador muestra colores incorrectos al final de la ronda' },
+]);
+assert.equal(es[0].id, 1);
+assert.ok(es[0].score > 0.25 && es[1].score < 0.25, 'Spanish reports group with each other and not with unrelated ones');
+assert.ok(tokenize('Привет мир').length >= 2, 'Cyrillic words are kept');
+
 console.log('All tests passed.');

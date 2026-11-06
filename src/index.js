@@ -3,7 +3,7 @@ import {
   EmbedBuilder, FileUploadBuilder, GatewayIntentBits, LabelBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder,
   StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
 } from 'discord.js';
-import { articles, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, settings, summary, watchers } from './db.js';
+import { articles, db, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, settings, summary, watchers } from './db.js';
 import { erasePayload, privacyPayload, termsPayload } from './legal.js';
 import { CATEGORIES } from './categories.js';
 import { PRIORITIES, STATUSES, renderIssue } from './render.js';
@@ -21,10 +21,10 @@ import { boardPayload, dropBoard } from './board.js';
 import { buildDigest, postDigest, runDigests } from './digest.js';
 import { exportCsv } from './export.js';
 import { backupNow, maybeBackup } from './backup.js';
+import { trunc } from './text.js';
 
 const EPH = MessageFlags.Ephemeral;
 const NONE = '-'; // "no filter" placeholder inside custom ids
-const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const row = (...c) => new ActionRowBuilder().addComponents(...c);
 const btn = (id, label, emoji, style = ButtonStyle.Secondary) =>
   new ButtonBuilder().setCustomId(id).setLabel(label).setEmoji(emoji).setStyle(style);
@@ -40,7 +40,9 @@ const commands = [
     .addIntegerOption((o) => o.setName('retention_days').setDescription('Delete closed issues after this many days of no activity (0 = keep them)').setMinValue(0).setMaxValue(3650)),
 ].map((c) => c.toJSON());
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// Nothing the bot sends may ping anyone by accident: players' own words (an issue title like "@everyone fix this") end up in
+// thread messages, so mentions are switched off for every message unless a call asks otherwise.
+const client = new Client({ intents: [GatewayIntentBits.Guilds], allowedMentions: { parse: [], repliedUser: false } });
 
 // ---------- helpers ----------
 
@@ -48,10 +50,17 @@ const cfgOf = (guildId) => ({ threshold: 0.25, stale_days: 7, cooldown_sec: 60, 
 const trackerChannel = (i) => settings.get(i.guildId)?.channel_id;
 const idOf = (i) => Number(i.customId.split(':')[1]);
 
+/** Does the person holding this interaction have the role? Discord hands over the roles as a manager OR (when the server isn't cached) a plain list of ids. */
+function hasRole(i, roleId) {
+  const roles = i.member?.roles;
+  if (!roleId || !roles) return false;
+  return Array.isArray(roles) ? roles.includes(roleId) : !!roles.cache?.has(roleId);
+}
+
 function isDev(i) {
   const cfg = settings.get(i.guildId);
   if (i.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
-  return !!(cfg?.dev_role_id && i.member?.roles?.cache?.has(cfg.dev_role_id));
+  return hasRole(i, cfg?.dev_role_id);
 }
 /** Role required to create reports: the /setup value, else REPORTER_ROLE_ID from .env, else nobody is restricted. */
 const reporterRole = (guildId) => settings.get(guildId)?.reporter_role_id || process.env.REPORTER_ROLE_ID || null;
@@ -59,7 +68,7 @@ const reporterRole = (guildId) => settings.get(guildId)?.reporter_role_id || pro
 /** Developers can always report; everyone else needs the reporter role (when one is configured). */
 function canReport(i) {
   const role = reporterRole(i.guildId);
-  return !role || isDev(i) || !!i.member?.roles?.cache?.has(role);
+  return !role || isDev(i) || hasRole(i, role);
 }
 /** Role that may manage knowledge articles without being a full developer: the /setup value, else ARTICLE_ROLE_ID from .env. */
 const articleRole = (guildId) => settings.get(guildId)?.article_role_id || process.env.ARTICLE_ROLE_ID || null;
@@ -67,7 +76,7 @@ const articleRole = (guildId) => settings.get(guildId)?.article_role_id || proce
 /** Developers can always manage knowledge articles; so can members of the article editor role. Nothing else is unlocked. */
 function canManageArticles(i) {
   const role = articleRole(i.guildId);
-  return isDev(i) || (!!role && !!i.member?.roles?.cache?.has(role));
+  return isDev(i) || hasRole(i, role);
 }
 const noArticleAccess = (i) => i.reply({
   content: articleRole(i.guildId)
@@ -672,11 +681,22 @@ async function failInteraction(i, err) {
 
 async function handleInteraction(i) {
   try {
-    if (!i.guildId) return;
+    if (!i.guildId) { // used in a private message: the bot only works inside a server
+      if (i.isRepliable?.() ?? true) await i.reply({ content: 'This only works inside a server, not in private messages.', flags: EPH });
+      return;
+    }
     const id = i.customId ?? '';
 
     // /setup
     if (i.isChatInputCommand() && i.commandName === 'setup') {
+      // Discord's default "admins only" for this command can be loosened in Server Settings → Integrations, so check here too.
+      if (!i.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+        return i.reply({ content: '🔒 Only members with the **Manage Server** permission can run `/setup`.', flags: EPH });
+      }
+      const everyone = (r) => r && r.id === i.guildId;
+      if (everyone(i.options.getRole('dev_role', true)) || everyone(i.options.getRole('article_role'))) {
+        return i.reply({ content: "⚠️ `@everyone` can't be the developer or article-editor role – that would give every member those tools. Please pick a real role.", flags: EPH });
+      }
       await i.deferReply({ flags: EPH }); // setup makes a backup and several Discord calls – answer Discord first
       const ch = i.options.getChannel('issues_channel', true);
       const role = i.options.getRole('dev_role', true);
@@ -1165,7 +1185,7 @@ async function handleInteraction(i) {
       if (id.startsWith('mkart:')) {
         const issue = await loadIssue(i, idOf(i));
         if (!issue) return;
-        const sample = reports.forIssue(issue.id).slice(0, 3).map((r) => r.text.replace(/\s+/g, ' ').slice(0, 200));
+        const sample = reports.forIssue(issue.id).slice(0, 3).map((r) => trunc(r.text.replace(/\s+/g, ' '), 200));
         return i.showModal(articleModal(null, { title: issue.title, symptoms: trunc([issue.title, ...sample].join('\n'), 1000), body: issue.dev_note ?? '' }));
       }
       if (i.isStringSelectMenu() && id === 'art_pick') {
@@ -1336,6 +1356,7 @@ export {
   panelPayload, devMenuPayload, reportTypePayload, reportModal, quickModal, meTooModal, editModal, addEvidenceModal, noteModal, fixedModal,
   faqPayload, faqAnswerPayload, browsePayload, settingsPayload, dupPayload, minePayload, trackPayload, articlesPayload, articleView,
   articleStats, articleModal, commands, timeline, failNote, canManageArticles, isDev, articleMenuPayload, client, failInteraction,
+  handleInteraction,
 };
 
 // A network blip (for example a DNS lookup failing right at startup) must not take the bot down: keep retrying.
@@ -1346,6 +1367,15 @@ async function start() {
     process.exit(1);
   }
   process.on('unhandledRejection', (e) => console.error('Unhandled error:', e?.message ?? e));
+  // `docker stop` sends SIGTERM: leave Discord and close the database cleanly (finishes writing its journal) instead of being cut off.
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      console.log(`Received ${signal}, shutting down…`);
+      try { client.destroy(); } catch { /* already closed */ }
+      try { db.close(); } catch { /* already closed */ }
+      process.exit(0);
+    });
+  }
   for (let attempt = 1; ; attempt++) {
     try {
       await client.login(process.env.DISCORD_TOKEN);

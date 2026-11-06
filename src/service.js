@@ -6,11 +6,11 @@ import { removeReportFiles, saveFromUrl } from './evidenceStore.js';
 import { rankSimilar, similarPairs } from './similarity.js';
 import { detectCategory, INSTALL_CATEGORY } from './categories.js';
 import { renderIssue } from './render.js';
+import { trunc } from './text.js';
 
 /** Default score at/above which a new report is attached to an existing issue (configurable per server). */
 export const MATCH_THRESHOLD = 0.25;
 
-const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 const makeTitle = (text) => {
   const first = text.trim().split(/(?<=[.!?\n])\s/)[0].replace(/\s+/g, ' ');
@@ -64,6 +64,7 @@ export function splitReport(reportId) {
   const id = issues.create(old.guild_id, makeTitle(r.text), category, priorityFor(category), old.kind);
   reports.move(r.id, id);
   evidence.moveReport(r.id, id);
+  decisions.keepSeparate(old.guild_id, old.id, id); // the reporter said these are different problems: never suggest merging them back
   const emptied = reports.stats(old.id).total === 0;
   // If this very report had reopened a "fixed" issue, taking it out means the issue should be fixed again.
   const lastEvent = events.forIssue(old.id, 1)[0];
@@ -85,15 +86,20 @@ export function rematchReport(reportId, actorId, threshold = MATCH_THRESHOLD) {
   if (!r) return null;
   const cur = issues.get(r.issue_id);
   const only = reports.stats(cur.id).total === 1;
-  // The issue's text without this report (and, if it's the issue's only report, without the issue itself).
-  const docs = issues.withTextExcluding(cur.guild_id, r.id, cur.kind).filter((d) => !(only && d.id === cur.id));
+  // Developers have already worked on this issue? Then it must never be removed because its only report moved away.
+  const devTouched = cur.status !== 'new' || !!cur.owner_id || !!cur.dev_note;
+  // The issue's text without this report (and, if it's the issue's only report, without the issue itself) –
+  // and never an issue someone already decided is a different problem (a "make it a separate issue" choice).
+  const docs = issues.withTextExcluding(cur.guild_id, r.id, cur.kind)
+    .filter((d) => !(only && d.id === cur.id))
+    .filter((d) => d.id === cur.id || !decisions.has(cur.guild_id, cur.id, d.id));
   const best = rankSimilar(`${r.text} ${r.platform ?? ''}`, docs)[0];
   const score = best?.score ?? 0;
 
   let to;
   let action;
   if (best && score >= threshold) {
-    if (best.id === cur.id) return { action: 'same', from: cur, to: cur, score };
+    if (best.id === cur.id || (only && devTouched)) return { action: 'same', from: cur, to: cur, score };
     to = issues.get(best.id);
     action = 'moved';
   } else if (!only) {
@@ -150,8 +156,19 @@ export function duplicatePairs(guildId, floor = 0.12) {
  * card as the thread's first message – so the channel itself stays free of per-issue messages (only the one
  * control panel is posted there). Older issues whose card is a normal channel message are still edited in place.
  */
-export async function syncMessage(client, issue, channelId) {
-  const fresh = issues.get(issue.id);
+export function syncMessage(client, issue, channelId) {
+  // Updates for the SAME issue run one after another. Without this, two people reporting the same new problem at the
+  // same moment each saw "no thread yet" and each created one – two threads for one issue.
+  const previous = syncLocks.get(issue.id) ?? Promise.resolve();
+  const turn = previous.catch(() => {}).then(() => syncMessageNow(client, issue, channelId));
+  syncLocks.set(issue.id, turn);
+  turn.catch(() => {}).finally(() => { if (syncLocks.get(issue.id) === turn) syncLocks.delete(issue.id); });
+  return turn;
+}
+const syncLocks = new Map();
+
+async function syncMessageNow(client, issue, channelId) {
+  const fresh = issues.get(issue.id); // always the latest, so a queued update sees the thread an earlier one just created
   if (!fresh) return;
   const payload = renderIssue(fresh);
 

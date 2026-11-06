@@ -1,9 +1,9 @@
 import { EmbedBuilder } from 'discord.js';
 import { issues, settings } from './db.js';
 import { PRIORITIES, STATUSES } from './render.js';
+import { trunc } from './text.js';
 
 const DAY = 864e5;
-const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const lines = (arr, fmt, max = 8) => {
   if (!arr.length) return '_None_';
   const shown = arr.slice(0, max).map(fmt).join('\n');

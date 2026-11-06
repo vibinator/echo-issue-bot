@@ -3,6 +3,7 @@ import {
 } from 'discord.js';
 import { evidence, issues, reports } from './db.js';
 import { relatedIssues } from './related.js';
+import { trunc } from './text.js';
 
 export const STATUSES = {
   new:               { label: 'New',                emoji: '🆕', color: 0x95a5a6 },
@@ -20,7 +21,6 @@ export const PRIORITIES = {
   low:      { label: 'Low',      emoji: '🟢' },
 };
 
-const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** The "requester" = whoever sent the first report; others who hit the same problem are counted. */
 function requesterText(issueId, stats) {
