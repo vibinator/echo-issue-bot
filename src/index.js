@@ -149,7 +149,7 @@ function panelPayload() {
     components: [
       row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Browse issues', '📋'), btn('mine', 'My reports', '📌'),
         btn('legal:privacy', 'Data & privacy', '🔒'), btn('legal:terms', 'Terms of use', '📜')),
-      row(btn('dev:menu', 'Developer', '🛠️')),
+      row(btn('dev:menu', 'Developer', '🛠️'), btn('dev:articles', 'Knowledge articles', '📚')),
     ],
   };
 }
@@ -1349,6 +1349,21 @@ client.once('clientReady', async () => {
   };
   setTimeout(tick, 30_000);
   setInterval(tick, 3_600_000);
+
+  // Redraw each server's control panel so new buttons appear after an update without running /setup again.
+  for (const cfg of settings.all()) {
+    if (!cfg.panel_channel_id || !cfg.panel_message_id) continue;
+    try { await (await (await client.channels.fetch(cfg.panel_channel_id)).messages.fetch(cfg.panel_message_id)).edit(panelPayload()); }
+    catch (e) { console.error(`Could not refresh the panel in ${cfg.guild_id}: ${e.message}`); }
+  }
+
+  // Self-update (AUTO_UPDATE=on): look for a newer version every 10 minutes; install it and restart.
+  if (process.env.AUTO_UPDATE === 'on') {
+    const { checkForUpdate } = await import('./updater.js');
+    const look = async () => { if (await checkForUpdate()) process.kill(process.pid, 'SIGTERM'); };
+    setTimeout(look, 60_000);
+    setInterval(look, 600_000);
+  }
 });
 
 // The screens are exported so the tests can build every one of them (and catch Discord limit mistakes before a release).

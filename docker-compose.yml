@@ -8,7 +8,7 @@ services:
       # --- edit these ---
       DISCORD_TOKEN: "paste-your-bot-token-here"
       GUILD_ID: ""                                   # optional: your server ID (instant slash-command registration)
-      REPORTER_ROLE_ID: "1568253292251717726"        # Users: can create reports
+      AUTO_UPDATE: "on"                              # install new versions from GitHub automatically (checks every 10 min, then restarts)
     volumes:
       - echo-issue-data:/app/data                    # database + daily backups survive updates
       # To see the files in File Station instead, use a folder (and uncomment `user` below):
