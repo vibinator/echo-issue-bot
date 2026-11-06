@@ -22,6 +22,7 @@ import { buildDigest, postDigest, runDigests } from './digest.js';
 import { exportCsv } from './export.js';
 import { backupNow, maybeBackup } from './backup.js';
 import { trunc } from './text.js';
+import { versionLabel } from './version.js';
 
 const EPH = MessageFlags.Ephemeral;
 const NONE = '-'; // "no filter" placeholder inside custom ids
@@ -183,7 +184,7 @@ function panelPayload(guildId) {
   const waiting = open.filter((x) => x.status === 'new').length;
   const answered = open.filter((x) => x.status === 'seen' || x.status === 'in_progress').length;
   const kbCount = guildId ? articles.list(guildId).filter((a) => !a.draft).length : 0;
-  const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('Echo VR – Problem Tracker')
+  const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('Echo VR – Problem Tracker').setFooter({ text: `Bot ${versionLabel()}` })
     .setDescription([
       'Something not working? Let the developers know here.',
       '',
@@ -210,7 +211,7 @@ function devMenuPayload(guildId) {
   const a = guildId ? attention(guildId) : null;
   const parts = a ? [a.fresh && `🆕 **${a.fresh}** new issue${a.fresh === 1 ? '' : 's'} nobody has looked at`, a.stale && `⏳ **${a.stale}** quiet for ${a.days}+ days`, a.urgent && `🔴 **${a.urgent}** open with high or critical priority`].filter(Boolean) : [];
   return {
-    content: `**🛠️ Developer menu** – only you can see this.\n${parts.length ? `⚠️ **Needs attention:** ${parts.join(' · ')}` : '✅ Nothing needs attention right now.'}`,
+    content: `**🛠️ Developer menu** · bot ${versionLabel()} – only you can see this.\n${parts.length ? `⚠️ **Needs attention:** ${parts.join(' · ')}` : '✅ Nothing needs attention right now.'}`,
     embeds: [],
     components: [
       row(btn('dev:board', a?.fresh ? `Board (${a.fresh} new)` : 'Board', '📌', a?.total ? ButtonStyle.Danger : ButtonStyle.Secondary), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:articles', 'Knowledge articles', '📚')),

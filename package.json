@@ -1,6 +1,6 @@
 {
   "name": "echo-issue-bot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Discord bot that collects Echo VR player problems, groups similar ones, and lets devs track status.",
   "type": "module",
   "main": "src/index.js",
