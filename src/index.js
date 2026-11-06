@@ -3,7 +3,7 @@ import {
   EmbedBuilder, FileUploadBuilder, GatewayIntentBits, LabelBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder,
   StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
 } from 'discord.js';
-import { articles, decisions, events, evidence, issues, kbStats, prefs, reports, settings, watchers } from './db.js';
+import { articles, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, settings, summary, watchers } from './db.js';
 import { erasePayload, privacyPayload, termsPayload } from './legal.js';
 import { CATEGORIES } from './categories.js';
 import { PRIORITIES, STATUSES, renderIssue } from './render.js';
@@ -563,7 +563,8 @@ client.on('interactionCreate', async (i) => {
       const ch = i.options.getChannel('issues_channel', true);
       const role = i.options.getRole('dev_role', true);
       const prev = settings.get(i.guildId);
-      settings.set(i.guildId, ch.id, role.id);
+      try { backupNow(); } catch (e) { console.error('Backup before /setup failed:', e.message); } // a safety copy before anything changes
+      settings.set(i.guildId, ch.id, role.id); // upsert: every other saved setting is kept
       const reporter = i.options.getRole('reporter_role');
       if (reporter) settings.update(i.guildId, { reporter_role_id: reporter.id });
       const statusR = i.options.getRole('status_role');
@@ -578,7 +579,11 @@ client.on('interactionCreate', async (i) => {
       const panelMsg = await i.channel.send(panelPayload());
       settings.update(i.guildId, { panel_channel_id: i.channel.id, panel_message_id: panelMsg.id });
       const rr = reporterRole(i.guildId);
-      return i.reply({ content: `✅ Each issue gets its own thread under <#${ch.id}>. Developers: <@&${role.id}> (and anyone with Manage Server). Reports can be created by: ${rr ? `<@&${rr}>` : 'everyone'}. Status can be changed by: ${statusRole(i.guildId) ? `<@&${statusRole(i.guildId)}>` : 'developers'}. Use the ⚙️ **Settings** button on the panel for the digest/changelog channels, matching sensitivity and cooldown.`, flags: EPH });
+      const have = summary(i.guildId);
+      const kept = have.issues || have.articles
+        ? `\n♻️ Existing data found and kept: **${have.issues}** issue${have.issues === 1 ? '' : 's'}, **${have.reports}** report${have.reports === 1 ? '' : 's'}, **${have.articles}** knowledge article${have.articles === 1 ? '' : 's'}${restoredFrom ? ` (restored from backup \`${restoredFrom}\`)` : ''}.`
+        : '';
+      return i.reply({ content: `✅ Each issue gets its own thread under <#${ch.id}>.${kept} Developers: <@&${role.id}> (and anyone with Manage Server). Reports can be created by: ${rr ? `<@&${rr}>` : 'everyone'}. Status can be changed by: ${statusRole(i.guildId) ? `<@&${statusRole(i.guildId)}>` : 'developers'}. Use the ⚙️ **Settings** button on the panel for the digest/changelog channels, matching sensitivity and cooldown.`, flags: EPH });
     }
 
     // ----- reporting -----

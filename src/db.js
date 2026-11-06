@@ -1,8 +1,26 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 
-mkdirSync('data', { recursive: true });
-export const db = new DatabaseSync(process.env.DB_PATH ?? 'data/issues.db');
+const DB_PATH = process.env.DB_PATH ?? 'data/issues.db';
+/** Where backups go. Point this at a different folder/share than the database so one accident can't take both. */
+export const BACKUP_DIR = process.env.BACKUP_DIR ?? path.join('data', 'backups');
+
+mkdirSync(path.dirname(DB_PATH) === '.' ? 'data' : path.dirname(DB_PATH), { recursive: true });
+
+// Self-healing: if the database file is gone (folder deleted, new volume…) but a backup survives, restore the
+// newest backup before opening, so everything – issues, reports, articles, settings, panel/thread ids – comes back.
+export let restoredFrom = null;
+if (DB_PATH !== ':memory:' && !existsSync(DB_PATH) && existsSync(BACKUP_DIR)) {
+  const newest = readdirSync(BACKUP_DIR).filter((f) => f.endsWith('.db')).sort().at(-1);
+  if (newest) {
+    copyFileSync(path.join(BACKUP_DIR, newest), DB_PATH);
+    restoredFrom = newest;
+    console.log(`Database was missing – restored from backup ${newest}`);
+  }
+}
+
+export const db = new DatabaseSync(DB_PATH);
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS settings (
@@ -103,6 +121,13 @@ addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = ke
 
 const now = () => Date.now();
 const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'panel_channel_id', 'panel_message_id'];
+
+/** What is stored for a server – shown after /setup so you can see nothing was lost. */
+export const summary = (guild) => ({
+  issues: db.prepare('SELECT COUNT(*) AS n FROM issues WHERE guild_id = ?').get(guild).n,
+  reports: db.prepare('SELECT COUNT(*) AS n FROM reports r JOIN issues i ON i.id = r.issue_id WHERE i.guild_id = ?').get(guild).n,
+  articles: db.prepare('SELECT COUNT(*) AS n FROM articles WHERE guild_id = ?').get(guild).n,
+});
 
 export const settings = {
   get: (g) => db.prepare('SELECT * FROM settings WHERE guild_id = ?').get(g),

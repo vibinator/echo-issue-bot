@@ -1,8 +1,8 @@
 import { mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { db } from './db.js';
+import { BACKUP_DIR, db } from './db.js';
 
-const DIR = path.join('data', 'backups');
+const DIR = BACKUP_DIR;
 const KEEP = 14;
 
 const files = () => { mkdirSync(DIR, { recursive: true }); return readdirSync(DIR).filter((f) => f.endsWith('.db')).sort(); };

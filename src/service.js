@@ -162,7 +162,19 @@ export async function syncMessage(client, issue, channelId) {
       await (await ch.messages.fetch(fresh.message_id)).edit(payload);
       refreshBoard(client, fresh.guild_id);
       return;
-    } catch { /* card deleted -> recreate below */ }
+    } catch { /* card deleted, or written by a previous bot account (Discord only lets a bot edit its own messages) */ }
+  }
+  // The thread is still there but the card can't be edited (bot re-invited / re-created, or card deleted):
+  // put a fresh card in the SAME thread rather than starting a duplicate one.
+  if (fresh.thread_id) {
+    try {
+      const t = await client.channels.fetch(fresh.thread_id);
+      if (t.archived) await t.setArchived(false).catch(() => {});
+      const newCard = await t.send(payload);
+      issues.setMessage(fresh.id, t.id, newCard.id);
+      refreshBoard(client, fresh.guild_id);
+      return;
+    } catch { /* thread is gone too -> create a new one below */ }
   }
   if (!channelId) return;
   try {

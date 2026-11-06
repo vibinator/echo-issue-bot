@@ -402,4 +402,37 @@ assert.equal(withBack.components.length, 5);
 assert.equal(withBack.components[4].toJSON().components[0].custom_id, 'browse');
 assert.equal(renderIssue(issues.get(T.issue.id)).components.length, 4, 'no Back button on the public card');
 
+// ---- recovery: re-run /setup keeps settings; a re-created bot reuses existing threads ----
+const { settings: S2, summary } = await import('./db.js');
+S2.set('g9', 'chanA', 'roleA');
+S2.update('g9', { threshold: 0.33, retention_days: 90, dev_channel_id: 'devch', status_role_id: 'sr', panel_message_id: 'pm' });
+S2.set('g9', 'chanB', 'roleB'); // what /setup does when run again
+const kept9 = S2.get('g9');
+assert.equal(kept9.channel_id, 'chanB');
+assert.deepEqual([kept9.threshold, kept9.retention_days, kept9.dev_channel_id, kept9.status_role_id], [0.33, 90, 'devch', 'sr'], 're-running /setup keeps every other setting');
+const R9 = fileReport({ guildId: 'g9', userId: 'z1', text: 'Voice chat is very quiet for everyone in the lobby' });
+assert.deepEqual(summary('g9'), { issues: 1, reports: 1, articles: 0 });
+
+issues.setThread(R9.issue.id, 'oldthread');
+issues.setMessage(R9.issue.id, 'oldthread', 'oldcard');
+let created9 = 0; const sent9 = [];
+const oldThread = {
+  id: 'oldthread', archived: false, setArchived: async () => {},
+  send: async (p) => { sent9.push(p); return { id: 'newcard' }; },
+  // a different (previous) bot account wrote the card, so this bot is not allowed to edit it
+  messages: { fetch: async () => ({ edit: async () => { throw Object.assign(new Error('Cannot edit a message authored by another user'), { code: 50005 }); } }) },
+};
+const parent9 = { id: 'chanB', threads: { create: async () => { created9++; return oldThread; } }, send: async () => ({ id: 'x' }) };
+await syncMessage({ channels: { fetch: async (id) => (id === 'oldthread' ? oldThread : parent9) } }, issues.get(R9.issue.id), 'chanB');
+assert.equal(created9, 0, 'no duplicate thread is created');
+assert.equal(sent9.length, 1, 'a fresh card is posted inside the existing thread');
+assert.equal(issues.get(R9.issue.id).message_id, 'newcard', 'and remembered for later edits');
+assert.equal(issues.get(R9.issue.id).thread_id, 'oldthread');
+// if the thread itself is gone, a new one is created
+let made9 = 0;
+const parent10 = { id: 'chanB', threads: { create: async () => { made9++; return { id: 'brandnew', send: async () => ({ id: 'c2' }) }; } }, send: async () => ({ id: 'x' }) };
+await syncMessage({ channels: { fetch: async (id) => { if (id === 'chanB') return parent10; throw new Error('Unknown Channel'); } } }, issues.get(R9.issue.id), 'chanB');
+assert.equal(made9, 1);
+assert.equal(issues.get(R9.issue.id).thread_id, 'brandnew');
+
 console.log('All tests passed.');

@@ -36,6 +36,26 @@ Weekly digest · changelog post when an issue is Fixed · daily DB backup (newes
 ## Docker (QNAP Container Station etc.)
 `docker-compose.yml` builds the image from this folder. To deploy from YAML only, use `node:24-alpine` with a `command` that downloads this repository's tarball, installs and starts it (see the project history); mount a folder on `/app/data` to keep the database. If the container can't resolve `discord.com`, add `dns: [1.1.1.1, 8.8.8.8]` or `network_mode: host`.
 
+## If something gets deleted
+Everything (issues, reports, evidence links, knowledge articles, settings, the panel/thread ids) lives in **one database file**: `data/issues.db`. The container and the bot account hold nothing, so:
+
+| What was deleted | What happens |
+|---|---|
+| The container / application | Recreate it with the same YAML; it reuses the database in the mounted data folder. Nothing is lost and `/setup` isn't even needed. |
+| The bot (kicked, or re-invited / a new bot application with a new token) | Settings and issues are keyed by server, so they are kept. Run `/setup` again: it keeps every saved setting, takes a safety backup first, replaces the panel, and tells you how much existing data it found. Cards the old bot account wrote can't be edited by the new one, so it posts a fresh card **inside each issue's existing thread** (no duplicate threads). |
+| The panel message | Run `/setup` again. |
+| The data folder (database) | If a backup survives, the bot **restores the newest one automatically on start** and logs it. Keep backups somewhere separate (below). |
+
+**Keep backups separate from the database.** Set `BACKUP_DIR` to a folder on a different share (ideally another disk) and mount it, e.g. in the YAML:
+```yaml
+    volumes:
+      - /share/Container/echo-issue-bot/data:/app/data
+      - /share/Backups/echo-issue-bot:/app/backups      # a different share
+    environment:
+      BACKUP_DIR: "/app/backups"
+```
+A backup is made daily (newest 14 kept), whenever a developer presses **Back up now**, and before every `/setup`. To restore a specific backup by hand: stop the container, copy that `.db` file over `data/issues.db`, start it again.
+
 ## Privacy, terms and Discord's rules
 - The panel has **🔒 Data & privacy** and **📜 Terms of use** buttons. Full texts: [PRIVACY.md](PRIVACY.md) and [TERMS.md](TERMS.md) – **fill in the contact lines and check they match how you run the bot**. Put their public URLs in the Developer Portal (General Information → Terms of Service URL / Privacy Policy URL); `PRIVACY_URL` / `TERMS_URL` override the in-bot links.
 - Users can **erase their data** themselves (Data & privacy → Delete my data): reports, uploaded evidence, follows and settings are removed; if theirs is the only report on an issue developers already worked on, the issue stays with the details removed. They can also withdraw single reports and turn DMs off.
