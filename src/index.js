@@ -1063,4 +1063,24 @@ if (!process.env.DISCORD_TOKEN) {
   console.error('Set DISCORD_TOKEN (copy .env.example to .env, then run: npm start)');
   process.exit(1);
 }
-client.login(process.env.DISCORD_TOKEN);
+// A network blip (for example a DNS lookup failing right at startup) must not take the bot down: keep retrying.
+// Only a bad token or missing intents are permanent, so those stop the bot with a clear message.
+process.on('unhandledRejection', (e) => console.error('Unhandled error:', e?.message ?? e));
+
+async function start() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await client.login(process.env.DISCORD_TOKEN);
+      return;
+    } catch (e) {
+      if (['TokenInvalid', 'DisallowedIntents', 'MissingIntents'].includes(e.code)) {
+        console.error(`Cannot log in (${e.code}): check DISCORD_TOKEN.`);
+        process.exit(1);
+      }
+      const wait = Math.min(60, 5 * attempt);
+      console.error(`Login failed (${e.code ?? e.message}); retrying in ${wait}s (attempt ${attempt})…`);
+      await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+    }
+  }
+}
+start();
