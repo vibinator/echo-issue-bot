@@ -102,7 +102,7 @@ export function renderIssue(issue, { back, viewer } = {}) {
     [
       btn('follow', 'Follow', '🔔'),
       may('report') && mine && btn('editmine', 'Edit my report', '✏️'),
-      may('report') && btn('addev', 'Add screenshots / logs', '📎'),
+      may('report') && mine && btn('addev', 'Add screenshots / logs', '📎'), // on issues you reported; others use "I have this too"
       btn('history', 'History', '📜'),
       (may('dev') || may('article')) && btn('mkart', 'Make knowledge article', '📚'),
     ],

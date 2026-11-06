@@ -429,10 +429,12 @@ assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`evall:${T.is
 // controls the viewer can't use are left out
 const idsOf = (p) => p.components.flatMap((r) => r.toJSON().components.map((c) => c.custom_id.split(':')[0]));
 const asPlayer = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'someone' } }));
-assert.ok(asPlayer.includes('plus') && asPlayer.includes('follow') && asPlayer.includes('addev'));
+assert.ok(asPlayer.includes('plus') && asPlayer.includes('follow'));
+assert.ok(!asPlayer.includes('addev'), 'adding attachments is offered only on issues you reported');
 assert.ok(!['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'editmine'].some((x) => asPlayer.includes(x)), 'a player sees no developer controls (and no edit on a report that is not theirs)');
 const asOwner = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 't1' } }));
 assert.ok(asOwner.includes('editmine'), 'the reporter can edit their own report');
+assert.ok(asOwner.includes('addev'), 'and add attachments to it');
 const asReadOnly = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: false, article: false, userId: 'x' } }));
 assert.ok(!['plus', 'addev', 'editmine'].some((x) => asReadOnly.includes(x)) && asReadOnly.includes('history'), 'someone who cannot report only reads');
 assert.ok(!asPlayer.includes('evall') && !asReadOnly.includes('evall'), 'someone with no attachments of their own is not offered View attachments');
