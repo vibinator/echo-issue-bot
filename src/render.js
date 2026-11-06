@@ -8,9 +8,9 @@ import { KIND_EMOJI } from './evidence.js';
 export const STATUSES = {
   new:               { label: 'New',                emoji: '🆕', color: 0x95a5a6 },
   seen:              { label: 'Seen',               emoji: '👀', color: 0x3498db },
-  in_progress:       { label: 'Fix in progress',    emoji: '🛠️', color: 0xf39c12 },
+  in_progress:       { label: 'Being fixed',        emoji: '🛠️', color: 0xf39c12 },
   fixed:             { label: 'Fixed',              emoji: '✅', color: 0x2ecc71 },
-  cannot_reproduce:  { label: 'Cannot reproduce',   emoji: '❓', color: 0x9b59b6 },
+  cannot_reproduce:  { label: "Can't reproduce",    emoji: '❓', color: 0x9b59b6 },
   wont_fix:          { label: "Won't fix",          emoji: '🚫', color: 0xe74c3c },
 };
 
@@ -39,12 +39,12 @@ export function renderIssue(issue, { back } = {}) {
       { name: 'Priority', value: `${pr.emoji} ${pr.label}`, inline: true },
       { name: 'Type', value: issue.kind === 'install' ? '🔧 Install issue' : '🐞 Bug in game', inline: true },
       { name: 'Category', value: issue.category, inline: true },
-      { name: 'Owner', value: issue.owner_id ? `<@${issue.owner_id}>` : '_Unassigned_', inline: true },
-      { name: 'Affected players', value: `${stats.users} (${stats.total} report${stats.total === 1 ? '' : 's'})`, inline: true },
+      { name: "Who's on it", value: issue.owner_id ? `<@${issue.owner_id}>` : '_Nobody yet_', inline: true },
+      { name: 'Players affected', value: `${stats.users} (${stats.total} report${stats.total === 1 ? '' : 's'})`, inline: true },
     )
     .setTimestamp(issue.updated_at);
 
-  if (versions.length) embed.addFields({ name: 'Reported on', value: trunc(versions.map((v) => `\`${v}\``).join(', '), 1024), inline: true });
+  if (versions.length) embed.addFields({ name: 'Game versions', value: trunc(versions.map((v) => `\`${v}\``).join(', '), 1024), inline: true });
 
   if (latest.length) {
     embed.addFields({
@@ -60,8 +60,8 @@ export function renderIssue(issue, { back } = {}) {
   if (ev.length) {
     const shown = ev.slice(0, 5).map((e) =>
       `• ${KIND_EMOJI[e.kind] ?? '📎'} [${trunc(e.name, 40).replace(/[[\]]/g, '')}](${e.url.replace(/\)/g, '%29')}) — <@${e.user_id}>`);
-    if (ev.length > 5) shown.push(`…and ${ev.length - 5} more – see the thread`);
-    embed.addFields({ name: `📎 Evidence (${ev.length})`, value: trunc(shown.join('\n'), 1024) });
+    if (ev.length > 5) shown.push(`…and ${ev.length - 5} more – see this thread`);
+    embed.addFields({ name: `📎 Screenshots, logs & links (${ev.length})`, value: trunc(shown.join('\n'), 1024) });
   }
   const related = relatedIssues(issue).map((r) => issues.get(r.id)).filter(Boolean);
   if (related.length) {
@@ -73,26 +73,26 @@ export function renderIssue(issue, { back } = {}) {
   if (issue.dev_note) embed.addFields({ name: '💬 Developer note', value: trunc(issue.dev_note, 1024) });
   if (issue.handled_by) embed.setFooter({ text: 'Last updated by a developer' });
 
-  const statusMenu = new StringSelectMenuBuilder().setCustomId(`status:${issue.id}`).setPlaceholder('Developers: set status')
+  const statusMenu = new StringSelectMenuBuilder().setCustomId(`status:${issue.id}`).setPlaceholder('Change status (developers only)')
     .addOptions(Object.entries(STATUSES).map(([value, s]) => ({ label: s.label, value, emoji: s.emoji, default: value === issue.status })));
-  const prioMenu = new StringSelectMenuBuilder().setCustomId(`prio:${issue.id}`).setPlaceholder('Developers: set priority')
+  const prioMenu = new StringSelectMenuBuilder().setCustomId(`prio:${issue.id}`).setPlaceholder('Change priority (developers only)')
     .addOptions(Object.entries(PRIORITIES).map(([value, p]) => ({ label: p.label, value, emoji: p.emoji, default: value === issue.priority })));
 
   const btn = (id, label, emoji) => new ButtonBuilder().setCustomId(`${id}:${issue.id}`).setLabel(label).setEmoji(emoji).setStyle(ButtonStyle.Secondary);
   const buttons = new ActionRowBuilder().addComponents(
     btn('plus', 'I have this too', '🙋'),
     btn('assign', 'Assign to me', '🙌'),
-    btn('note', 'Dev note', '💬'),
+    btn('note', 'Developer note', '💬'),
     btn('merge', 'Merge into…', '🔀'),
-    btn('rmrep', 'Remove report', '🗑️'),
+    btn('rmrep', 'Remove a report', '🗑️'),
   );
 
   const more = new ActionRowBuilder().addComponents(
     btn('follow', 'Follow', '🔔'),
     btn('editmine', 'Edit my report', '✏️'),
-    btn('addev', 'Add evidence', '📎'),
+    btn('addev', 'Add screenshots / logs', '📎'),
     btn('history', 'History', '📜'),
-    btn('mkart', 'Make article', '📚'),
+    btn('mkart', 'Make knowledge article', '📚'),
   );
 
   return {

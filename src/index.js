@@ -28,13 +28,13 @@ const btn = (id, label, emoji, style = ButtonStyle.Secondary) =>
 
 // The only slash command: it bootstraps the control panel. Everything else is buttons, menus and modals.
 const commands = [
-  new SlashCommandBuilder().setName('setup').setDescription('Configure the tracker and post the control panel here (admin)')
+  new SlashCommandBuilder().setName('setup').setDescription('Set up the issue tracker and post its control panel in this channel (admins)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addChannelOption((o) => o.setName('issues_channel').setDescription('Channel where issues are posted').addChannelTypes(ChannelType.GuildText).setRequired(true))
-    .addRoleOption((o) => o.setName('dev_role').setDescription('Role allowed to manage issues').setRequired(true))
-    .addRoleOption((o) => o.setName('reporter_role').setDescription('Only this role can create reports (omit to keep the current setting)'))
-    .addRoleOption((o) => o.setName('status_role').setDescription('Only this role can change ticket status (omit to keep the current setting)'))
-    .addIntegerOption((o) => o.setName('retention_days').setDescription('Delete closed issues after this many days without activity (0 = keep)').setMinValue(0).setMaxValue(3650)),
+    .addChannelOption((o) => o.setName('issues_channel').setDescription('Channel where each issue gets its own thread').addChannelTypes(ChannelType.GuildText).setRequired(true))
+    .addRoleOption((o) => o.setName('dev_role').setDescription('Developer role – can manage issues and use the Developer menu').setRequired(true))
+    .addRoleOption((o) => o.setName('reporter_role').setDescription('Only this role can send reports (leave empty to keep the current setting)'))
+    .addRoleOption((o) => o.setName('status_role').setDescription('Only this role can change an issue\'s status (leave empty to keep the current setting)'))
+    .addIntegerOption((o) => o.setName('retention_days').setDescription('Delete closed issues after this many days of no activity (0 = keep them)').setMinValue(0).setMaxValue(3650)),
 ].map((c) => c.toJSON());
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -67,23 +67,23 @@ function canSetStatus(i) {
   return role ? !!i.member?.roles?.cache?.has(role) : isDev(i);
 }
 const noStatusAccess = (i) => i.reply({
-  content: `🔒 Only members with the <@&${statusRole(i.guildId)}> role can change a ticket's status.`,
+  content: `🔒 Only members with the <@&${statusRole(i.guildId)}> role can change an issue's status.`,
   allowedMentions: { parse: [] },
   flags: EPH,
 });
 
 const noReportAccess = (i) => i.reply({
-  content: `🔒 Only members with the <@&${reporterRole(i.guildId)}> role can create reports.`,
+  content: `🔒 Sending reports is limited to members with the <@&${reporterRole(i.guildId)}> role. You can still browse issues and read the answers.`,
   allowedMentions: { parse: [] },
   flags: EPH,
 });
 
-const devOnly = (i, what) => i.reply({ content: `🔒 Only developers can ${what}.`, flags: EPH });
+const devOnly = (i, what) => i.reply({ content: `🔒 This is for developers only – only developers can ${what}.`, flags: EPH });
 
 async function loadIssue(i, id) {
   const issue = issues.get(id);
   if (!issue || issue.guild_id !== i.guildId) {
-    await i.reply({ content: `Issue #${id} no longer exists.`, flags: EPH });
+    await i.reply({ content: `Issue #${id} isn't available any more – it may have been merged into another issue or removed.`, flags: EPH });
     return null;
   }
   return issue;
@@ -96,7 +96,7 @@ function cooldownLeft(i) {
   const last = reports.lastByUser(i.guildId, i.user.id);
   return last ? Math.max(0, Math.ceil((last + cd * 1000 - Date.now()) / 1000)) : 0;
 }
-const waitMsg = (s) => ({ content: `⏳ Please wait ${s}s before sending another report.`, flags: EPH });
+const waitMsg = (s) => ({ content: `⏳ Hang on a moment – you can send another report in ${s} second${s === 1 ? '' : 's'}. (This pause stops spam.)`, flags: EPH });
 
 // ---- "one public message, everything else hidden" helpers ----
 /** Is this interaction coming from a hidden (ephemeral) message? */
@@ -121,7 +121,15 @@ const getDraft = (userId) => {
 
 function panelPayload() {
   const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('Echo VR – Problem Tracker')
-    .setDescription('Something broken? Report it here. Known problems get an instant suggested fix, similar reports are grouped together, and developers update the status as they work on it.\n\n_Everything you open from these buttons is private – only you can see it._');
+    .setDescription([
+      'Something not working? Let the developers know here.',
+      '',
+      '📝 **Report a problem** – we\'ll first show quick fixes for common problems. If none help, you can send a report.',
+      '📋 **Browse issues** – see what has already been reported and how it\'s going.',
+      '📌 **My reports** – follow your reports, add details, and turn update messages on or off.',
+      '',
+      '_Everything you open from these buttons is private – only you can see it._',
+    ].join('\n'));
   return {
     embeds: [embed],
     components: [
@@ -184,13 +192,13 @@ const reportModal = (kind = 'bug', prefill = '') => new ModalBuilder().setCustom
 /** A one-line box shown before the list of known problems. Only used to put the most likely fixes first. */
 const quickModal = (kind) => new ModalBuilder().setCustomId(`faqq:${kind}`)
   .setTitle(kind === 'install' ? 'Install issue' : 'Bug in the game').addLabelComponents(
-    labelled('Describe the problem briefly (optional)',
-      lText('text', { style: TextInputStyle.Paragraph, max: 300, placeholder: 'e.g. game crashes when the lobby loads / installer says problem parsing the package' }),
-      'Leave empty to just browse the list. This is only used to put the most likely fixes first.'));
+    labelled('What\'s going wrong? (optional)',
+      lText('text', { style: TextInputStyle.Paragraph, max: 300, placeholder: 'e.g. the game crashes when the lobby loads' }),
+      'A few words are enough. We\'ll use them to show the most likely fixes first. You can skip this.'));
 
 /** Step 1 of reporting: is it an install problem or a bug in the game? */
 const reportTypePayload = () => ({
-  content: '**What kind of problem is it?**\n🔧 **Install issue** – installing, updating or downloading Echo VR or the installer/launcher\n🐞 **Bug in game** – something goes wrong while playing',
+  content: '**What kind of problem do you have?**\n🔧 **Install issue** – you can\'t install, update or download Echo VR (or its installer / launcher)\n🐞 **Bug in game** – something goes wrong while you\'re playing',
   embeds: [],
   components: [row(btn('rtype:install', 'Install issue', '🔧', ButtonStyle.Primary), btn('rtype:bug', 'Bug in game', '🐞', ButtonStyle.Primary))],
 });
@@ -207,9 +215,9 @@ function faqPayload(guildId, kind, matches = []) {
   const sorted = [...entries.filter((e) => matchScore.has(e.id)).sort((a, b) => matchScore.get(b.id) - matchScore.get(a.id)),
     ...rest.filter((e) => !matchScore.has(e.id))].slice(0, 25);
   const label = kind === 'install' ? '🔧 **Install issue**' : '🐞 **Bug in game**';
-  const hint = matchScore.size ? `⭐ marks the closest matches to what you wrote.` : 'Pick the one that matches.';
+  const hint = matchScore.size ? '⭐ marks the closest matches to what you wrote.' : 'Pick the one that sounds like yours to see the fix.';
   return {
-    content: `${label} – before opening a ticket, is your problem one of these? ${hint}\nIf none fit, press **None of these** and describe it – nothing else is searched after that.`,
+    content: `${label} – does one of these sound like your problem? ${hint}\nIf not, press **None of these** to send a report.`,
     embeds: [],
     components: [
       row(new StringSelectMenuBuilder().setCustomId(`faq:${kind}`).setPlaceholder('Pick the one that matches…')
@@ -217,7 +225,7 @@ function faqPayload(guildId, kind, matches = []) {
           label: trunc(e.title, 100), value: e.id, emoji: matchScore.has(e.id) ? '⭐' : e.custom ? '📚' : '💡',
           ...(matchScore.has(e.id) ? { description: `Closest match · ${Math.round(matchScore.get(e.id) * 100)}%` } : {}),
         })))),
-      row(btn(`rform:${kind}`, 'None of these – report it', '📝', ButtonStyle.Primary)),
+      row(btn(`rform:${kind}`, 'None of these – send a report', '📝', ButtonStyle.Primary)),
     ],
   };
 }
@@ -233,12 +241,12 @@ function faqAnswerPayload(entry, kind) {
   const embed = new EmbedBuilder().setColor(0xfee75c).setTitle(`💡 ${trunc(entry.title, 250)}`).setDescription(trunc(entry.fix, 4000))
     .setFooter({ text: `Source: ${entry.source}` });
   return {
-    content: 'Try this first:',
+    content: 'Give this a try:',
     embeds: [embed],
     components: [row(
-      btn(`faqok:${kind}:${entry.id}`, 'That fixed it', '✅', ButtonStyle.Success),
-      btn(`faqno:${kind}:${entry.id}`, 'Not my problem', '🙅'),
-      btn(`rform:${kind}:${entry.id}`, 'Still happening – report it', '📝'),
+      btn(`faqok:${kind}:${entry.id}`, 'That fixed it!', '✅', ButtonStyle.Success),
+      btn(`faqno:${kind}:${entry.id}`, "That's not my problem", '🙅'),
+      btn(`rform:${kind}:${entry.id}`, "Didn't help – send a report", '📝'),
     )],
   };
 }
@@ -278,19 +286,19 @@ function browsePayload(i, f) {
   const menu = (id, placeholder, allLabel, current, opts) => new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder)
     .addOptions([{ label: allLabel, value: NONE, default: current === NONE }, ...opts.map((o) => ({ ...o, default: o.value === current }))]);
   const components = [
-    row(menu(`bfs:${f.c}|${f.o}`, 'Filter by status', 'All statuses', f.s,
+    row(menu(`bfs:${f.c}|${f.o}`, 'Show: status', 'Any status', f.s,
       Object.entries(STATUSES).map(([value, s]) => ({ label: s.label, emoji: s.emoji, value })))),
-    row(menu(`bfc:${f.s}|${f.o}`, 'Filter by category', 'All categories', f.c,
+    row(menu(`bfc:${f.s}|${f.o}`, 'Show: category', 'Any category', f.c,
       [...Object.keys(CATEGORIES), 'Other'].map((c) => ({ label: c, value: c })))),
-    row(menu(`bfo:${f.s}|${f.c}`, 'Filter by owner', 'Any owner', f.o,
-      [{ label: 'Unassigned', value: 'unassigned', emoji: '🙈' }, { label: 'Assigned to me', value: 'me', emoji: '🙌' }])),
+    row(menu(`bfo:${f.s}|${f.c}`, 'Show: who\'s on it', 'Anyone', f.o,
+      [{ label: 'Nobody yet', value: 'unassigned', emoji: '🙈' }, { label: 'Assigned to me', value: 'me', emoji: '🙌' }])),
   ];
   if (list.length) {
-    components.push(row(new StringSelectMenuBuilder().setCustomId('bfv').setPlaceholder('Open an issue…').addOptions(list.slice(0, 25).map(issueOption))));
+    components.push(row(new StringSelectMenuBuilder().setCustomId('bfv').setPlaceholder('Pick an issue to open…').addOptions(list.slice(0, 25).map(issueOption))));
   }
   const content = list.length
-    ? `**${list.length}** issue${list.length === 1 ? '' : 's'} – highest priority and most affected first${list.length > 25 ? ' (showing top 25)' : ''}. Pick one to open it.`
-    : 'No issues match these filters.';
+    ? `**${list.length}** issue${list.length === 1 ? '' : 's'} found – the most important and most-reported are first${list.length > 25 ? ' (showing the top 25)' : ''}. Pick one to see the details.`
+    : 'No issues match those filters. Try choosing "All" in one of the menus.';
   return { content, embeds: [], components };
 }
 
@@ -305,19 +313,21 @@ function settingsPayload(guildId) {
   };
   return {
     content: [
-      '**⚙️ Tracker settings**',
-      `Match sensitivity: **${c.threshold}** · Stale after: **${c.stale_days} days** · Report cooldown: **${c.cooldown_sec ? `${c.cooldown_sec}s` : 'off'}**`,
-      `Reporter role: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} · Status role: ${statusRole(guildId) ? `<@&${statusRole(guildId)}>` : '_developers_'} (change with \`/setup\`)`,
-      `Data retention: ${c.retention_days ? `closed issues deleted after **${c.retention_days} days** without activity` : '**keep** (set with `/setup retention_days:`)'}`,
-      `Digest channel: ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'} · Changelog channel: ${c.changelog_channel_id ? `<#${c.changelog_channel_id}>` : '_not set_'}`,
+      '**⚙️ Settings** – pick a value from any menu below; it saves straight away.',
+      `• Grouping: reports are grouped when they're at least **${Math.round(c.threshold * 100)}% alike**`,
+      `• Quiet issues: flagged after **${c.stale_days} days** without activity`,
+      `• Pause between a player's reports: **${c.cooldown_sec ? `${c.cooldown_sec} seconds` : 'none'}**`,
+      `• Who can send reports: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} · who can change status: ${statusRole(guildId) ? `<@&${statusRole(guildId)}>` : '_any developer_'} _(change with \`/setup\`)_`,
+      `• Closed issues are ${c.retention_days ? `deleted after **${c.retention_days} days** without activity` : '**kept** until deleted by hand'} _(change with \`/setup retention_days:\`)_`,
+      `• Weekly digest goes to: ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'} · fixed-issue announcements go to: ${c.changelog_channel_id ? `<#${c.changelog_channel_id}>` : '_not set_'}`,
     ].join('\n'),
     embeds: [],
     components: [
-      pick('set_thr', 'Duplicate matching sensitivity', [['Strict', 0.35, 'Fewer auto-merges, more separate issues'], ['Balanced', 0.25, 'Recommended'], ['Loose', 0.18, 'Merges more aggressively']], c.threshold),
-      pick('set_stale', 'Flag issues with no activity after…', [['3 days', 3], ['7 days', 7], ['14 days', 14], ['30 days', 30]], c.stale_days),
-      pick('set_cd', 'Report cooldown per user', [['Off', 0], ['30 seconds', 30], ['1 minute', 60], ['5 minutes', 300]], c.cooldown_sec),
-      chanMenu('set_devch', 'Developer channel for the weekly digest', c.dev_channel_id),
-      chanMenu('set_logch', 'Public channel for the fixed-issues changelog', c.changelog_channel_id),
+      pick('set_thr', 'How alike must reports be to group together?', [['Strict – fewer groups', 0.35, 'Keeps more reports as separate issues'], ['Balanced', 0.25, 'Recommended'], ['Loose – more groups', 0.18, 'Groups similar reports more eagerly']], c.threshold),
+      pick('set_stale', 'Flag issues that go quiet after…', [['3 days', 3], ['7 days', 7], ['14 days', 14], ['30 days', 30]], c.stale_days),
+      pick('set_cd', 'Pause between one player\'s reports', [['No pause', 0], ['30 seconds', 30], ['1 minute', 60], ['5 minutes', 300]], c.cooldown_sec),
+      chanMenu('set_devch', 'Where should the weekly digest go? (developers)', c.dev_channel_id),
+      chanMenu('set_logch', 'Where should "fixed" announcements go? (public)', c.changelog_channel_id),
     ],
   };
 }
@@ -335,10 +345,10 @@ function dupSummary(it, tag) {
 function dupPayload(i) {
   const sk = skipped.get(i.user.id) ?? new Set();
   const pairs = duplicatePairs(i.guildId).filter((p) => !sk.has(`${p.a}-${p.b}`));
-  if (!pairs.length) return { content: '🎉 No duplicate candidates left to review.', embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] };
+  if (!pairs.length) return { content: '🎉 Nothing left to review – no issues look like duplicates right now.', embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] };
   const p = pairs[0];
   return {
-    content: `**Are these the same problem?** Pair 1 of ${pairs.length} · similarity ${Math.round(p.score * 100)}%`,
+    content: `**Are these two the same problem?** (${pairs.length} pair${pairs.length === 1 ? '' : 's'} to review · these look about ${Math.round(p.score * 100)}% alike)\n**Merge** combines them, **Keep separate** remembers they're different, **Skip** decides later.`,
     embeds: [dupSummary(issues.get(p.a), 'A'), dupSummary(issues.get(p.b), 'B')],
     components: [row(
       btn(`dupm:${p.a}:${p.b}`, 'Merge', '🔀', ButtonStyle.Success),
@@ -358,6 +368,14 @@ async function doMerge(i, from, into) {
   await threadSay(client, into, `🔀 Issue #${from.id} (“${trunc(from.title, 80)}”) was merged into this one.`);
 }
 
+/** The DM people get when an issue they reported or follow changes – says what the status means for them. */
+const STATUS_DM = {
+  in_progress: (t) => `🛠️ The developers have started working on **${t}**.`,
+  fixed: (t) => `✅ Good news – **${t}** is now fixed!`,
+  cannot_reproduce: (t) => `❓ The developers couldn't make **${t}** happen on their side. More details can help: open **My reports** on the panel, then choose **Edit report** or **Add evidence**.`,
+  wont_fix: (t) => `🚫 The developers have decided not to fix **${t}**.`,
+};
+
 async function applyStatus(i, issue, status, { version, note } = {}) {
   const old = issue.status;
   issues.setStatus(issue.id, status, i.user.id, version);
@@ -369,9 +387,10 @@ async function applyStatus(i, issue, status, { version, note } = {}) {
     const ver = status === 'fixed' && fresh.fixed_version ? ` (fixed in \`${fresh.fixed_version}\`)` : '';
     events.add(issue.id, 'status', i.user.id, `${STATUSES[old]?.label} → ${s.label}${ver}`);
     await threadSay(client, fresh, `${s.emoji} <@${i.user.id}> set the status to **${s.label}**${ver}.`);
-    if (['fixed', 'in_progress', 'wont_fix', 'cannot_reproduce'].includes(status)) {
-      const update = status === 'fixed' && fresh.fixed_version ? `\n**Update to \`${fresh.fixed_version}\` or newer to get the fix.**` : '';
-      notifyReporters(client, fresh, `${s.emoji} Update on your Echo VR report **#${fresh.id} – ${fresh.title}**: now **${s.label}**.${update}${fresh.dev_note ? `\n> ${fresh.dev_note}` : ''}`).catch(() => {});
+    if (STATUS_DM[status]) {
+      const update = status === 'fixed' && fresh.fixed_version ? `\nUpdate to version \`${fresh.fixed_version}\` (or newer) to get the fix.` : '';
+      const devNote = fresh.dev_note ? `\n> ${fresh.dev_note}` : '';
+      notifyReporters(client, fresh, `${STATUS_DM[status](`#${fresh.id} – ${trunc(fresh.title, 120)}`)}${update}${devNote}\n_You can turn these messages off under **My reports**._`).catch(() => {});
     }
     if (status === 'fixed') await postChangelog(client, fresh, cfgOf(i.guildId).changelog_channel_id);
   }
@@ -388,15 +407,16 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
     await threadSay(client, res.issue, `⚠️ Reopened by a new report${res.fixedVersion ? ` (it was fixed in \`${res.fixedVersion}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
   }
   const fresh = issues.get(res.issue.id);
-  const where = fresh.channel_id ? ` in <#${fresh.channel_id}>` : '';
+  const where = fresh.channel_id ? ` You can follow the discussion in <#${fresh.channel_id}>.` : '';
   const content = res.created
-    ? `✅ Thanks! Created new ${fresh.kind === 'install' ? '🔧 install issue' : '🐞 bug'} **#${fresh.id}**${where} (${fresh.category}).`
-    : `✅ Thanks! This looks like an existing issue, so I added your report to **#${fresh.id} – ${fresh.title}**${where}.` +
-      (res.reopened ? '\n⚠️ It was marked fixed, so it has been reopened for the developers.' : '');
-  const withEvidence = saved ? `${content}\n📎 ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'} saved with the issue.` : content;
+    ? `✅ **Thanks – your report has been sent!**\nIt's now ${fresh.kind === 'install' ? '🔧 install issue' : '🐞 issue'} **#${fresh.id}** (${fresh.category}).${where}`
+    : `✅ **Thanks – your report has been added!**\nOther players have reported something similar, so it joined **#${fresh.id} – ${trunc(fresh.title, 100)}**.${where}` +
+      (res.reopened ? '\n⚠️ That issue had been marked fixed, so it has been reopened for the developers to look at again.' : '');
+  const evidenceLine = saved ? `\n📎 Saved ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'} with your report.` : '';
+  const next = '\nYou\'ll get a message when its status changes. See everything under **My reports**.';
   return {
-    content: withEvidence, embeds: [],
-    components: res.created ? [] : [row(btn(`split:${res.reportId}`, 'Not the same problem', '↩️'))],
+    content: `${content}${evidenceLine}${next}`, embeds: [],
+    components: res.created ? [] : [row(btn(`split:${res.reportId}`, 'This is a different problem', '↩️'))],
   };
 }
 
@@ -404,7 +424,7 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
 
 const EVENT_LABEL = {
   created: '🆕 Reported', status: '🔄 Status', priority: '⚑ Priority', owner: '🙌 Owner',
-  merged: '🔀 Merged', reopened: '⚠️ Reopened', rematched: '🔁 Re-matched',
+  merged: '🔀 Merged', reopened: '⚠️ Reopened', rematched: '🔁 Report moved',
 };
 function timeline(issueId, showActors, limit = 8) {
   const evs = events.forIssue(issueId, limit);
@@ -420,12 +440,12 @@ function minePayload(i) {
   const list = [...tags].map(([id, tag]) => ({ it: issues.get(id), tag })).filter((x) => x.it)
     .sort((a, b) => b.it.updated_at - a.it.updated_at).slice(0, 25);
   const dmOff = prefs.dmOff(i.user.id);
-  const dmRow = row(btn('dm:toggle', dmOff ? 'Turn DMs on' : 'Turn DMs off', dmOff ? '🔔' : '🔕'), btn('legal:privacy', 'Data & privacy', '🔒'));
+  const dmRow = row(btn('dm:toggle', dmOff ? 'Turn update messages on' : 'Turn update messages off', dmOff ? '🔔' : '🔕'), btn('legal:privacy', 'Data & privacy', '🔒'));
   if (!list.length) {
-    return { content: "You haven't reported or followed anything yet. Use **Report a problem**, or 🔔 **Follow** on any issue.", embeds: [], components: [dmRow] };
+    return { content: "You haven't sent or followed any reports yet. Press **Report a problem** on the panel, or 🔔 **Follow** on any issue to get updates.", embeds: [], components: [dmRow] };
   }
   return {
-    content: `**Your reports & followed issues** (${list.length}) – pick one to see its progress, edit your report or re-check its match.\nProgress DMs: **${dmOff ? 'off' : 'on'}**.`,
+    content: `**📌 My reports** (${list.length}) – pick one to see how it's going, add details or edit it.\nUpdate messages: **${dmOff ? 'off 🔕' : 'on 🔔'}** – use the button below to change this.`,
     embeds: [],
     components: [row(new StringSelectMenuBuilder().setCustomId('mine_view').setPlaceholder('Open one…').addOptions(list.map(({ it, tag }) => ({
       label: trunc(`#${it.id} ${it.title}`, 100),
@@ -447,8 +467,8 @@ function trackPayload(i, issue) {
     .addFields(
       { name: 'Status', value: `${st.emoji} ${st.label}${issue.status === 'fixed' && issue.fixed_version ? ` in \`${issue.fixed_version}\`` : ''}`, inline: true },
       { name: 'Priority', value: `${pr.emoji} ${pr.label}`, inline: true },
-      { name: 'Developer', value: issue.owner_id ? `<@${issue.owner_id}> is on it` : '_not assigned yet_', inline: true },
-      { name: 'Affected players', value: String(stats.users), inline: true },
+      { name: "Who's on it", value: issue.owner_id ? `<@${issue.owner_id}>` : '_nobody yet_', inline: true },
+      { name: 'Players affected', value: String(stats.users), inline: true },
     );
   if (mine) {
     const meta = [mine.platform, mine.version].filter(Boolean).join(' · ');
@@ -462,8 +482,8 @@ function trackPayload(i, issue) {
 
   const rows = [];
   if (mine) {
-    rows.push(row(btn(`edit:${mine.id}`, 'Edit report', '✏️'), btn(`rematch:${mine.id}`, 'Recalculate match', '🔄'),
-      btn(`addevr:${mine.id}`, 'Add evidence', '📎'), btn(`wd:${mine.id}`, 'Withdraw', '🗑️')));
+    rows.push(row(btn(`edit:${mine.id}`, 'Edit my report', '✏️'), btn(`addevr:${mine.id}`, 'Add screenshots / logs', '📎'),
+      btn(`rematch:${mine.id}`, 'Recalculate match', '🔄'), btn(`wd:${mine.id}`, 'Withdraw', '🗑️')));
   }
   const nav = [btn('mine:back', 'Back', '⬅️')];
   if (!mine) nav.push(btn(`follow:${issue.id}`, watchers.has(issue.id, i.user.id) ? 'Unfollow' : 'Follow', watchers.has(issue.id, i.user.id) ? '🔕' : '🔔'));
@@ -509,7 +529,7 @@ function articleView(a) {
       { name: 'Matches players who write', value: trunc(a.symptoms, 1024) },
       ...(a.phrases ? [{ name: 'Always matches this exact text', value: trunc(a.phrases, 1024) }] : []),
       { name: 'Answer players see', value: trunc(a.link ? `${a.body}\n\n🔗 ${a.link}` : a.body, 1024) },
-      { name: 'Results', value: `Shown ${s.shown} · ✅ helped ${s.helped} · 🙅 denied ${s.denied} · 📝 filed anyway ${s.filed}` },
+      { name: 'How it\'s doing', value: `Viewed ${s.shown}× · ✅ fixed it ${s.helped}× · 🙅 not their problem ${s.denied}× · 📝 sent a report anyway ${s.filed}×` },
     );
   return {
     content: '', embeds: [embed],
@@ -530,7 +550,7 @@ function articlesPayload(guildId) {
   components.push(row(btn('art:new', 'New article', '➕', ButtonStyle.Success), btn('art:stats', 'Results', '📊'), btn('art:test', 'Test matching', '🧪'),
     btn('dev:menu', 'Developer menu', '⬅️')));
   return {
-    content: `**📚 Knowledge articles** – ${list.length} of your own · ${KB.length} built-in.\nBefore a report is filed, players are shown the best-matching answers (typo tolerant). They can say **Not my problem** to see the next one or file anyway, and the results below show which articles actually help.`,
+    content: `**📚 Knowledge articles** – ${list.length} of your own, plus ${KB.length} built-in answers.\nBefore anyone sends a report, they see a list of known problems (your articles first, and the closest matches to what they typed are moved to the top, even with typos). **Results** shows which answers actually help, and **Test matching** shows what a player would see for a sample sentence.`,
     embeds: [], components,
   };
 }
@@ -540,13 +560,13 @@ function articleStats(guildId) {
   const rows = kbStats.forGuild(guildId).filter((s) => s.shown > 0).slice(0, 15);
   const lines = rows.map((s) => {
     const flag = s.denied >= 3 && s.denied > s.helped ? ' ⚠️ often denied' : '';
-    return `**${trunc(title(s.article_id), 60)}** — shown ${s.shown} · ✅ ${s.helped} · 🙅 ${s.denied} · 📝 ${s.filed}${flag}`;
+    return `**${trunc(title(s.article_id), 60)}** — viewed ${s.shown}× · ✅ ${s.helped} · 🙅 ${s.denied} · 📝 ${s.filed}${flag}`;
   });
   return {
     content: '', components: [row(btn('art:back', 'Back', '⬅️'))],
     embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('📊 How suggestions are doing')
-      .setDescription(lines.join('\n') || '_Nothing has been suggested yet._')
-      .setFooter({ text: '✅ helped = "That fixed it" · 🙅 denied = "Not my problem" · 📝 = filed a report anyway' })],
+      .setDescription(lines.join('\n') || '_No answers have been viewed yet._')
+      .setFooter({ text: '✅ = "That fixed it" · 🙅 = "That\'s not my problem" · 📝 = "Didn\'t help – send a report"' })],
   };
 }
 
@@ -582,12 +602,25 @@ client.on('interactionCreate', async (i) => {
       const kept = have.issues || have.articles
         ? `\n♻️ Existing data found and kept: **${have.issues}** issue${have.issues === 1 ? '' : 's'}, **${have.reports}** report${have.reports === 1 ? '' : 's'}, **${have.articles}** knowledge article${have.articles === 1 ? '' : 's'}${restoredFrom ? ` (restored from backup \`${restoredFrom}\`)` : ''}.`
         : '';
-      return i.reply({ content: `✅ Each issue gets its own thread under <#${ch.id}>.${kept} Developers: <@&${role.id}> (and anyone with Manage Server). Reports can be created by: ${rr ? `<@&${rr}>` : 'everyone'}. Status can be changed by: ${statusRole(i.guildId) ? `<@&${statusRole(i.guildId)}>` : 'developers'}. Use the ⚙️ **Settings** button on the panel for the digest/changelog channels, matching sensitivity and cooldown.`, flags: EPH });
+      return i.reply({
+        content: [
+          '✅ **All set!** The control panel is posted above.',
+          `• Each issue gets its own thread in <#${ch.id}>`,
+          `• Developers: <@&${role.id}> (and anyone with Manage Server)`,
+          `• Who can send reports: ${rr ? `<@&${rr}>` : 'everyone'}`,
+          `• Who can change an issue's status: ${statusRole(i.guildId) ? `<@&${statusRole(i.guildId)}>` : 'any developer'}`,
+          ...(kept ? [kept.trim()] : []),
+          '',
+          'Next: press **🛠️ Developer → ⚙️ Settings** to choose where the weekly digest and "fixed" announcements go.',
+        ].join('\n'),
+        allowedMentions: { parse: [] },
+        flags: EPH,
+      });
     }
 
     // ----- reporting -----
     if (i.isButton() && id === 'report') {
-      if (!settings.get(i.guildId)) return i.reply({ content: 'An admin must run `/setup` first.', flags: EPH });
+      if (!settings.get(i.guildId)) return i.reply({ content: "This isn't ready yet – a server admin needs to run `/setup` first.", flags: EPH });
       if (!canReport(i)) return noReportAccess(i);
       const wait = cooldownLeft(i);
       return wait ? i.reply(waitMsg(wait)) : i.reply({ ...reportTypePayload(), flags: EPH });
@@ -614,7 +647,7 @@ client.on('interactionCreate', async (i) => {
     if (i.isButton() && id.startsWith('faqok:')) {
       const [, , ...rest] = id.split(':');
       kbStats.bump(i.guildId, rest.join(':'), 'helped');
-      return i.update({ content: 'Glad that helped! 🎉 No ticket was opened.', embeds: [], components: [] });
+      return i.update({ content: 'Great, glad that helped! 🎉 No report was needed.', embeds: [], components: [] });
     }
     if (i.isButton() && id.startsWith('faqno:')) {
       const [, kind, ...rest] = id.split(':');
@@ -647,12 +680,12 @@ client.on('interactionCreate', async (i) => {
     }
     if (i.isButton() && id.startsWith('split:')) {
       const report = reports.get(idOf(i));
-      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'That is not your report.', flags: EPH });
+      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
       const res = splitReport(report.id);
       if (res.old) await syncMessage(client, res.old, trackerChannel(i));
       else await removeMessage(client, res.emptiedIssue);
       await syncMessage(client, res.fresh, trackerChannel(i));
-      return i.update({ content: `✅ Understood — filed as separate issue **#${res.fresh.id}**.`, components: [] });
+      return i.update({ content: `✅ Got it – your report is now its own issue, **#${res.fresh.id}**.`, components: [] });
     }
 
     // ----- browsing -----
@@ -723,7 +756,7 @@ client.on('interactionCreate', async (i) => {
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
       if (!canReport(i)) return noReportAccess(i);
-      if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You already reported this one. 👍', flags: EPH });
+      if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You\'ve already added your report to this issue. 👍 To add more, use **My reports** → **Edit my report** or **Add screenshots / logs**.', flags: EPH });
       const wait = cooldownLeft(i);
       return wait ? i.reply(waitMsg(wait)) : i.showModal(meTooModal(issue));
     }
@@ -731,7 +764,7 @@ client.on('interactionCreate', async (i) => {
       if (!canReport(i)) return noReportAccess(i);
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
-      if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You already reported this one. 👍', flags: EPH });
+      if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You\'ve already added your report to this issue. 👍', flags: EPH });
       const wait = cooldownLeft(i);
       if (wait) return i.reply(waitMsg(wait));
       await i.deferReply({ flags: EPH });
@@ -743,7 +776,7 @@ client.on('interactionCreate', async (i) => {
         await threadSay(client, issue, `⚠️ Reopened by another report${issue.fixed_version ? ` (it was fixed in \`${issue.fixed_version}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
       } else issues.touch(issue.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
-      return i.editReply({ content: `✅ Added your report to **#${issue.id}**.${saved ? ` 📎 ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'} saved.` : ''}` });
+      return i.editReply({ content: `✅ **Thanks – your report was added to #${issue.id}.**${saved ? `\n📎 Saved ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'} with it.` : ''}\nYou'll get a message when its status changes. See everything under **My reports**.` });
     }
 
     // ----- issue message: dev note -----
@@ -770,9 +803,9 @@ client.on('interactionCreate', async (i) => {
       const others = issues.list(i.guildId).filter((x) => x.id !== issue.id)
         .sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0)).slice(0, 25)
         .map((x) => ({ ...x, likely: (scores.get(x.id) ?? 0) >= 0.12 }));
-      if (!others.length) return i.reply({ content: 'There are no other issues to merge into.', flags: EPH });
+      if (!others.length) return i.reply({ content: 'There are no other issues to merge this one into yet.', flags: EPH });
       return i.reply({
-        content: `Merge **#${issue.id} – ${trunc(issue.title, 80)}** into which issue? (Its reports move over; its thread is locked.)`,
+        content: `Merge **#${issue.id} – ${trunc(issue.title, 80)}** into which issue? Its reports move over and its thread is locked. ⭐ marks issues that look alike.`,
         components: [row(new StringSelectMenuBuilder().setCustomId(`mergeto:${issue.id}`).setPlaceholder('Choose the issue to keep…').addOptions(others.map(issueOption)))],
         flags: EPH,
       });
@@ -860,13 +893,13 @@ client.on('interactionCreate', async (i) => {
     if (i.isButton() && id.startsWith('follow:')) {
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
-      if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You reported this one, so you already get its updates. 🔔', flags: EPH });
+      if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You sent a report for this issue, so you already get its updates. 🔔', flags: EPH });
       if (watchers.has(issue.id, i.user.id)) {
         watchers.remove(issue.id, i.user.id);
-        return i.reply({ content: `🔕 You no longer follow **#${issue.id}**.`, flags: EPH });
+        return i.reply({ content: `🔕 You've stopped following **#${issue.id}**.`, flags: EPH });
       }
       watchers.add(issue.id, i.user.id);
-      return i.reply({ content: `🔔 You'll get a DM when **#${issue.id}** changes. Everything you follow is under **My reports**.`, flags: EPH });
+      return i.reply({ content: `🔔 You're now following **#${issue.id}** – you'll get a message when its status changes. You can find everything you follow under **My reports**.`, flags: EPH });
     }
     if (i.isButton() && id.startsWith('history:')) {
       const issue = await loadIssue(i, idOf(i));
@@ -883,18 +916,18 @@ client.on('interactionCreate', async (i) => {
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
       const mine = reports.latestByUser(issue.id, i.user.id);
-      if (!mine) return i.reply({ content: "You haven't reported this issue yet – use **I have this too** to add your report.", flags: EPH });
+      if (!mine) return i.reply({ content: "You haven't added a report to this issue yet – press **I have this too** first.", flags: EPH });
       return i.showModal(id.startsWith('editmine:') ? editModal(mine) : addEvidenceModal(mine));
     }
     if (i.isButton() && (id.startsWith('edit:') || id.startsWith('addevr:'))) {
       const report = reports.get(idOf(i));
-      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'That is not your report.', flags: EPH });
+      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
       if (!canReport(i)) return noReportAccess(i);
       return i.showModal(id.startsWith('edit:') ? editModal(report) : addEvidenceModal(report));
     }
     if (i.isModalSubmit() && (id.startsWith('edit:') || id.startsWith('addevr:'))) {
       const report = reports.get(idOf(i));
-      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'That is not your report.', flags: EPH });
+      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
       if (!canReport(i)) return noReportAccess(i);
       await deferHidden(i); // replaces the "My reports" card in place when opened from there
       const editing = id.startsWith('edit:');
@@ -912,18 +945,18 @@ client.on('interactionCreate', async (i) => {
       const added = saved ? ` and added ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'}` : '';
       await threadSay(client, issue, `✏️ A reporter ${editing ? 'edited their report' : 'added evidence'}${editing ? added : ''}.`);
       return i.editReply({
-        content: `✅ ${editing ? `Report updated${added}.` : saved ? `Saved ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'}.` : 'Nothing new to add.'}\nDoes the new information change what the problem is? Re-check which issue it belongs to:`,
-        components: [row(btn(`rematch:${report.id}`, 'Recalculate match', '🔄', ButtonStyle.Primary), btn(`trk:${issue.id}`, 'View progress', '📌'))],
+        content: `✅ ${editing ? `Your report was updated${added}.` : saved ? `Saved ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'} with your report.` : 'Nothing new was added.'}\nIf your new details change what the problem is, press **Recalculate match** and I'll check whether your report belongs with a different issue.`,
+        components: [row(btn(`rematch:${report.id}`, 'Recalculate match', '🔄', ButtonStyle.Primary), btn(`trk:${issue.id}`, 'See how it\'s going', '📌'))],
       });
     }
     if (i.isButton() && id.startsWith('rematch:')) {
       const report = reports.get(idOf(i));
-      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'That is not your report.', flags: EPH });
+      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
       const res = rematchReport(report.id, i.user.id, cfgOf(i.guildId).threshold);
       if (res.action === 'same') {
         return i.update({
-          content: `🔄 Checked again – your report still fits **#${res.to.id} – ${trunc(res.to.title, 80)}** best. No change.`,
-          embeds: [], components: [row(btn(`trk:${res.to.id}`, 'View progress', '📌'))],
+          content: `🔄 I checked again, and your report still fits best with **#${res.to.id} – ${trunc(res.to.title, 80)}**. Nothing needs to change.`,
+          embeds: [], components: [row(btn(`trk:${res.to.id}`, 'See how it\'s going', '📌'))],
         });
       }
       if (res.fromDeleted) await retireMessage(client, res.from, res.to.id);
@@ -934,31 +967,31 @@ client.on('interactionCreate', async (i) => {
         : `✂️ A report was split out of #${res.from.id} after its details changed.`);
       return i.update({
         content: (res.action === 'moved'
-          ? `🔁 With the new details your report fits **#${res.to.id} – ${trunc(res.to.title, 80)}** better, so it was moved there.`
-          : `✂️ The new details no longer match **#${res.from.id}**, so your report was filed as its own issue **#${res.to.id}**.`) +
-          (res.reopened ? '\n⚠️ That issue was marked fixed, so it has been reopened.' : ''),
-        embeds: [], components: [row(btn(`trk:${res.to.id}`, 'View progress', '📌'))],
+          ? `🔁 With your new details, your report fits **#${res.to.id} – ${trunc(res.to.title, 80)}** better, so I moved it there.`
+          : `✂️ Your new details no longer match **#${res.from.id}**, so your report is now its own issue, **#${res.to.id}**.`) +
+          (res.reopened ? '\n⚠️ That issue had been marked fixed, so it was reopened for the developers.' : ''),
+        embeds: [], components: [row(btn(`trk:${res.to.id}`, 'See how it\'s going', '📌'))],
       });
     }
     if (i.isButton() && id.startsWith('wd:')) {
       const report = reports.get(idOf(i));
-      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'That is not your report.', flags: EPH });
+      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
       const issue = issues.get(report.issue_id);
       const last = reports.stats(issue.id).total === 1;
       if (last && (issue.status !== 'new' || issue.owner_id || issue.dev_note)) {
-        return i.reply({ content: `Developers are already working on **#${issue.id}** and yours is its only report, so it can't be withdrawn. Ask a developer to close it if it no longer applies.`, flags: EPH });
+        return i.reply({ content: `The developers are already working on **#${issue.id}** and yours is the only report, so it can't be withdrawn. If it no longer applies, ask a developer to close it.`, flags: EPH });
       }
       return i.update({
-        content: `Withdraw your report from **#${issue.id} – ${trunc(issue.title, 80)}**?${last ? ' It is the only report, so the issue will be removed.' : ' The issue stays open for the other reporters.'}`,
+        content: `Take back your report from **#${issue.id} – ${trunc(issue.title, 80)}**?${last ? ' Yours is the only report, so the issue will be removed.' : ' The issue stays open for the other players who reported it.'}`,
         embeds: [],
-        components: [row(btn(`wdok:${report.id}`, 'Yes, withdraw', '🗑️', ButtonStyle.Danger), btn(`trk:${issue.id}`, 'Keep it', '↩️'))],
+        components: [row(btn(`wdok:${report.id}`, 'Yes, withdraw it', '🗑️', ButtonStyle.Danger), btn(`trk:${issue.id}`, 'No, keep it', '↩️'))],
       });
     }
     if (i.isButton() && id.startsWith('wdok:')) {
       const report = reports.get(idOf(i));
-      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'That is not your report.', flags: EPH });
+      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
       const { issueDeleted } = await dropReport(i, issues.get(report.issue_id), report);
-      return i.update({ content: issueDeleted ? '🗑️ Withdrawn. It was the only report, so the issue was removed.' : '🗑️ Withdrawn.', embeds: [], components: [] });
+      return i.update({ content: issueDeleted ? '🗑️ Your report was withdrawn. Because it was the only one, the issue was removed too.' : '🗑️ Your report was withdrawn.', embeds: [], components: [] });
     }
 
     // ----- knowledge articles (developers) -----
@@ -980,8 +1013,8 @@ client.on('interactionCreate', async (i) => {
         const found = suggest(i.fields.getTextInputValue('sample'), articles.list(i.guildId, { enabledOnly: true }));
         return show(i, {
           content: found.length
-            ? `**Players writing that would be shown, in order:**\n${found.map((s, n) => `${n + 1}. ${s.custom ? '📚' : '💡'} **${trunc(s.title, 80)}** — ${Math.round(s.score * 100)}% match`).join('\n')}`
-            : 'No suggestion would be shown for that text – the report would be filed straight away.',
+            ? `**A player who wrote that would see these first:**\n${found.map((s, n) => `${n + 1}. ${s.custom ? '📚' : '💡'} **${trunc(s.title, 80)}** — ${Math.round(s.score * 100)}% match`).join('\n')}`
+            : 'Nothing matches that text closely, so the player would just see the full list of known problems.',
           embeds: [], components: [row(btn('art:back', 'Back', '⬅️'))],
         });
       }
@@ -1042,21 +1075,21 @@ client.on('interactionCreate', async (i) => {
         case 'dev:export': {
           const files = exportCsv(i.guildId);
           return i.reply({
-            content: '📤 Export (contains user IDs – keep it private).',
+            content: '📤 Here are your exports. They contain Discord user IDs, so keep them private.',
             files: [new AttachmentBuilder(files.issues, { name: 'issues.csv' }), new AttachmentBuilder(files.reports, { name: 'reports.csv' })],
             flags: EPH,
           });
         }
         case 'dev:backup': {
           await i.deferReply({ flags: EPH });
-          return i.editReply(`💾 Database backed up to \`${backupNow()}\` (the newest 14 are kept; backups also run daily).`);
+          return i.editReply(`💾 Backup saved: \`${backupNow()}\`\nA backup is also made every day, and the 14 newest are kept.`);
         }
         case 'dev:digest': {
           if (cfgOf(i.guildId).dev_channel_id) {
             await postDigest(client, i.guildId);
-            return i.reply({ content: `📊 Digest posted in <#${cfgOf(i.guildId).dev_channel_id}>.`, flags: EPH });
+            return i.reply({ content: `📊 The digest was posted in <#${cfgOf(i.guildId).dev_channel_id}>.`, flags: EPH });
           }
-          return i.reply({ content: 'Tip: set a digest channel in ⚙️ Settings to get this weekly.', embeds: [buildDigest(i.guildId, cfgOf(i.guildId).stale_days)], flags: EPH });
+          return i.reply({ content: 'Here\'s the digest. 💡 Choose a digest channel in ⚙️ Settings and it will be posted there every week.', embeds: [buildDigest(i.guildId, cfgOf(i.guildId).stale_days)], flags: EPH });
         }
       }
       return;
@@ -1096,7 +1129,7 @@ client.on('interactionCreate', async (i) => {
     }
   } catch (err) {
     console.error(err);
-    const reply = { content: 'Something went wrong. Please try again.', flags: EPH };
+    const reply = { content: 'Sorry, something went wrong on our side. Please try again in a moment – if it keeps happening, let a developer know.', flags: EPH };
     if (i.replied || i.deferred) i.followUp(reply).catch(() => {}); else i.reply(reply).catch(() => {});
   }
 });

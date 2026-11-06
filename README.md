@@ -22,7 +22,7 @@ Uploaded files are re-posted into the issue's thread (Discord's own upload links
 
 ## Developer menu (roles below)
 The panel's **🛠️ Developer** button opens a hidden menu: Board, Review duplicates, Knowledge articles, Settings, Digest, Export CSV, Back up now.
-- **📌 Board** – a Trello-style board (columns New | Seen | Fix in progress, then Fixed | Cannot reproduce | Won't fix); ⏳ marks cards with no activity, 🙌 shows the owner, **My cards** filters to yours, the picker opens a card (with a Back button), **Refresh** redraws it. It is a private view, not a public message.
+- **📌 Board** – a Trello-style board (columns New | Seen | Being fixed, then Fixed | Can't reproduce | Won't fix); ⏳ marks cards with no activity, 🙌 shows the owner, **My cards** filters to yours, the picker opens a card (with a Back button), **Refresh** redraws it. It is a private view, not a public message.
 - On each issue: status (Fixed asks for the fixed-in version), priority, 🙌 assign to me, 💬 note, 🔀 merge, 🗑️ remove a spam report, 📜 history, 📚 **Make article** (turn a solved issue into a knowledge article).
 - **📚 Knowledge articles** – add/edit/disable articles (how players describe it, optional exact error text, the answer, a link). **Results** shows how often each suggestion was shown, helped, denied, or still led to a report; **Test matching** previews what a sample report would get.
 - 🔍 Review duplicates · 📊 Digest (posts to the digest channel) · 📤 Export CSV · 💾 Back up now · ⚙️ Settings.

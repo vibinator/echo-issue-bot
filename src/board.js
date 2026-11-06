@@ -28,9 +28,9 @@ export function boardPayload(guildId, { owner, title } = {}) {
   const staleBefore = Date.now() - cfg.stale_days * DAY;
   const list = issues.list(guildId, { owner });
   const active = new EmbedBuilder().setColor(0x3498db).setTitle(title ?? '📌 Developer board')
-    .setDescription(`Updated <t:${Math.floor(Date.now() / 1000)}:R> · sorted by priority, then affected players · ⏳ = no activity for ${cfg.stale_days}+ days`)
+    .setDescription(`Updated <t:${Math.floor(Date.now() / 1000)}:R> · most important first · ⏳ = quiet for ${cfg.stale_days}+ days · 🙌 = who's on it`)
     .addFields(ACTIVE.map((s) => column(list, s, staleBefore)));
-  const done = new EmbedBuilder().setColor(0x2ecc71).setTitle('Done (fixed shown for 14 days)')
+  const done = new EmbedBuilder().setColor(0x2ecc71).setTitle('✔️ Finished (fixed issues stay here for 14 days)')
     .addFields(DONE.map((s) => column(list, s, staleBefore)));
 
   const open = list.filter((i) => ACTIVE.includes(i.status)).slice(0, 25);
@@ -47,8 +47,8 @@ export function boardPayload(guildId, { owner, title } = {}) {
   const b = (id, label, emoji) => new ButtonBuilder().setCustomId(id).setLabel(label).setEmoji(emoji).setStyle(ButtonStyle.Secondary);
   // On a personal ("My cards") view, Refresh keeps showing the personal view.
   components.push(new ActionRowBuilder().addComponents(...(owner
-    ? [b('board:mine', 'Refresh', '🔄'), b('board:refresh', 'Whole board', '📌'), b('dev:menu', 'Developer menu', '⬅️')]
-    : [b('board:refresh', 'Refresh', '🔄'), b('board:mine', 'My cards', '🙌'), b('dev:menu', 'Developer menu', '⬅️')])));
+    ? [b('board:mine', 'Refresh', '🔄'), b('board:refresh', 'Show everyone\'s', '📌'), b('dev:menu', 'Developer menu', '⬅️')]
+    : [b('board:refresh', 'Refresh', '🔄'), b('board:mine', 'Only mine', '🙌'), b('dev:menu', 'Developer menu', '⬅️')])));
   return { content: '', embeds: [active, done], components };
 }
 

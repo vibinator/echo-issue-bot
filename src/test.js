@@ -157,7 +157,7 @@ const rows = evidence.forIssue(ev1.issue.id);
 assert.deepEqual(rows.map((r) => r.kind).sort(), ['image', 'log', 'video']);
 assert.ok(rows.filter((r) => r.kind !== 'video').every((r) => r.url.startsWith('https://discord.com/channels/')), 'files point at the permanent thread message, not the expiring CDN link');
 const embed = renderIssue(issues.get(ev1.issue.id)).embeds[0].toJSON();
-assert.ok(embed.fields.some((f) => f.name.startsWith('📎 Evidence (3)')), 'evidence shows on the issue');
+assert.ok(embed.fields.some((f) => f.name.startsWith('📎 Screenshots, logs & links (3)')), 'evidence shows on the issue');
 assert.equal(await attachEvidence(fakeClient, ev1.issue, 'p1', ev1.reportId, {}), 0);
 
 // too-large files fall back to posting links; evidence still saved
@@ -165,7 +165,7 @@ const failing = { channels: { fetch: async () => ({ id: 'thread1', send: async (
 const ev2 = fileReport({ guildId: 'g4', userId: 'p2', text: 'Screen goes black when switching between lobbies quickly' });
 issues.setThread(ev2.issue.id, 'thread1');
 assert.equal(await attachEvidence(failing, ev2.issue, 'p2', ev2.reportId, { files: [{ name: 'big.mp4', url: 'https://cdn.discordapp.com/big.mp4', contentType: 'video/mp4' }] }), 1);
-assert.ok(sent.at(-1).content.includes('Could not re-host'));
+assert.ok(sent.at(-1).content.includes("couldn't be saved here"), 'oversized files fall back to links with an explanation');
 
 // evidence follows its report on split, follows the issue on merge, and is purged with the report
 const sp = splitReport(ev1.reportId);
@@ -246,7 +246,7 @@ const { boardPayload } = await import('./board.js');
 const board = boardPayload(G);
 assert.equal(board.embeds.length, 2);
 const names = board.embeds.flatMap((e) => e.toJSON().fields.map((f) => f.name));
-assert.deepEqual(names.map((n) => n.replace(/^\S+\s/, '').replace(/ \(\d+\)/, '')), ['New', 'Seen', 'Fix in progress', 'Fixed', 'Cannot reproduce', "Won't fix"]);
+assert.deepEqual(names.map((n) => n.replace(/^\S+\s/, '').replace(/ \(\d+\)/, '')), ['New', 'Seen', 'Being fixed', 'Fixed', "Can't reproduce", "Won't fix"]);
 const newCol = board.embeds[0].toJSON().fields[0].value;
 assert.ok(newCol.includes(`#${mic.issue.id}`), 'open issues appear as cards in their column');
 assert.ok(board.components.length === 2, 'card picker + buttons');

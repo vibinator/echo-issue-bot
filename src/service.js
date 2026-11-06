@@ -185,7 +185,7 @@ export async function syncMessage(client, issue, channelId) {
       card = await thread.send(payload);
       issues.setMessage(fresh.id, thread.id, card.id);
       issues.setThread(fresh.id, thread.id);
-      await thread.send('💬 Use this thread for logs, screenshots and discussion about this issue.');
+      await thread.send('💬 This is the discussion space for this issue. Extra details, logs and screenshots are welcome here, and developers will post updates as they work on it.');
     } catch (e) {
       // No permission to create threads: fall back to a normal channel message so the issue is never lost.
       console.error('Could not create the issue thread (give the bot Create Public Threads):', e.message);
@@ -214,7 +214,7 @@ export async function attachEvidence(client, issue, userId, reportId, { links = 
   let thread = null;
   if (fresh?.thread_id) { try { thread = await client.channels.fetch(fresh.thread_id); } catch { /* no thread */ } }
 
-  const header = [`📎 Evidence from <@${userId}> (report #${reportId})`, ...links.map((l) => `• ${l}`)];
+  const header = [`📎 <@${userId}> added screenshots, logs or links (report #${reportId})`, ...links.map((l) => `• ${l}`)];
   const noPing = { parse: [] };
   let posted = null;
   if (thread) {
@@ -223,7 +223,7 @@ export async function attachEvidence(client, issue, userId, reportId, { links = 
     } catch {
       // Too large to re-host? Post the links so the evidence is still reachable (the Discord links are temporary).
       posted = await thread.send({
-        content: [...header, ...(files.length ? ['⚠️ Could not re-host the files (too large?). Temporary links:', ...files.map((f) => `• ${f.url}`)] : [])].join('\n'),
+        content: [...header, ...(files.length ? ['⚠️ The files couldn\'t be saved here (they may be too large). These links stop working after a while, so for big videos please paste a link instead:', ...files.map((f) => `• ${f.url}`)] : [])].join('\n'),
         allowedMentions: noPing,
       }).catch(() => null);
     }
@@ -267,7 +267,7 @@ export async function retireMessage(client, issue, intoId) {
   if (!issue) return;
   try {
     const ch = await client.channels.fetch(issue.channel_id);
-    await (await ch.messages.fetch(issue.message_id)).edit({ content: `🔀 Merged into **#${intoId}**.`, embeds: [], components: [] });
+    await (await ch.messages.fetch(issue.message_id)).edit({ content: `🔀 This issue was merged into **#${intoId}** – please continue the discussion there.`, embeds: [], components: [] });
   } catch { /* gone */ }
   if (issue.thread_id) {
     try { const t = await client.channels.fetch(issue.thread_id); await t.setLocked(true); await t.setArchived(true); } catch { /* gone */ }
@@ -346,7 +346,7 @@ export async function postChangelog(client, issue, channelId) {
   const embed = new EmbedBuilder().setColor(0x2ecc71).setTitle(trunc(`✅ Fixed: ${issue.title}`, 256))
     .addFields(
       { name: 'Category', value: issue.category, inline: true },
-      { name: 'Fixed in', value: issue.fixed_version ? `\`${issue.fixed_version}\`` : 'Next update', inline: true },
+      { name: 'Fixed in', value: issue.fixed_version ? `\`${issue.fixed_version}\`` : 'The next update', inline: true },
       { name: 'Reported by', value: `${stats.users} player${stats.users === 1 ? '' : 's'}`, inline: true },
     ).setTimestamp();
   if (issue.dev_note) embed.setDescription(trunc(issue.dev_note, 1000));

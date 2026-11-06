@@ -26,10 +26,10 @@ export function buildDigest(guildId, staleDays = 7) {
     .setDescription(`**${open.length}** open · **${newIssues.length}** new this week · **${fixed.length}** fixed this week`)
     .addFields(
       { name: '🆕 New this week', value: lines(newIssues, fmt) },
-      { name: '🔥 Top 5 by affected players', value: lines(top, fmt, 5) },
+      { name: '🔥 Most-reported issues (top 5)', value: lines(top, fmt, 5) },
       { name: '✅ Fixed this week', value: lines(fixed, (i) => `**#${i.id}** ${trunc(i.title, 55)}${i.fixed_version ? ` · \`${i.fixed_version}\`` : ''}`) },
-      { name: `⏳ No activity for ${staleDays}+ days (New / ${STATUSES.in_progress.label})`, value: lines(stale, fmt) },
-      { name: '🚨 Critical/High with no owner', value: lines(needsOwner, fmt) },
+      { name: `⏳ Gone quiet – nothing for ${staleDays}+ days (New or ${STATUSES.in_progress.label})`, value: lines(stale, fmt) },
+      { name: '🚨 Urgent issues nobody is working on', value: lines(needsOwner, fmt) },
     ).setTimestamp();
 }
 
