@@ -554,8 +554,9 @@ function dupPayload(i) {
 
 async function doMerge(i, from, into) {
   await retireMessage(client, from, into.id);
-  mergeIssues(from.id, into.id);
+  const moved = mergeIssues(from.id, into.id);
   await syncMessage(client, issues.get(into.id), trackerChannel(i));
+  await tellMerged(issues.get(into.id), moved);
   await threadSay(client, into, `🔀 Issue #${from.id} (“${trunc(from.title, 80)}”) was merged into this one.`);
 }
 
@@ -567,7 +568,15 @@ const STATUS_DM = {
   wont_fix: (t) => `🚫 The developers have decided not to fix **${t}**.`,
 };
 
-async function applyStatus(i, issue, status, { version, note } = {}) {
+/** People whose report was merged into an issue that already has an answer (fixed, being fixed, can't reproduce, won't fix) are told that answer straight away. */
+async function tellMerged(into, userIds) {
+  if (!STATUS_DM[into.status] || !userIds.length) return;
+  const update = into.status === 'fixed' && into.fixed_version ? `\nUpdate to version \`${into.fixed_version}\` (or newer) to get the fix.` : '';
+  const devNote = into.dev_note ? `\n> ${into.dev_note}` : '';
+  await notifyReporters(client, into, `🔀 Your report was merged into #${into.id}, which is already known.\n${STATUS_DM[into.status](`#${into.id} – ${trunc(into.title, 120)}`)}${update}${devNote}\n_You can turn these messages off under **My reports**._`, userIds).catch(() => {});
+}
+
+async function applyStatus(i, issue, status,{ version, note } = {}) {
   const old = issue.status;
   issues.setStatus(issue.id, status, i.user.id, version);
   if (note) issues.setNote(issue.id, note, i.user.id);
@@ -628,6 +637,7 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
       { name: 'Status', value: `${STATUSES[fresh.status]?.emoji ?? ''} ${STATUSES[fresh.status]?.label ?? fresh.status}`, inline: true },
       { name: 'Players affected', value: String(stats.users), inline: true },
     );
+  if (fresh.dev_note) embed.addFields({ name: 'Developer note', value: trunc(fresh.dev_note, 1000) });
   return {
     content: `🔗 **We found a similar issue, so your report was added to it.**\nIf that's not the same problem, press **Make it a separate issue**.${res.reopened ? '\n⚠️ That issue had been marked fixed, so it has been reopened for the developers to look at again.' : ''}${where}${evidenceLine}${next}`,
     embeds: [embed],

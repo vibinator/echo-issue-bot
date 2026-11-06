@@ -126,7 +126,9 @@ export function rematchReport(reportId, actorId, threshold = MATCH_THRESHOLD) {
   return { action, from: cur, to: issues.get(to.id), fromDeleted, reopened, score };
 }
 
+/** Returns the ids of the people who reported or followed the merged-away issue, so they can be told where it stands. */
 export function mergeIssues(fromId, intoId) {
+  const moved = [...new Set([...reports.forIssue(fromId).map((r) => r.user_id), ...watchers.forIssue(fromId)])];
   reports.moveAll(fromId, intoId);
   evidence.moveAll(fromId, intoId);
   watchers.moveAll(fromId, intoId);
@@ -134,6 +136,7 @@ export function mergeIssues(fromId, intoId) {
   events.add(intoId, 'merged', null, `#${fromId} merged into this issue`);
   issues.touch(intoId);
   issues.delete(fromId);
+  return moved;
 }
 
 /**
@@ -371,9 +374,9 @@ export async function purgeExpired(client, guildId, days) {
 }
 
 /** DM everyone who reported or follows the issue and hasn't turned DMs off (best effort). */
-export async function notifyReporters(client, issue, text) {
+export async function notifyReporters(client, issue, text, only = null) {
   const ids = [...new Set([...reports.forIssue(issue.id).map((r) => r.user_id), ...watchers.forIssue(issue.id)])]
-    .filter((id) => id !== '0' && !prefs.dmOff(id)).slice(0, 100);
+    .filter((id) => (!only || only.includes(id)) && id !== '0' && !prefs.dmOff(id)).slice(0, 500);
   for (const id of ids) {
     try { await (await client.users.fetch(id)).send(text); } catch { /* DMs closed */ }
   }

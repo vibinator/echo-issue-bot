@@ -496,8 +496,14 @@ console.log('10. dev tools');
   check(has(r.out.payload, /Backup saved/), 'a backup can be made on demand');
   // merge i2 into i1 from the issue card
   const c2 = cardOf(i2.id);
+  const mergedUsers = [...new Set(db.reports.forIssue(i2.id).map((x) => x.user_id))].filter((u) => !db.reports.forIssue(i1.id).some((x) => x.user_id === u) && !db.prefs.dmOff(u));
+  db.issues.setStatus(i1.id, 'fixed', null, '9.9.9'); db.issues.setNote(i1.id, 'Reinstall the launcher', null);
+  sim.dms.length = 0;
   r = await press(dev, c2, `merge:${i2.id}`);
   r = await choose(dev, r.screen, `mergeto:${i2.id}`, [String(i1.id)]);
+  await new Promise((res) => setTimeout(res, 50));
+  check(mergedUsers.length > 0 && mergedUsers.every((u) => sim.dms.some((d) => d.to === u && /merged into/.test(d.content) && /now fixed/.test(d.content) && /9\.9\.9/.test(d.content) && /Reinstall the launcher/.test(d.content))), 'people merged into an already fixed issue are told the fix, version and developer note');
+  db.issues.setStatus(i1.id, 'new', null);
   check(db.issues.get(i2.id) === undefined && r.i.responses[0].type === 'deferUpdate', 'merge works (answering first)');
   check(issuesCh.threadsList.length === 0 && issuesCh.sent.length === 0, 'merging posts nothing in the channel');
 }
