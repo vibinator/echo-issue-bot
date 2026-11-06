@@ -28,7 +28,7 @@ The panel's **🛠️ Developer** button opens a hidden menu: Board, Review dupl
 - 🔍 Review duplicates · 📊 Digest (posts to the digest channel) · 📤 Export CSV · 💾 Back up now · ⚙️ Settings.
 
 ## Roles
-There are two roles. **Developers** (the `dev_role` from `/setup`, or anyone with Manage Server) can do everything on the developer side: change an issue's status, priority and owner, add notes, merge, manage articles and use the Developer menu. `REPORTER_ROLE_ID` (optional) – only this role, plus developers, can send reports; leave it empty to let everyone report. Everyone can browse issues and manage their own reports.
+There are three roles. **Knowledge article editors** (optional: `/setup article_role:@Role`, or `ARTICLE_ROLE_ID`) can create, edit, enable/disable and delete knowledge articles, see how well they work and use Test matching – through the same **🛠️ Developer** button, which shows them only the article tools – and use **Make knowledge article** on an issue. They get nothing else: no board, settings, export, status changes or attachments. **Developers** (the `dev_role` from `/setup`, or anyone with Manage Server) can do everything on the developer side: change an issue's status, priority and owner, add notes, merge, manage articles and use the Developer menu. `REPORTER_ROLE_ID` (optional) – only this role, plus developers, can send reports; leave it empty to let everyone report. Everyone can browse issues and manage their own reports.
 
 ## Automatic
 Weekly digest · changelog post when an issue is Fixed · daily DB backup (newest 14 kept) · report cooldown · regressions reopen Fixed issues · optional retention (`/setup retention_days:365` deletes closed issues with no activity for a year).

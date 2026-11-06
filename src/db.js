@@ -116,12 +116,13 @@ addColumn('settings', 'board_channel_id', 'TEXT');
 addColumn('settings', 'board_message_id', 'TEXT');
 addColumn('reports', 'edited_at', 'INTEGER');
 addColumn('evidence', 'path', 'TEXT'); // uploaded files live in the private evidence folder; this is their relative path
+addColumn('settings', 'article_role_id', 'TEXT');    // can manage knowledge articles without being a full developer
 addColumn('settings', 'panel_channel_id', 'TEXT');   // the one public control-panel message
 addColumn('settings', 'panel_message_id', 'TEXT');
 addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = keep closed issues until deleted by hand
 
 const now = () => Date.now();
-const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'panel_channel_id', 'panel_message_id'];
+const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'article_role_id', 'panel_channel_id', 'panel_message_id'];
 
 /** What is stored for a server – shown after /setup so you can see nothing was lost. */
 export const summary = (guild) => ({

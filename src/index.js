@@ -36,6 +36,7 @@ const commands = [
     .addChannelOption((o) => o.setName('issues_channel').setDescription('Channel where each issue gets its own thread').addChannelTypes(ChannelType.GuildText).setRequired(true))
     .addRoleOption((o) => o.setName('dev_role').setDescription('Developer role – can manage issues and use the Developer menu').setRequired(true))
     .addRoleOption((o) => o.setName('reporter_role').setDescription('Only this role can send reports (leave empty to keep the current setting)'))
+    .addRoleOption((o) => o.setName('article_role').setDescription('Can create, edit and delete knowledge articles without being a developer'))
     .addIntegerOption((o) => o.setName('retention_days').setDescription('Delete closed issues after this many days of no activity (0 = keep them)').setMinValue(0).setMaxValue(3650)),
 ].map((c) => c.toJSON());
 
@@ -60,6 +61,22 @@ function canReport(i) {
   const role = reporterRole(i.guildId);
   return !role || isDev(i) || !!i.member?.roles?.cache?.has(role);
 }
+/** Role that may manage knowledge articles without being a full developer: the /setup value, else ARTICLE_ROLE_ID from .env. */
+const articleRole = (guildId) => settings.get(guildId)?.article_role_id || process.env.ARTICLE_ROLE_ID || null;
+
+/** Developers can always manage knowledge articles; so can members of the article editor role. Nothing else is unlocked. */
+function canManageArticles(i) {
+  const role = articleRole(i.guildId);
+  return isDev(i) || (!!role && !!i.member?.roles?.cache?.has(role));
+}
+const noArticleAccess = (i) => i.reply({
+  content: articleRole(i.guildId)
+    ? `🔒 Knowledge articles can only be changed by developers and members with the <@&${articleRole(i.guildId)}> role.`
+    : '🔒 Knowledge articles can only be changed by developers.',
+  allowedMentions: { parse: [] },
+  flags: EPH,
+});
+
 const noReportAccess = (i) => i.reply({
   content: `🔒 Sending reports is limited to members with the <@&${reporterRole(i.guildId)}> role. You can still browse issues and read the answers.`,
   allowedMentions: { parse: [] },
@@ -138,6 +155,15 @@ function devMenuPayload() {
       row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊')),
       row(btn('dev:export', 'Export CSV', '📤'), btn('dev:backup', 'Back up now', '💾')),
     ],
+  };
+}
+
+/** What an article editor (not a developer) sees behind the panel's Developer button: just the article tools. */
+function articleMenuPayload() {
+  return {
+    content: '**📚 Knowledge article editor** – only you can see this. You can create, edit, disable and delete the answers players are shown, and see how well they work.',
+    embeds: [],
+    components: [row(btn('dev:articles', 'Knowledge articles', '📚', ButtonStyle.Primary))],
   };
 }
 
@@ -351,6 +377,7 @@ function settingsPayload(guildId) {
       `• Quiet issues: flagged after **${c.stale_days} days** without activity`,
       `• Pause between a player's reports: **${c.cooldown_sec ? `${c.cooldown_sec} seconds` : 'none'}**`,
       `• Who can send reports: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} _(change with \`/setup\`)_ · developers can change an issue's status`,
+      `• Who can edit knowledge articles: developers${articleRole(guildId) ? ` and <@&${articleRole(guildId)}>` : ''} _(editor role: \`/setup article_role:\`)_`,
       `• Closed issues are ${c.retention_days ? `deleted after **${c.retention_days} days** without activity` : '**kept** until deleted by hand'} _(change with \`/setup retention_days:\`)_`,
       `• Weekly digest goes to: ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'} · fixed-issue announcements go to: ${c.changelog_channel_id ? `<#${c.changelog_channel_id}>` : '_not set_'}`,
     ].join('\n'),
@@ -642,6 +669,8 @@ client.on('interactionCreate', async (i) => {
       settings.set(i.guildId, ch.id, role.id); // upsert: every other saved setting is kept
       const reporter = i.options.getRole('reporter_role');
       if (reporter) settings.update(i.guildId, { reporter_role_id: reporter.id });
+      const articleR = i.options.getRole('article_role');
+      if (articleR) settings.update(i.guildId, { article_role_id: articleR.id });
       const retention = i.options.getInteger('retention_days');
       if (retention !== null) settings.update(i.guildId, { retention_days: retention });
       // Only ONE public message: replace the previous panel (and any old live board) instead of adding another.
@@ -674,6 +703,7 @@ client.on('interactionCreate', async (i) => {
           `• Each issue gets its own thread in <#${ch.id}>`,
           `• Developers: <@&${role.id}> (and anyone with Manage Server) – they can change an issue's status and use the Developer menu`,
           `• Who can send reports: ${rr ? `<@&${rr}>` : 'everyone'}`,
+          `• Who can edit knowledge articles: developers${articleRole(i.guildId) ? ` and <@&${articleRole(i.guildId)}>` : ' (add a separate editor role with `/setup article_role:`)'}`,
           ...(kept ? [kept.trim()] : []),
           ...(permissionWarning ? [permissionWarning.trim()] : []),
           '',
@@ -1103,7 +1133,7 @@ client.on('interactionCreate', async (i) => {
 
     // ----- knowledge articles (developers) -----
     if (id === 'art_pick' || id.startsWith('art:') || (id.startsWith('mkart:') && i.isButton())) {
-      if (!isDev(i)) return devOnly(i, 'manage knowledge articles');
+      if (!canManageArticles(i)) return noArticleAccess(i);
       const own = (a) => a && a.guild_id === i.guildId;
       const artFromId = () => articles.get(Number(id.split(':')[2]));
       if (id.startsWith('mkart:')) {
@@ -1168,6 +1198,12 @@ client.on('interactionCreate', async (i) => {
     if (i.isButton() && (id === 'board:refresh' || id === 'board:mine')) {
       if (!isDev(i)) return devOnly(i, 'use the board');
       return show(i, id === 'board:refresh' ? boardPayload(i.guildId) : boardPayload(i.guildId, { owner: i.user.id, title: '🙌 Your cards' }));
+    }
+
+    // ----- article editors (not developers) get only the knowledge-article tools behind the same button -----
+    if (i.isButton() && (id === 'dev:menu' || id === 'dev:articles') && !isDev(i)) {
+      if (!canManageArticles(i)) return id === 'dev:articles' ? noArticleAccess(i) : devOnly(i, 'use these tools');
+      return show(i, id === 'dev:menu' ? articleMenuPayload() : articlesPayload(i.guildId));
     }
 
     // ----- developer menu (one button on the panel; everything below is hidden) -----
@@ -1264,7 +1300,7 @@ client.once('clientReady', async () => {
 export {
   panelPayload, devMenuPayload, reportTypePayload, reportModal, quickModal, meTooModal, editModal, addEvidenceModal, noteModal, fixedModal,
   faqPayload, faqAnswerPayload, browsePayload, settingsPayload, dupPayload, minePayload, trackPayload, articlesPayload, articleView,
-  articleStats, articleModal, commands, timeline, failNote,
+  articleStats, articleModal, commands, timeline, failNote, canManageArticles, isDev, articleMenuPayload,
 };
 
 // A network blip (for example a DNS lookup failing right at startup) must not take the bot down: keep retrying.

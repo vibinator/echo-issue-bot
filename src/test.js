@@ -586,4 +586,24 @@ const down = sg('launcher uses lots of cpu', [], 3, 'bug', new Map([[base[0].id,
 assert.ok(up[0].score > base[0].score && down[0].score < base[0].score, 'feedback nudges the score up or down');
 assert.ok(up[0].score <= 1);
 
+// ---- who may manage knowledge articles: developers, plus an optional editor role that unlocks nothing else ----
+const fakeMember = (roleIds, manageGuild = false) => ({
+  guildId: 'gA',
+  memberPermissions: { has: () => manageGuild },
+  member: { roles: { cache: { has: (id) => roleIds.includes(id) } } },
+});
+S2.set('gA', 'chan', 'devrole');
+const devUser = fakeMember(['devrole']);
+const admin = fakeMember([], true);
+const editor = fakeMember(['editorrole']);
+const player = fakeMember(['playerrole']);
+assert.ok(ui.canManageArticles(devUser) && ui.canManageArticles(admin), 'developers can manage articles');
+assert.ok(!ui.canManageArticles(editor), 'an editor role that is not configured gives nothing');
+S2.update('gA', { article_role_id: 'editorrole' });
+assert.ok(ui.canManageArticles(editor), 'members of the editor role can manage articles');
+assert.ok(!ui.canManageArticles(player), 'other members still cannot');
+assert.ok(!ui.isDev(editor), 'being an editor does not make someone a developer (board, settings, export… stay locked)');
+const editorMenu = JSON.parse(JSON.stringify(ui.articleMenuPayload()));
+assert.deepEqual(editorMenu.components.flatMap((r) => r.components.map((c) => c.custom_id)), ['dev:articles'], 'the editor menu holds only the article tools');
+
 console.log('All tests passed.');
