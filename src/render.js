@@ -1,8 +1,9 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder,
 } from 'discord.js';
-import { issues, reports } from './db.js';
+import { evidence, issues, reports } from './db.js';
 import { relatedIssues } from './related.js';
+import { KIND_EMOJI } from './evidence.js';
 
 export const STATUSES = {
   new:               { label: 'New',                emoji: '🆕', color: 0x95a5a6 },
@@ -35,6 +36,7 @@ export function renderIssue(issue) {
     .addFields(
       { name: 'Status', value: `${st.emoji} ${st.label}${issue.status === 'fixed' && issue.fixed_version ? ` in \`${issue.fixed_version}\`` : ''}`, inline: true },
       { name: 'Priority', value: `${pr.emoji} ${pr.label}`, inline: true },
+      { name: 'Type', value: issue.kind === 'install' ? '🔧 Install issue' : '🐞 Bug in game', inline: true },
       { name: 'Category', value: issue.category, inline: true },
       { name: 'Owner', value: issue.owner_id ? `<@${issue.owner_id}>` : '_Unassigned_', inline: true },
       { name: 'Affected players', value: `${stats.users} (${stats.total} report${stats.total === 1 ? '' : 's'})`, inline: true },
@@ -48,9 +50,17 @@ export function renderIssue(issue) {
       name: 'Latest reports',
       value: trunc(latest.map((r) => {
         const meta = [r.platform, r.version].filter(Boolean).map((x) => trunc(x, 30)).join(' · ');
-        return `• <@${r.user_id}>${meta ? ` _(${meta})_` : ''}: ${trunc(r.text.replace(/\s+/g, ' '), 180)}`;
+        return `• ${r.user_id === '0' ? '_removed user_' : `<@${r.user_id}>`}${meta ? ` _(${meta})_` : ''}${r.edited_at ? ' ✏️' : ''}: ${trunc(r.text.replace(/\s+/g, ' '), 180)}`;
       }).join('\n'), 1024),
     });
+  }
+  const ev = evidence.forIssue(issue.id);
+  // (evidence list is shown after the latest reports)
+  if (ev.length) {
+    const shown = ev.slice(0, 5).map((e) =>
+      `• ${KIND_EMOJI[e.kind] ?? '📎'} [${trunc(e.name, 40).replace(/[[\]]/g, '')}](${e.url.replace(/\)/g, '%29')}) — <@${e.user_id}>`);
+    if (ev.length > 5) shown.push(`…and ${ev.length - 5} more – see the thread`);
+    embed.addFields({ name: `📎 Evidence (${ev.length})`, value: trunc(shown.join('\n'), 1024) });
   }
   const related = relatedIssues(issue).map((r) => issues.get(r.id)).filter(Boolean);
   if (related.length) {
@@ -76,8 +86,16 @@ export function renderIssue(issue) {
     btn('rmrep', 'Remove report', '🗑️'),
   );
 
+  const more = new ActionRowBuilder().addComponents(
+    btn('follow', 'Follow', '🔔'),
+    btn('editmine', 'Edit my report', '✏️'),
+    btn('addev', 'Add evidence', '📎'),
+    btn('history', 'History', '📜'),
+    btn('mkart', 'Make article', '📚'),
+  );
+
   return {
     embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu), buttons],
+    components: [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu), buttons, more],
   };
 }

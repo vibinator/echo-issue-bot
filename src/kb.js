@@ -80,8 +80,119 @@ export const KB = [
     id: 'echoxr_exit', title: 'EchoXR won\'t start (no OpenXR runtime / no headset)',
     symptoms: 'echoxr will not start exits immediately no openxr runtime no headset detected steamvr not running monado wivrn headset asleep exit code',
     pattern: /openxr runtime|no headset detected/i,
-    fix: '• **Exit code 5** – no OpenXR runtime answered: start **SteamVR** (or Monado / WiVRn on Linux) *before* launching.\n• **Exit code 6** – no headset detected: connect it and wake it up, and check it works in SteamVR first.\n• **Codes 2, 3, 4, 7** – install problem: check `bin/win10/EchoXR/launcher.log` and `runtime.log`.',
+    fix: '• **5** – no OpenXR runtime answered (or, under Proton, its VR service isn\'t running): start **SteamVR** (or Monado / WiVRn) *before* launching.\n• **6** – the runtime has no headset: connect it and wake it up (asleep for more than 15 s counts as missing).\n• **2** – `EchoXR.exe` isn\'t next to `echovr.exe` in `bin\\win10`.\n• **3** – `EchoXR\\LibOVRRT64_1.dll` or `openxr_loader.dll` is missing.\n• **4** – `echovr_openxr.exe` couldn\'t be made · **7** – Echo couldn\'t be started.\n• Check `EchoXR\\launcher.log` and `runtime.log` and attach them to your report.',
     source: XR,
+  },
+  {
+    id: 'echoxr_build', title: 'EchoXR refuses the game binary',
+    symptoms: 'echoxr refuses echovr exe wrong build version not supported patch bytes do not match unsupported build size',
+    fix: '• EchoXR only patches the Echo VR build whose `echovr.exe` is **35,397,120 bytes** (May 2023) and refuses anything else instead of breaking the game.\n• Install/repair the supported build with the Echo VR Launcher, then start EchoXR again. The five event builds (Halloween/Christmas 2017 & 2018, Summer 2019) go in `bin\\win7`.',
+    source: XR,
+  },
+  {
+    id: 'echoxr_logs', title: 'Which logs to send with a report',
+    symptoms: 'where are the logs which logs should i send log files echoxr launcher log runtime log platform log r14logs bug report crash logs',
+    fix: '• **EchoXR:** `bin\\win10\\EchoXR\\launcher.log`, `runtime.log` and `platform.log`.\n• **Echo VR itself:** `_local\\r14logs\\*.log`.\n• **Launcher:** use **Upload logs** (it collects Quest logs automatically).\n• **Linux:** `~/.local/share/echoxr/echoxr-linux.log` (set `ECHOXR_DEBUG=1` for Proton/OpenXR loader logs).\nAttach them in the issue\'s thread after reporting.',
+    source: XR,
+  },
+  {
+    id: 'pc_install_howto', title: 'How to install Echo VR on PC',
+    symptoms: 'how do i install echo vr on pc windows installer download install button where to download how to play echo vr computer',
+    fix: '1. Download the Echo VR installer and run it, going through its install steps.\n2. On the main page click **Install** on the left, then the big green **install** button.\n3. Wait for it to finish, then play.\n📺 Video guide: https://www.youtube.com/watch?v=6v6J5gfLlek',
+    source: 'Echo VR PC install guide',
+  },
+  {
+    id: 'quest_install_howto', title: 'How to install Echo VR on Quest',
+    symptoms: 'how do i install echo vr on quest installer cannot find installer unknown sources package installer oculus browser downloads file location install echovr headset standalone',
+    fix: '1. In the **Oculus Browser** (inside VR) open the install guide and download the installer.\n2. Click the ⬇ icon → **See all downloads** → ⋯ next to the Echo VR installer → **Open File Location**.\n3. In the Files app click ⋯ → **Open with → Package Installer**, allow the permission it asks for, then **Install** → **Open**. (If you pressed Cancel, find the installer again under *Unknown sources* in your games and apps.)\n4. In the installer pick **Install EchoVR**, then **Download game data**, wait for it to finish and press **Play**.\n📺 Video: https://www.youtube.com/watch?v=hGPEQAGB148\nHelp: Echo VR Lounge Discord → #quest-install',
+    source: 'Echo VR Quest install guide',
+  },
+  {
+    id: 'quest_install_vanishes', title: 'Quest: tapping Install does nothing (popup vanishes)',
+    symptoms: 'quest game will not install cancel or install popup vanishes click install nothing happens installer does nothing alt account other profile owned echo before shutdown',
+    fix: 'If the **Cancel / Install** popup disappears and nothing happens:\n• If you **owned Echo VR before the shutdown**, install it through **Meta** (the store), then uninstall it with the **installer app** itself and retry.\n• If you didn\'t own it, you probably have an **alt account** on the headset – sign in to each account and **uninstall Echo VR on all of them**.\n• Then go back to your **main account** and install Echo VR again.',
+    source: 'Echo VR community support (Quest)',
+  },
+  {
+    id: 'quest_parse_package', title: 'Quest: "There was a problem parsing the package"',
+    symptoms: 'quest error whilst parsing the package problem parsing the package apk install failed files app permission package installer',
+    pattern: /problem parsing the package|error whilst parsing the package/i,
+    fix: 'This happens when the **Files** app doesn\'t have permission to install APKs.\n1. In the Files app, tap **Quest 3 / 3s / 2** on the left.\n2. Open the **Downloads** folder and find **EchoVR Installer**.\n3. Tap ⋯ → **Open with → Package Installer**.\n4. **Grant the permission** it asks for, then install.',
+    source: 'Echo VR community support (Quest)',
+  },
+  {
+    id: 'quest_data_stuck', title: 'Quest: game data download looks stuck',
+    symptoms: 'quest game data download stuck frozen not moving progress bar stopped download game data stays at same percent slow',
+    fix: '1. **Wait a few extra minutes** – it can look stuck while it is still working.\n2. If it still doesn\'t move, **restart your Wi-Fi or the headset** and try again.\n3. If that doesn\'t work, the connection is most likely **down or blocked** (for example by a router, firewall or network filter).',
+    source: 'Echo VR community support (Quest)',
+  },
+  {
+    id: 'quest_installer_conflict', title: 'Quest: installer won\'t update ("conflicts with an existing package")',
+    symptoms: 'quest installer will not update conflicts with an existing package app not installed conflict update installer fails existing package',
+    pattern: /conflicts? with an existing package/i,
+    fix: '1. Go to **Unknown sources** on your headset, find the **EchoVR installer** and tap ⋯ → **Uninstall**.\n2. **Reinstall the installer from EchoVRCE.**\n3. Open the installer.',
+    source: 'Echo VR community support (Quest)',
+  },
+  {
+    id: 'failed_to_load_level', title: 'PC: "Failed To Load Level" (Windows 11 Smart App Control)',
+    symptoms: 'pc failed to load level error windows 11 smart app control blocks echo vr game wont start antivirus blocking exclusion defender',
+    pattern: /failed to load level/i,
+    fix: 'This is caused by Windows 11 **Smart App Control**.\n**1. Turn it off:** Start → **Settings → Privacy & security → Windows Security → App & browser control → Smart App Control settings → Off** (confirm if asked).\n\n**2. Still failing? Add Echo VR to your antivirus exclusions:** Start → *Windows Security* → **Virus & threat protection → Manage settings → Add or remove exclusions → + Add an exclusion**, then choose the Echo VR **folder** (or the `.exe` file / process). Confirm the UAC prompt.\n\n_Note: turning protection off lowers your PC\'s security, so only do this for software you trust._',
+    source: 'Echo VR community support (PC)',
+  },
+  {
+    id: 'steam_players', title: 'Playing on Steam (PC): which option to choose',
+    symptoms: 'steam player pc how to play echo vr on steam which option echoxr hands finger tracking hand tracking mods section launcher steamvr',
+    fix: '• If you play on **Steam**, choose the **EchoXR** option in the Echo VR Launcher.\n• It comes with **EchoXR Hands**: full **finger tracking**, which other players with the mod can see. Find it in the **Mods** section on the left of the launcher.',
+    source: 'Echo VR community support (PC)',
+  },
+  {
+    id: 'quest_mic_permission', title: 'Quest: microphone doesn\'t work in Echo VR',
+    symptoms: 'quest microphone not working no mic in echo vr cannot talk nobody can hear me mic permission grant permissions installer',
+    fix: '• Open the Echo VR **installer** app and tap **Grant EchoVR permissions**, then allow microphone access.\n• Restart Echo VR afterwards.',
+    source: 'Echo VR Quest install guide',
+  },
+  {
+    id: 'quest_uninstall', title: 'How to uninstall Echo VR on Quest',
+    symptoms: 'how to uninstall echo vr quest remove echo vr completely delete game uninstall installer',
+    fix: '• Open the Echo VR installer app and tap **Uninstall Echo VR** – this removes it entirely.',
+    source: 'Echo VR Quest install guide',
+  },
+  {
+    id: 'spark_windows', title: 'Spark Mini on Windows',
+    symptoms: 'spark mini not working on windows pc spark app which spark to use',
+    fix: '• **Spark Mini** is the lighter app for **non-Windows** devices. On Windows use the main **Spark** app, which has the larger feature set.',
+    source: 'Spark-Mini README',
+  },
+  {
+    id: 'cosmetic_quest_access', title: 'Cosmetic editor can\'t read/write Quest game files',
+    symptoms: 'cosmetic editor quest cannot access game files all files access permission adb repack apply fails android data',
+    fix: '• The Quest build needs **All files access** to read and write the game files. It can be granted from a PC with **ADB**.\n• Quest mode only **repacks** (extraction isn\'t supported there).',
+    source: 'cosmetic-editor README',
+  },
+  {
+    id: 'cosmetic_mod_refused', title: 'Cosmetic editor refuses a mod zip',
+    symptoms: 'cosmetic editor mod zip refused wrong platform quest pc mod not applying repack staged cosmetics missing database',
+    fix: '• A mod built for the **other platform** (PC vs Quest) is refused.\n• A mod\'s own cosmetic database is skipped on purpose – the editor writes its own on every **Repack & Apply**.\n• **Revert** restores the original manifest and removes only the chunks the editor added.',
+    source: 'cosmetic-editor README',
+  },
+  {
+    id: 'texture_editor_quest', title: 'Texture editor with Quest standalone',
+    symptoms: 'texture editor quest standalone data decompress compress cosmetic texture not working quest data zip',
+    fix: '• For Quest standalone the editor needs the Quest data download (`_data.zip`). Use the in-app **tutorial** (top left) if you get stuck; `Examples.zip` has every cosmetic texture as a reference.',
+    source: 'EchoVR-Texture-Editor README',
+  },
+  {
+    id: 'mesh_parts_vanish', title: 'Mesh parts disappear at a distance (Blender export)',
+    symptoms: 'blender mesh export parts disappear far away chassis bone lod culling vertex groups model vanishes distance evr mesh importer',
+    fix: '• Detail bones are disabled at distance on chassis models. Delete the vertex groups, create one group named **`Bone.000`** and assign every vertex to it at weight **1.0**.\n• Exports may exceed the original file size, up to 65,535 vertices per submesh.',
+    source: 'evr-mesh-importer README',
+  },
+  {
+    id: 'lone_echo_import', title: 'Lone Echo import looks doubled or too bright',
+    symptoms: 'lone echo blender import duplicate geometry stacked lods too bright double lit lights opaque materials missing textures corpus index',
+    fix: '• Import **LOD 0** only – "All levels" stacks duplicate geometry.\n• Lights are off by default; importing all of them is ~7× too bright (the baked lightmap isn\'t auto-wired).\n• If materials look opaque, generate the corpus indexes once from your install.',
+    source: 'lone_echo_blender README',
   },
   {
     id: 'linux_ovr_dll', title: 'Linux: EchoXR ignored because of LibOVRPlatform64_1.dll',
@@ -164,12 +275,45 @@ export const KB = [
   },
 ];
 
-export const KB_THRESHOLD = 0.35;
+export const KB_THRESHOLD = 0.35;     // built-in answers
+export const ARTICLE_THRESHOLD = 0.3; // developer-written articles are more precise, so they trigger a bit sooner
 
-/** Returns { entry, score } for the best-matching known problem, or null. */
+/**
+ * Suggested answers for a report, best first (at most `max`).
+ * `custom` = the server's enabled knowledge articles from the database.
+ * Each suggestion: { id ('kb:<id>' | 'a:<id>'), title, fix, source, score, custom }.
+ */
+/** Built-in answers about installing / updating / downloading (hidden from "Bug in game" reports). */
+const INSTALL_IDS = new Set([
+  'apk_newer', 'different_build', 'download_corrupted', 'download_fails', 'quest_launch_crash', 'beta_to_stable', 'quest_incompatible',
+  'quest_data_missing', 'pc_install_howto', 'quest_install_howto', 'quest_install_vanishes', 'quest_parse_package', 'quest_data_stuck',
+  'quest_installer_conflict', 'quest_uninstall', 'quest_mic_permission',
+]);
+
+export function suggest(text, custom = [], max = 3, kind = null) {
+  const lower = text.toLowerCase();
+  const pool = [
+    ...KB.filter((e) => !(kind === 'bug' && INSTALL_IDS.has(e.id))).map((e) => ({
+      id: `kb:${e.id}`, title: e.title, fix: e.fix, source: e.source, custom: false, threshold: KB_THRESHOLD,
+      text: `${e.title} ${e.symptoms}`, exact: e.pattern ? e.pattern.test(text) : false,
+    })),
+    ...custom.map((a) => ({
+      id: `a:${a.id}`, title: a.title, fix: a.link ? `${a.body}\n\n🔗 ${a.link}` : a.body, source: 'Server knowledge base',
+      custom: true, threshold: ARTICLE_THRESHOLD, text: `${a.title} ${a.symptoms}`,
+      exact: (a.phrases ?? '').split('\n').map((p) => p.trim().toLowerCase()).some((p) => p.length >= 4 && lower.includes(p)),
+    })),
+  ];
+  const scores = new Map(rankSimilar(text, pool.map((p) => ({ id: p.id, text: p.text }))).map((r) => [r.id, r.score]));
+  return pool
+    .map((p) => ({ p, score: p.exact ? 1 : scores.get(p.id) ?? 0 }))
+    .filter(({ p, score }) => score >= p.threshold)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max)
+    .map(({ p, score }) => ({ id: p.id, title: p.title, fix: p.fix, source: p.source, score, custom: p.custom }));
+}
+
+/** Best built-in match only: { entry, score } or null. (Kept for simple callers and tests.) */
 export function matchKb(text) {
-  for (const e of KB) if (e.pattern?.test(text)) return { entry: e, score: 1 };
-  const best = rankSimilar(text, KB.map((e) => ({ id: e.id, text: `${e.title} ${e.symptoms}` })))[0];
-  if (best && best.score >= KB_THRESHOLD) return { entry: KB.find((e) => e.id === best.id), score: best.score };
-  return null;
+  const best = suggest(text, [], 1)[0];
+  return best ? { entry: KB.find((e) => `kb:${e.id}` === best.id), score: best.score } : null;
 }

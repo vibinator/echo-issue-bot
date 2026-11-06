@@ -1,7 +1,9 @@
 import { EmbedBuilder } from 'discord.js';
-import { decisions, issues, reports } from './db.js';
+import { decisions, events, evidence, issues, prefs, reports, watchers } from './db.js';
+import { refreshBoard } from './board.js';
+import { kindOfFile, kindOfLink, linkName } from './evidence.js';
 import { rankSimilar } from './similarity.js';
-import { detectCategory } from './categories.js';
+import { detectCategory, INSTALL_CATEGORY } from './categories.js';
 import { relatedIssues } from './related.js';
 import { renderIssue } from './render.js';
 
@@ -18,12 +20,20 @@ const makeTitle = (text) => {
 /** Crashes start at High priority; developers adjust from there. */
 const priorityFor = (category) => (category === 'Crash / Freeze' ? 'high' : 'normal');
 
+/** The reporter picks "Install issue" or "Bug in game"; install issues all share one category. */
+export const KINDS = {
+  install: { label: 'Install issue', emoji: '🔧' },
+  bug: { label: 'Bug in game', emoji: '🐞' },
+};
+const categoryFor = (text, kind) => (kind === 'install' ? INSTALL_CATEGORY : detectCategory(text, [INSTALL_CATEGORY]));
+
 /**
  * File a report. Attaches it to the most similar existing issue when similar enough,
  * otherwise opens a new issue. Returns { issue, reportId, created, reopened, fixedVersion, score }.
  */
-export function fileReport({ guildId, userId, text, platform, version, threshold = MATCH_THRESHOLD }) {
-  const ranked = rankSimilar(text, issues.withText(guildId));
+export function fileReport({ guildId, userId, text, platform, version, kind = 'bug', threshold = MATCH_THRESHOLD }) {
+  // Only compare with issues of the same type: an install problem is never merged into a game bug.
+  const ranked = rankSimilar(text, issues.withText(guildId, kind));
   const best = ranked[0];
 
   if (best && best.score >= threshold) {
@@ -31,13 +41,17 @@ export function fileReport({ guildId, userId, text, platform, version, threshold
     const reportId = reports.add(issue.id, userId, text, platform, version);
     // A "fixed" issue that gets new reports is a possible regression.
     const reopened = issue.status === 'fixed';
-    if (reopened) issues.setStatus(issue.id, 'new', null); else issues.touch(issue.id);
+    if (reopened) {
+      issues.setStatus(issue.id, 'new', null);
+      events.add(issue.id, 'reopened', userId, issue.fixed_version ? `was fixed in ${issue.fixed_version}` : null);
+    } else issues.touch(issue.id);
     return { issue: issues.get(issue.id), reportId, created: false, reopened, fixedVersion: issue.fixed_version, score: best.score };
   }
 
-  const category = detectCategory(text);
-  const id = issues.create(guildId, makeTitle(text), category, priorityFor(category));
+  const category = categoryFor(text, kind);
+  const id = issues.create(guildId, makeTitle(text), category, priorityFor(category), kind);
   const reportId = reports.add(id, userId, text, platform, version);
+  events.add(id, 'created', userId, `${KINDS[kind]?.label ?? kind} · ${category}`);
   return { issue: issues.get(id), reportId, created: true, reopened: false, fixedVersion: null, score: best?.score ?? 0 };
 }
 
@@ -46,16 +60,65 @@ export function splitReport(reportId) {
   const r = reports.get(reportId);
   if (!r) return null;
   const old = issues.get(r.issue_id);
-  const category = detectCategory(r.text);
-  const id = issues.create(old.guild_id, makeTitle(r.text), category, priorityFor(category));
+  const category = categoryFor(r.text, old.kind);
+  const id = issues.create(old.guild_id, makeTitle(r.text), category, priorityFor(category), old.kind);
   reports.move(r.id, id);
+  evidence.moveReport(r.id, id);
   const emptied = reports.stats(old.id).total === 0;
   if (emptied) issues.delete(old.id);
   return { fresh: issues.get(id), old: emptied ? null : issues.get(old.id), emptiedIssue: emptied ? old : null };
 }
 
+/**
+ * Re-check where one report belongs after its text (or evidence) changed.
+ * Moves it to a clearly better-matching issue, splits it out if it no longer fits where it is, or leaves it.
+ * Returns { action: 'same' | 'moved' | 'split', from, to, fromDeleted, reopened, score }.
+ */
+export function rematchReport(reportId, actorId, threshold = MATCH_THRESHOLD) {
+  const r = reports.get(reportId);
+  if (!r) return null;
+  const cur = issues.get(r.issue_id);
+  const only = reports.stats(cur.id).total === 1;
+  // The issue's text without this report (and, if it's the issue's only report, without the issue itself).
+  const docs = issues.withTextExcluding(cur.guild_id, r.id, cur.kind).filter((d) => !(only && d.id === cur.id));
+  const best = rankSimilar(`${r.text} ${r.platform ?? ''}`, docs)[0];
+  const score = best?.score ?? 0;
+
+  let to;
+  let action;
+  if (best && score >= threshold) {
+    if (best.id === cur.id) return { action: 'same', from: cur, to: cur, score };
+    to = issues.get(best.id);
+    action = 'moved';
+  } else if (!only) {
+    const category = categoryFor(r.text, cur.kind);
+    to = issues.get(issues.create(cur.guild_id, makeTitle(r.text), category, priorityFor(category), cur.kind));
+    events.add(to.id, 'created', r.user_id, `${category} (split from #${cur.id})`);
+    action = 'split';
+  } else {
+    return { action: 'same', from: cur, to: cur, score };
+  }
+
+  reports.move(r.id, to.id);
+  evidence.moveReport(r.id, to.id);
+  let reopened = false;
+  if (action === 'moved' && to.status === 'fixed') {
+    issues.setStatus(to.id, 'new', null);
+    events.add(to.id, 'reopened', r.user_id, to.fixed_version ? `was fixed in ${to.fixed_version}` : null);
+    reopened = true;
+  } else issues.touch(to.id);
+  events.add(to.id, 'rematched', actorId, `report #${r.id} ${action === 'moved' ? `moved here from #${cur.id}` : `split from #${cur.id}`}`);
+  const fromDeleted = only;
+  if (fromDeleted) issues.delete(cur.id);
+  return { action, from: cur, to: issues.get(to.id), fromDeleted, reopened, score };
+}
+
 export function mergeIssues(fromId, intoId) {
   reports.moveAll(fromId, intoId);
+  evidence.moveAll(fromId, intoId);
+  watchers.moveAll(fromId, intoId);
+  events.moveAll(fromId, intoId);
+  events.add(intoId, 'merged', null, `#${fromId} merged into this issue`);
   issues.touch(intoId);
   issues.delete(fromId);
 }
@@ -91,6 +154,7 @@ export async function syncMessage(client, issue, channelId) {
       const ch = await client.channels.fetch(targetChannel);
       const msg = await ch.messages.fetch(issue.message_id);
       await msg.edit(payload);
+      refreshBoard(client, issue.guild_id);
       return;
     }
   } catch { /* message deleted -> repost below */ }
@@ -104,6 +168,7 @@ export async function syncMessage(client, issue, channelId) {
       issues.setThread(issue.id, thread.id);
       await thread.send('💬 Use this thread for logs, screenshots and discussion about this issue.');
     } catch { /* missing thread permissions – the tracker still works */ }
+    refreshBoard(client, issue.guild_id);
   } catch (e) {
     console.error('Could not post tracker message:', e.message);
   }
@@ -113,6 +178,52 @@ export async function threadSay(client, issue, text) {
   const fresh = issues.get(issue.id);
   if (!fresh?.thread_id) return;
   try { await (await client.channels.fetch(fresh.thread_id)).send(text); } catch { /* thread gone */ }
+}
+
+/**
+ * Save a report's evidence. Uploaded files are re-hosted in the issue's thread (Discord upload links expire,
+ * the thread message is permanent); links are stored as given. Returns how many items were saved.
+ */
+export async function attachEvidence(client, issue, userId, reportId, { links = [], files = [] } = {}) {
+  if (!links.length && !files.length) return 0;
+  const fresh = issues.get(issue.id);
+  let thread = null;
+  if (fresh?.thread_id) { try { thread = await client.channels.fetch(fresh.thread_id); } catch { /* no thread */ } }
+
+  const header = [`📎 Evidence from <@${userId}> (report #${reportId})`, ...links.map((l) => `• ${l}`)];
+  const noPing = { parse: [] };
+  let posted = null;
+  if (thread) {
+    try {
+      posted = await thread.send({ content: header.join('\n'), files: files.map((f) => ({ attachment: f.url, name: f.name })), allowedMentions: noPing });
+    } catch {
+      // Too large to re-host? Post the links so the evidence is still reachable (the Discord links are temporary).
+      posted = await thread.send({
+        content: [...header, ...(files.length ? ['⚠️ Could not re-host the files (too large?). Temporary links:', ...files.map((f) => `• ${f.url}`)] : [])].join('\n'),
+        allowedMentions: noPing,
+      }).catch(() => null);
+    }
+  }
+  const where = { channel_id: posted ? thread.id : null, message_id: posted?.id ?? null };
+  for (const l of links) {
+    evidence.add({ issue_id: issue.id, report_id: reportId, user_id: userId, kind: kindOfLink(l), name: linkName(l), url: l, ...where });
+  }
+  for (const f of files) {
+    evidence.add({
+      issue_id: issue.id, report_id: reportId, user_id: userId, kind: kindOfFile(f.name, f.contentType),
+      name: f.name, url: posted?.url ?? f.url, ...where,
+    });
+  }
+  return links.length + files.length;
+}
+
+/** Remove a report's evidence rows and the thread messages that hold the files (spam clean-up). */
+export async function purgeEvidence(client, reportId) {
+  const rows = evidence.forReport(reportId);
+  for (const m of new Map(rows.filter((r) => r.message_id).map((r) => [r.message_id, r])).values()) {
+    try { await (await (await client.channels.fetch(m.channel_id)).messages.fetch(m.message_id)).delete(); } catch { /* gone */ }
+  }
+  evidence.deleteForReport(reportId);
 }
 
 /** Delete an issue's tracker message and thread (used when an issue is removed outright). */
@@ -139,9 +250,66 @@ export async function retireMessage(client, issue, intoId) {
   }
 }
 
-/** DM everyone who reported the issue (best effort). */
+/**
+ * Erase everything the bot holds about one user in a server (their reports, evidence, follows, preferences).
+ * If their report is the only one on an issue developers have already worked on, the report is anonymised instead
+ * of deleted so the developers' work isn't lost. Returns { removed, anonymised }.
+ */
+export async function eraseUser(client, guildId, userId) {
+  const touched = new Set();
+  let removed = 0;
+  let anonymised = 0;
+  for (const r of reports.byUser(guildId, userId)) {
+    const issue = issues.get(r.issue_id);
+    if (!issue) continue;
+    await purgeEvidence(client, r.id);
+    const total = reports.stats(issue.id).total;
+    const devTouched = issue.status !== 'new' || !!issue.owner_id || !!issue.dev_note;
+    const wasFirst = reports.earliest(issue.id)?.id === r.id;
+    if (total === 1 && devTouched) {
+      reports.anonymize(r.id);
+      issues.setTitle(issue.id, 'Details removed at the reporter\'s request');
+      anonymised++;
+      touched.add(issue.id);
+    } else if (total === 1) {
+      reports.delete(r.id);
+      issues.delete(issue.id);
+      await removeMessage(client, issue);
+      removed++;
+    } else {
+      reports.delete(r.id);
+      // the title was taken from the first report – re-derive it from what is left
+      if (wasFirst) issues.setTitle(issue.id, makeTitle(reports.earliest(issue.id).text));
+      removed++;
+      touched.add(issue.id);
+    }
+  }
+  watchers.removeUser(guildId, userId);
+  events.clearActor(userId);
+  prefs.delete(userId);
+  for (const id of touched) {
+    const issue = issues.get(id);
+    if (issue) await syncMessage(client, issue, issue.channel_id ?? undefined);
+  }
+  return { removed, anonymised };
+}
+
+/** Optional retention: delete closed issues (and their threads) with no activity for `days`. Returns how many. */
+export async function purgeExpired(client, guildId, days) {
+  if (!days || days < 1) return 0;
+  const old = issues.closedBefore(guildId, Date.now() - days * 864e5);
+  for (const issue of old) {
+    await removeMessage(client, issue);
+    reports.deleteForIssue(issue.id);
+    issues.delete(issue.id);
+  }
+  return old.length;
+}
+
+/** DM everyone who reported or follows the issue and hasn't turned DMs off (best effort). */
 export async function notifyReporters(client, issue, text) {
-  const ids = [...new Set(reports.forIssue(issue.id).map((r) => r.user_id))].slice(0, 50);
+  const ids = [...new Set([...reports.forIssue(issue.id).map((r) => r.user_id), ...watchers.forIssue(issue.id)])]
+    .filter((id) => id !== '0' && !prefs.dmOff(id)).slice(0, 100);
   for (const id of ids) {
     try { await (await client.users.fetch(id)).send(text); } catch { /* DMs closed */ }
   }

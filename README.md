@@ -1,41 +1,48 @@
 # Echo VR Issue Tracker (Discord bot)
 
-Players report problems from a button panel. Known problems get an instant suggested fix, similar reports are grouped into one issue (typo tolerant), and developers manage priority, owner and status. Everything is buttons, menus and modals; the only slash command is `/setup`.
+Players report problems from a button panel. Known problems get an instant suggested fix (which they can deny), similar reports are grouped into one issue (typo tolerant), and developers manage priority, owner and status on a Trello-style board. Everything is buttons, menus and modals; the only slash command is `/setup`.
 
 ## Setup
-1. Create an app at https://discord.com/developers/applications → **Bot** → copy the token.
-2. Invite it with scopes `bot` + `applications.commands` and permissions: View Channels, Send Messages, Embed Links, **Create Public Threads**, **Send Messages in Threads**, Manage Threads (to lock merged threads).
-3. `copy .env.example .env`, fill in `DISCORD_TOKEN` (and `GUILD_ID` for instant command registration while testing).
-4. `npm install` then `npm start` (Node 22.5+; built-in SQLite, data in `data/issues.db`).
-5. In the channel where players should see the panel run `/setup issues_channel:#echo-issues dev_role:@Developers`.
-6. Developers press ⚙️ **Settings** on the panel to set the digest channel, changelog channel, matching sensitivity, stale-days and report cooldown.
+1. Create an app at https://discord.com/developers/applications → **Bot** → copy the token. No privileged intents are needed.
+2. Invite it with scopes `bot` + `applications.commands` and permissions: View Channels, Send Messages, Embed Links, Read Message History, **Create Public Threads**, **Send Messages in Threads**, Manage Threads.
+   `https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot+applications.commands&permissions=326417599488`
+3. Configure with environment variables (see `.env.example`, or the `environment:` block of `docker-compose.yml`): `DISCORD_TOKEN`, `GUILD_ID`, `REPORTER_ROLE_ID`, `STATUS_ROLE_ID`.
+4. `npm install` then `npm start` (Node 22.5+; built-in SQLite, data in `data/issues.db`). On a NAS see **Docker** below.
+5. In the channel where players should see the panel run `/setup issues_channel:#issues dev_role:@Developers` (optional: `reporter_role`, `status_role`, `retention_days`).
+6. Developers press ⚙️ **Settings** on the panel for the digest/changelog channels, matching sensitivity, stale-days and report cooldown.
 
-## Who can report
-Only members with the **reporter role** (plus developers) can create reports – this covers 📝 Report a problem, 🙋 I have this too, and the "Still happening – file my report" button. Everyone can still browse issues. Set the role with `/setup reporter_role:@Role`, or via `REPORTER_ROLE_ID` in `.env` (the example file has it preset); leave both empty to allow everyone.
+## Reporting
+**📝 Report a problem** asks first: **🔧 Install issue** or **🐞 Bug in game**. The two types are never merged into each other (install issues share one *Install / Setup* category), and the install how-to answers are hidden from game-bug reports.
+Then a form (description, headset, version, links and up to 5 uploaded images/logs/videos). Before anything is filed the bot suggests known fixes – built-in answers (from the Echo VR community tooling docs and install guides) plus the developers' own knowledge articles. The player can press **That fixed it**, **Not my problem** (shows the next suggestion; after the last one the report is filed), or **Still happening – file my report**.
+Uploaded files are re-posted into the issue's thread (Discord's own upload links expire); very large videos should be pasted as links.
 
-## Who can change status
-Only members with the **status role** can set a ticket's status (Seen / Fix in progress / Fixed / …) – Manage Server does *not* bypass it. Set it with `/setup status_role:@Role` or `STATUS_ROLE_ID` in `.env` (preset in the example file); if neither is set, any developer can. Other developer actions (priority, owner, notes, merge, settings) still use the developer role from `/setup`.
+## My reports (players)
+📌 **My reports** lists everything you reported or follow, with a personal progress card (status, who is on it, fixed-in version, developer note, timeline). From there: ✏️ **Edit report**, 📎 **Add evidence**, 🔄 **Recalculate match** (re-checks which issue your edited report belongs to – it can move it or split it out), 🗑️ **Withdraw**, 🔔/🔕 follow an issue, and 🔕 turn progress DMs off.
 
-## Player flow
-- 📝 **Report a problem** → form (description, headset, version). If it matches a *known problem* the bot shows the fix first (**That fixed it** / **Still happening – file my report**); otherwise it joins or creates an issue.
-- 📋 **Browse issues** → filter by status, category, owner; pick an issue to open it. Highest priority and most affected first.
-- On any issue: 🙋 **I have this too**. After an auto-match, **Not the same problem** splits it out.
-- Reporters get a DM when their issue moves to in progress / fixed / cannot reproduce / won't fix (fixed DMs say which version to update to).
+## Developer board & tools (roles below)
+- **📌 Post live board** – a Trello-style board (columns New | Seen | Fix in progress, then Fixed | Cannot reproduce | Won't fix) that updates itself whenever anything changes; ⏳ marks cards with no activity, 🙌 shows the owner, **My cards** filters to yours, the picker opens a card.
+- On each issue: status (Fixed asks for the fixed-in version), priority, 🙌 assign to me, 💬 note, 🔀 merge, 🗑️ remove a spam report, 📜 history, 📚 **Make article** (turn a solved issue into a knowledge article).
+- **📚 Knowledge articles** – add/edit/disable articles (how players describe it, optional exact error text, the answer, a link). **Results** shows how often each suggestion was shown, helped, denied, or still led to a report; **Test matching** previews what a sample report would get.
+- 🔍 Review duplicates · 📊 Digest · 📤 Export CSV · 💾 Back up now · ⚙️ Settings.
 
-## Developer flow (dev role or Manage Server)
-On each issue message: status menu (choosing *Fixed* asks for the fixed-in version + note), priority menu (🔴 Critical / 🟠 High / 🟡 Normal / 🟢 Low – crashes start High), 🙌 **Assign to me** (toggle), 💬 **Dev note**, 🔀 **Merge into…** (similar issues listed first), 🗑️ **Remove report** (spam).
-Each issue gets a **discussion thread** for logs and screenshots. Merged issues keep a pointer message and a locked thread.
-
-Panel tools: ⚙️ **Settings**, 🔍 **Review duplicates** (pairs the matcher didn't merge: Merge / Keep separate / Skip), 📊 **Digest** (post now), 📤 **Export CSV** (`issues.csv`, `reports.csv`), 💾 **Back up now**.
+## Roles
+`REPORTER_ROLE_ID` – only this role (and developers) can create reports. `STATUS_ROLE_ID` – **only** this role can change status (Manage Server does not bypass it). The developer role from `/setup` (or Manage Server) can use the other tools. Leave a variable empty for the default (anyone can report / any developer can change status).
 
 ## Automatic
-- **Weekly digest** in the developer channel: new, top 5 by affected players, fixed, stale (New / Fix in progress with no activity for N days), critical/high with no owner.
-- **Changelog**: when an issue becomes Fixed, a release-note style embed is posted to the changelog channel.
-- **Backups**: `data/backups/` daily, newest 14 kept (consistent snapshots via `VACUUM INTO`).
-- **Cooldown**: non-developers must wait N seconds between reports (default 60s, configurable/off).
-- **Regressions**: a new matching report on a Fixed issue reopens it and notes the version it was fixed in.
+Weekly digest · changelog post when an issue is Fixed · daily DB backup (newest 14 kept) · report cooldown · regressions reopen Fixed issues · optional retention (`/setup retention_days:365` deletes closed issues with no activity for a year).
 
-## Known-problem answers (`src/kb.js`)
-Typo-tolerant matches for common errors (GPU hang `DXGI_ERROR_DEVICE_HUNG`, Quest APK/install errors, EchoXR exit codes, nEVR exit codes 78/64, Proton crashes, haptics, server hosting, Discord sign-in, …). Written from the READMEs and release notes of EchoVR_Launcher, EchoXR, EchoVR-Installer, nevr-runtime, EchoVR-Haptics and EchoVR-Windows-Hosts-Resources as of November 2026 – those projects change, so review and edit the entries as fixes ship. Add an entry by giving it `symptoms` (player wording) and optionally a `pattern` (exact error text).
+## Docker (QNAP Container Station etc.)
+`docker-compose.yml` builds the image from this folder. To deploy from YAML only, use `node:24-alpine` with a `command` that downloads this repository's tarball, installs and starts it (see the project history); mount a folder on `/app/data` to keep the database. If the container can't resolve `discord.com`, add `dns: [1.1.1.1, 8.8.8.8]` or `network_mode: host`.
 
-`npm test` runs the offline tests (grouping, typos, known-problem matching, priority/owner/version, duplicates queue, digest, CSV).
+## Privacy, terms and Discord's rules
+- The panel has **🔒 Data & privacy** and **📜 Terms of use** buttons. Full texts: [PRIVACY.md](PRIVACY.md) and [TERMS.md](TERMS.md) – **fill in the contact lines and check they match how you run the bot**. Put their public URLs in the Developer Portal (General Information → Terms of Service URL / Privacy Policy URL); `PRIVACY_URL` / `TERMS_URL` override the in-bot links.
+- Users can **erase their data** themselves (Data & privacy → Delete my data): reports, uploaded evidence, follows and settings are removed; if theirs is the only report on an issue developers already worked on, the issue stays with the details removed. They can also withdraw single reports and turn DMs off.
+- DMs are sent only about issues the user reported or follows, never advertising, and can be switched off.
+- The bot uses no privileged intents and doesn't read general messages. Data is not sold, shared, or used to train AI.
+- Keep the bot token secret (rotate it if it was ever pasted anywhere), restrict who can see the issue channel/CSV exports, and tell Discord and affected users about any breach.
+- These documents are templates, not legal advice. Re-check Discord's current [Developer Terms](https://discord.com/developers/docs/policies-and-agreements/developer-terms-of-service) and [Developer Policy](https://discord.com/developers/docs/policies-and-agreements/developer-policy) before relying on them, especially if the bot is added to many servers.
+
+## Known-problem answers
+`src/kb.js` (built-in, typo tolerant; vocabulary in `src/lexicon.js`) – edit them as the community tooling changes, or add per-server articles from the panel.
+
+`npm test` runs the offline tests (grouping, typos, known-problem matching, ticket types, priority/owner/version, duplicates, digest, CSV, evidence, recalculation, articles, board, privacy/erase/retention).

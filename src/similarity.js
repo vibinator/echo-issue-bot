@@ -1,5 +1,6 @@
 // Dependency-free text similarity: normalise -> typo-fix -> TF-IDF -> cosine.
 import { CATEGORIES } from './categories.js';
+import { EXTRA_SYN, PROTECT, TERMS } from './lexicon.js';
 
 const STOP = new Set((
   'a an the and or but if so of to in on at for with without from by is are was were be been am i me my we you it its this that these those ' +
@@ -21,6 +22,7 @@ const SYN = {
 };
 const CANON = new Map();
 for (const [c, ws] of Object.entries(SYN)) for (const w of ws) CANON.set(w, c);
+for (const [c, ws] of Object.entries(EXTRA_SYN)) for (const w of ws) CANON.set(w, c);
 
 function stem(w) {
   if (CANON.has(w)) return CANON.get(w);
@@ -31,9 +33,16 @@ function stem(w) {
 // ---- fuzzy (typo-tolerant) matching ----
 // Domain vocabulary: words we can confidently correct typos towards.
 const KNOWN = new Set();
-for (const w of [...Object.keys(SYN), ...Object.values(SYN).flat(), ...Object.values(CATEGORIES).flat()]) {
+for (const w of [
+  ...Object.keys(SYN), ...Object.values(SYN).flat(), ...Object.keys(EXTRA_SYN), ...Object.values(EXTRA_SYN).flat(),
+  ...Object.values(CATEGORIES).flat(), ...TERMS, ...PROTECT,
+]) {
   if (!w.includes(' ')) { KNOWN.add(w); KNOWN.add(stem(w)); }
 }
+// Listed words are protected from being "corrected" into something else, but must not be correction TARGETS
+// for unrelated typos either, so keep PROTECT words out of the pool the fuzzy matcher searches.
+const PROTECTED = new Set(PROTECT);
+const isSwap = (a, b) => a.length === b.length && [...a].sort().join('') === [...b].sort().join('');
 
 /** Optimal-string-alignment edit distance (counts a swap like "crahs" as 1). Stops early past `max`. */
 function editDistance(a, b, max) {
@@ -57,8 +66,12 @@ function fuzzyMap(tok, vocab) {
   let best = tok;
   let bestD = limit + 1;
   for (const v of vocab) {
+    if (PROTECTED.has(v) && vocab === KNOWN) continue;     // never correct towards ordinary words like "beta"/"patch"
     const dist = editDistance(tok, v, limit);
-    if (dist < bestD) { bestD = dist; best = v; }
+    if (dist >= bestD) continue;
+    if (tok.length === 4 && !isSwap(tok, v)) continue;      // 4-letter words: only fix swapped letters ("pnig" -> "ping")
+    bestD = dist;
+    best = v;
   }
   return best;
 }
