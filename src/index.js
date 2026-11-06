@@ -33,7 +33,6 @@ const commands = [
     .addChannelOption((o) => o.setName('issues_channel').setDescription('Channel where each issue gets its own thread').addChannelTypes(ChannelType.GuildText).setRequired(true))
     .addRoleOption((o) => o.setName('dev_role').setDescription('Developer role – can manage issues and use the Developer menu').setRequired(true))
     .addRoleOption((o) => o.setName('reporter_role').setDescription('Only this role can send reports (leave empty to keep the current setting)'))
-    .addRoleOption((o) => o.setName('status_role').setDescription('Only this role can change an issue\'s status (leave empty to keep the current setting)'))
     .addIntegerOption((o) => o.setName('retention_days').setDescription('Delete closed issues after this many days of no activity (0 = keep them)').setMinValue(0).setMaxValue(3650)),
 ].map((c) => c.toJSON());
 
@@ -58,20 +57,6 @@ function canReport(i) {
   const role = reporterRole(i.guildId);
   return !role || isDev(i) || !!i.member?.roles?.cache?.has(role);
 }
-/** Role required to change a ticket's status: the /setup value, else STATUS_ROLE_ID from .env, else any developer. */
-const statusRole = (guildId) => settings.get(guildId)?.status_role_id || process.env.STATUS_ROLE_ID || null;
-
-/** When a status role is configured ONLY its members may change status (Manage Server does not bypass it). */
-function canSetStatus(i) {
-  const role = statusRole(i.guildId);
-  return role ? !!i.member?.roles?.cache?.has(role) : isDev(i);
-}
-const noStatusAccess = (i) => i.reply({
-  content: `🔒 Only members with the <@&${statusRole(i.guildId)}> role can change an issue's status.`,
-  allowedMentions: { parse: [] },
-  flags: EPH,
-});
-
 const noReportAccess = (i) => i.reply({
   content: `🔒 Sending reports is limited to members with the <@&${reporterRole(i.guildId)}> role. You can still browse issues and read the answers.`,
   allowedMentions: { parse: [] },
@@ -317,7 +302,7 @@ function settingsPayload(guildId) {
       `• Grouping: reports are grouped when they're at least **${Math.round(c.threshold * 100)}% alike**`,
       `• Quiet issues: flagged after **${c.stale_days} days** without activity`,
       `• Pause between a player's reports: **${c.cooldown_sec ? `${c.cooldown_sec} seconds` : 'none'}**`,
-      `• Who can send reports: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} · who can change status: ${statusRole(guildId) ? `<@&${statusRole(guildId)}>` : '_any developer_'} _(change with \`/setup\`)_`,
+      `• Who can send reports: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} _(change with \`/setup\`)_ · developers can change an issue's status`,
       `• Closed issues are ${c.retention_days ? `deleted after **${c.retention_days} days** without activity` : '**kept** until deleted by hand'} _(change with \`/setup retention_days:\`)_`,
       `• Weekly digest goes to: ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'} · fixed-issue announcements go to: ${c.changelog_channel_id ? `<#${c.changelog_channel_id}>` : '_not set_'}`,
     ].join('\n'),
@@ -586,8 +571,6 @@ client.on('interactionCreate', async (i) => {
       settings.set(i.guildId, ch.id, role.id); // upsert: every other saved setting is kept
       const reporter = i.options.getRole('reporter_role');
       if (reporter) settings.update(i.guildId, { reporter_role_id: reporter.id });
-      const statusR = i.options.getRole('status_role');
-      if (statusR) settings.update(i.guildId, { status_role_id: statusR.id });
       const retention = i.options.getInteger('retention_days');
       if (retention !== null) settings.update(i.guildId, { retention_days: retention });
       // Only ONE public message: replace the previous panel (and any old live board) instead of adding another.
@@ -606,9 +589,8 @@ client.on('interactionCreate', async (i) => {
         content: [
           '✅ **All set!** The control panel is posted above.',
           `• Each issue gets its own thread in <#${ch.id}>`,
-          `• Developers: <@&${role.id}> (and anyone with Manage Server)`,
+          `• Developers: <@&${role.id}> (and anyone with Manage Server) – they can change an issue's status and use the Developer menu`,
           `• Who can send reports: ${rr ? `<@&${rr}>` : 'everyone'}`,
-          `• Who can change an issue's status: ${statusRole(i.guildId) ? `<@&${statusRole(i.guildId)}>` : 'any developer'}`,
           ...(kept ? [kept.trim()] : []),
           '',
           'Next: press **🛠️ Developer → ⚙️ Settings** to choose where the weekly digest and "fixed" announcements go.',
@@ -713,7 +695,7 @@ client.on('interactionCreate', async (i) => {
 
     // ----- issue message: status / priority / owner -----
     if (i.isStringSelectMenu() && id.startsWith('status:')) {
-      if (!canSetStatus(i)) return noStatusAccess(i);
+      if (!isDev(i)) return devOnly(i, "change an issue's status");
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
       const status = i.values[0];
@@ -721,7 +703,7 @@ client.on('interactionCreate', async (i) => {
       return i.update(card(i, await applyStatus(i, issue, status)));
     }
     if (i.isModalSubmit() && id.startsWith('fixed:')) {
-      if (!canSetStatus(i)) return noStatusAccess(i);
+      if (!isDev(i)) return devOnly(i, "change an issue's status");
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
       const fresh = await applyStatus(i, issue, 'fixed', {

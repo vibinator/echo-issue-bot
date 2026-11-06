@@ -8,9 +8,9 @@ Players report problems from a button panel. Known problems get an instant sugge
 1. Create an app at https://discord.com/developers/applications → **Bot** → copy the token. No privileged intents are needed.
 2. Invite it with scopes `bot` + `applications.commands` and permissions: View Channels, Send Messages, Embed Links, Read Message History, **Create Public Threads**, **Send Messages in Threads**, Manage Threads.
    `https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot+applications.commands&permissions=326417599488`
-3. Configure with environment variables (see `.env.example`, or the `environment:` block of `docker-compose.yml`): `DISCORD_TOKEN`, `GUILD_ID`, `REPORTER_ROLE_ID`, `STATUS_ROLE_ID`.
+3. Configure with environment variables (see `.env.example`, or the `environment:` block of `docker-compose.yml`): `DISCORD_TOKEN`, `GUILD_ID`, `REPORTER_ROLE_ID`.
 4. `npm install` then `npm start` (Node 22.5+; built-in SQLite, data in `data/issues.db`). On a NAS see **Docker** below.
-5. In the channel where players should see the panel run `/setup issues_channel:#issues dev_role:@Developers` (optional: `reporter_role`, `status_role`, `retention_days`).
+5. In the channel where players should see the panel run `/setup issues_channel:#issues dev_role:@Developers` (optional: `reporter_role`, `retention_days`).
 6. Developers press ⚙️ **Settings** on the panel for the digest/changelog channels, matching sensitivity, stale-days and report cooldown.
 
 ## Reporting
@@ -28,7 +28,7 @@ The panel's **🛠️ Developer** button opens a hidden menu: Board, Review dupl
 - 🔍 Review duplicates · 📊 Digest (posts to the digest channel) · 📤 Export CSV · 💾 Back up now · ⚙️ Settings.
 
 ## Roles
-`REPORTER_ROLE_ID` – only this role (and developers) can create reports. `STATUS_ROLE_ID` – **only** this role can change status (Manage Server does not bypass it). The developer role from `/setup` (or Manage Server) can use the other tools. Leave a variable empty for the default (anyone can report / any developer can change status).
+There are two roles. **Developers** (the `dev_role` from `/setup`, or anyone with Manage Server) can do everything on the developer side: change an issue's status, priority and owner, add notes, merge, manage articles and use the Developer menu. `REPORTER_ROLE_ID` (optional) – only this role, plus developers, can send reports; leave it empty to let everyone report. Everyone can browse issues and manage their own reports.
 
 ## Automatic
 Weekly digest · changelog post when an issue is Fixed · daily DB backup (newest 14 kept) · report cooldown · regressions reopen Fixed issues · optional retention (`/setup retention_days:365` deletes closed issues with no activity for a year).
