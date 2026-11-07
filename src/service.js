@@ -325,6 +325,7 @@ export async function openTalkThread(client, issue) {
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`note:${fresh.id}`).setLabel('Send a note to the requesters').setEmoji('💬').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`merge:${fresh.id}`).setLabel('Same problem as another issue…').setEmoji('🔀').setStyle(ButtonStyle.Secondary))] }).catch(() => {});
+  await postTalkHistory(client, fresh, thread);
   await thread.setLocked(true, 'Only developers write here').catch(() => {}); // a locked thread can only be written in by people with Manage Threads (and the bot)
   return { thread, existing: false };
 }
@@ -375,15 +376,54 @@ export async function carryTalkOnMerge(client, from, into) {
   } catch (e) { console.error('Thread merge failed:', e.message); }
 }
 
-/** Give every New / Seen / Being fixed issue that has no thread one (nobody is notified). Returns how many were created. */
-export async function backfillTalkThreads(client, guildId) {
-  let made = 0;
+/**
+ * Post what is already known about an issue into its thread: every report (who, when, platform/version, text), the developer note,
+ * the owner and the recent activity. Once per issue. Never throws. Returns true when it was posted.
+ */
+export async function postTalkHistory(client, issue, thread = null) {
+  try {
+    const fresh = issues.get(issue.id);
+    if (!fresh || fresh.talk_history) return false;
+    const t = thread ?? await client.channels.fetch(fresh.talk_thread_id);
+    const when = (ms) => `<t:${Math.floor(ms / 1000)}:d>`;
+    const lines = ['📜 **History so far**'];
+    const list = [...reports.forIssue(fresh.id)].reverse();
+    list.forEach((r, n) => {
+      const who = r.user_id === '0' ? '_removed user_' : `<@${r.user_id}>`;
+      const meta = [r.platform, r.version && `v${r.version}`].filter(Boolean).join(' · ');
+      lines.push(`**${n === 0 ? 'Requester' : 'Report'}** ${who} ${when(r.created_at)}${meta ? ` · ${meta}` : ''}\n> ${trunc(String(r.text).replace(/\s+/g, ' '), 600)}`);
+    });
+    if (fresh.owner_id) lines.push(`🙌 Owner: <@${fresh.owner_id}>`);
+    if (fresh.dev_note) lines.push(`💬 **Developer note:** ${trunc(fresh.dev_note, 600)}`);
+    const evs = events.forIssue(fresh.id, 15).reverse();
+    if (evs.length) lines.push('**Activity**\n' + evs.map((e) => `${when(e.created_at)} ${e.kind}${e.detail ? `: ${trunc(e.detail, 120)}` : ''}`).join('\n'));
+    let chunk = '';
+    for (const line of lines) {
+      if (chunk && chunk.length + line.length + 2 > 1900) { await t.send(chunk); chunk = ''; }
+      chunk += (chunk ? '\n\n' : '') + line;
+    }
+    if (chunk) await t.send(chunk);
+    issues.setTalkHistory(fresh.id, 1);
+    return true;
+  } catch (e) { console.error('Posting thread history failed:', e.message); return false; }
+}
+
+/**
+ * Process all earlier requests into threads: every New / Seen / Being fixed issue gets its thread (if missing) and has its history
+ * posted into it (if not already). Nobody is notified. Returns { threads, histories, failed }.
+ */
+export async function processPrevious(client, guildId) {
+  const out = { threads: 0, histories: 0, failed: 0 };
   for (const x of issues.list(guildId)) {
-    if (!OPEN_STATUSES.includes(x.status) || x.talk_thread_id) continue;
+    if (!OPEN_STATUSES.includes(x.status)) continue;
+    const had = !!x.talk_thread_id;
     await syncTalkThread(client, x);
-    if (issues.get(x.id)?.talk_thread_id) made++;
+    let cur = issues.get(x.id);
+    if (!cur?.talk_thread_id) { out.failed++; continue; }
+    if (!had) out.threads++;
+    if (!cur.talk_history && await postTalkHistory(client, cur)) out.histories++;
   }
-  return made;
+  return out;
 }
 
 /** Post a line in the issue's developer thread (notes, status changes, player activity). Never throws. */

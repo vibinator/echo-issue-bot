@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored, storedSize } from './evidenceStore.js';
 import {
   attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, removeMessage, retireMessage,
-  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkSay, carryTalkOnMerge, backfillTalkThreads,
+  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkSay, carryTalkOnMerge, processPrevious,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
 import { boardPayload, confirmMovePayload, movePayload, postBoard, sectionPayload } from './board.js';
@@ -266,7 +266,7 @@ function devMenuPayload(guildId) {
     embeds: [],
     components: [
       row(btn('dev:board', a?.fresh ? `Board (${a.fresh} new)` : 'Board', '📌', a?.total ? ButtonStyle.Danger : ButtonStyle.Secondary), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:articles', 'Knowledge articles', '📚')),
-      row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊'), ...(guildId && !cfgOf(guildId).threads_backfilled ? [btn('dev:threads', 'Create threads for open issues (one time)', '🧵')] : [])),
+      row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊'), btn('dev:threads', 'Process previous requests into threads', '🧵')),
       row(btn('dev:export', 'Export CSV', '📤'), btn('dev:backup', 'Back up now', '💾')),
     ],
   };
@@ -546,15 +546,13 @@ function browsePayload(i, f) {
 }
 
 /** Open (New / Seen / Being fixed) issues that have no private thread yet. */
-const missingThreads = (guildId) => issues.list(guildId).filter((x) => ['new', 'seen', 'in_progress'].includes(x.status) && !x.talk_thread_id);
+const pendingThreads = (guildId) => issues.list(guildId).filter((x) => ['new', 'seen', 'in_progress'].includes(x.status) && (!x.talk_thread_id || !x.talk_history));
 
 /** Make `channel` the developer hub: alerts + digest go there, the live board is posted there, and every open issue gets its thread. */
 async function applyHub(guildId, channel) {
   settings.update(guildId, { dev_channel_id: channel.id, last_digest: Date.now() });
   await postBoard(client, guildId, channel);
-  const made = await backfillTalkThreads(client, guildId);
-  if (!missingThreads(guildId).length) settings.update(guildId, { threads_backfilled: 1 });
-  return made;
+  return (await processPrevious(client, guildId)).threads;
 }
 
 function settingsPayload(guildId) {
@@ -1791,24 +1789,20 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
         case 'dev:articles': return show(i, articlesPayload(i.guildId));
         case 'dev:board': return show(i, boardPayload(i.guildId));
         case 'dev:threads': { // step 1: say what will happen
-          if (cfgOf(i.guildId).threads_backfilled) return show(i, { content: '✅ Every open issue already has its developer thread (this one-time step was already done).', embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
           if (!cfgOf(i.guildId).board_channel_id) return show(i, { content: 'Pick a **Developer hub** channel first: ⚙️ Settings.', embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
-          const todo = missingThreads(i.guildId);
+          const todo = pendingThreads(i.guildId);
+          const noThread = todo.filter((x) => !x.talk_thread_id).length;
           return show(i, {
             content: todo.length
-              ? `🧵 **Create developer threads for ${todo.length} open issue${todo.length === 1 ? '' : 's'}?**
-Each New / Seen / Being fixed issue without one gets a thread in <#${cfgOf(i.guildId).board_channel_id}>. Players are not added and nobody is notified. This can take a minute.`
-              : '✅ Every open issue already has its developer thread.',
-            embeds: [], components: [row(...(todo.length ? [btn('dev:threadsok', 'Yes, create them', '🧵', ButtonStyle.Success)] : []), btn('dev:menu', 'Developer menu', '⬅️'))],
+              ? `🧵 **Process ${todo.length} previous request${todo.length === 1 ? '' : 's'} into threads?**\nFor each New / Seen / Being fixed issue: ${noThread ? `create its thread in <#${cfgOf(i.guildId).board_channel_id}> (${noThread} missing), and ` : ''}post its history (reports, developer note, activity) into it. Players are not added and nobody is notified. This can take a few minutes.`
+              : '✅ Every open issue already has its thread and history.',
+            embeds: [], components: [row(...(todo.length ? [btn('dev:threadsok', 'Yes, process them', '🧵', ButtonStyle.Success)] : []), btn('dev:menu', 'Developer menu', '⬅️'))],
           });
         }
         case 'dev:threadsok': { // step 2: do it
           await deferHidden(i);
-          const todo = missingThreads(i.guildId);
-          for (const x of todo) await syncTalkThread(client, x);
-          const made = todo.filter((x) => issues.get(x.id)?.talk_thread_id).length;
-          if (made === todo.length) settings.update(i.guildId, { threads_backfilled: 1 }); // one time only (if some failed, the button stays so they can be retried)
-          return i.editReply({ content: `🧵 Created **${made}** of ${todo.length} thread${todo.length === 1 ? '' : 's'} in <#${cfgOf(i.guildId).board_channel_id}>.${made < todo.length ? '\n⚠️ Some failed – check the bot has Create Public Threads, Send Messages in Threads and Manage Threads there.' : ''}`, embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
+          const r = await processPrevious(client, i.guildId);
+          return i.editReply({ content: `🧵 Done: **${r.threads}** thread${r.threads === 1 ? '' : 's'} created, history posted for **${r.histories}** issue${r.histories === 1 ? '' : 's'}.${r.failed ? `\n⚠️ ${r.failed} could not get a thread – check the bot has Create Public Threads, Send Messages in Threads and Manage Threads in <#${cfgOf(i.guildId).board_channel_id}>, then press the button again.` : ''}`, embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
         }
         case 'dev:export': {
           const files = exportCsv(i.guildId);

@@ -112,7 +112,8 @@ addColumn('issues', 'owner_id', 'TEXT');
 addColumn('issues', 'fixed_version', 'TEXT');
 addColumn('issues', 'fixed_at', 'INTEGER');
 addColumn('issues', 'thread_id', 'TEXT');
-addColumn('issues', 'talk_thread_id', 'TEXT'); // private developer<->players thread in the developer hub channel
+addColumn('issues', 'talk_thread_id', 'TEXT');
+addColumn('issues', 'talk_history', 'INTEGER NOT NULL DEFAULT 0'); // 1 = the issue's earlier reports/notes/activity were posted into its thread // private developer<->players thread in the developer hub channel
 addColumn('issues', 'kind', "TEXT NOT NULL DEFAULT 'bug'"); // 'install' (install issue) | 'bug' (bug in game)
 addColumn('reports', 'version', 'TEXT');
 addColumn('settings', 'dev_channel_id', 'TEXT');
@@ -232,6 +233,7 @@ export const issues = {
   setThreadArchived: (id, v) => db.prepare('UPDATE issues SET thread_archived = ? WHERE id = ?').run(v ? 1 : 0, id),
   /** All issues that share one private thread. */
   byTalkThread: (thread) => db.prepare('SELECT * FROM issues WHERE talk_thread_id = ?').all(thread),
+  setTalkHistory: (id, v = 1) => db.prepare('UPDATE issues SET talk_history = ? WHERE id = ?').run(v ? 1 : 0, id),
   setTalkThread: (id, thread) => db.prepare('UPDATE issues SET talk_thread_id = ? WHERE id = ?').run(thread, id),
   setThread: (id, thread) => db.prepare('UPDATE issues SET thread_id = ? WHERE id = ?').run(thread, id),
   touch: (id) => db.prepare('UPDATE issues SET updated_at = ? WHERE id = ?').run(now(), id),
