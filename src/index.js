@@ -17,7 +17,7 @@ import {
   eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
-import { boardPayload, dropBoard } from './board.js';
+import { boardPayload, dropBoard, movePayload } from './board.js';
 import { buildDigest, postDigest, runDigests } from './digest.js';
 import { exportCsv } from './export.js';
 import { backupNow, maybeBackup } from './backup.js';
@@ -1166,6 +1166,23 @@ async function handleInteraction(i) {
       return issue && i.update(renderIssue(issue, { back: 'dev:board', viewer: viewerOf(i) }));
     }
 
+    if (i.isStringSelectMenu() && id === 'bfm') { // "Move a card": step 1, a card was picked
+      if (!isDev(i)) return devOnly(i, 'move cards');
+      const issue = await loadIssue(i, Number(i.values[0]));
+      return issue && i.update(movePayload(issue));
+    }
+    if (i.isStringSelectMenu() && id.startsWith('bfd:')) { // step 2, a destination section was picked
+      if (!isDev(i)) return devOnly(i, 'move cards');
+      const issue = await loadIssue(i, idOf(i));
+      if (!issue) return;
+      const status = i.values[0];
+      if (status === issue.status) return i.update(boardPayload(i.guildId));
+      if (status === 'fixed') return i.showModal(fixedModal(issue));
+      await i.deferUpdate();
+      await applyStatus(i, issue, status);
+      return i.editReply(boardPayload(i.guildId));
+    }
+
     // ----- issue message: status / priority / owner -----
     if (i.isStringSelectMenu() && id.startsWith('status:')) {
       if (!isDev(i)) return devOnly(i, "change an issue's status");
@@ -1186,7 +1203,8 @@ async function handleInteraction(i) {
         version: i.fields.getTextInputValue('version').trim(),
         note: i.fields.getTextInputValue('text').trim(),
       });
-      return i.editReply(fromCard ? card(i, fresh) : { content: `Marked #${issue.id} fixed.` });
+      const fromMove = fromCard && i.message?.components?.some((r) => r.components?.some((c) => c.customId?.startsWith('bfd:')));
+      return i.editReply(fromMove ? boardPayload(i.guildId) : fromCard ? card(i, fresh) : { content: `Marked #${issue.id} fixed.` });
     }
     if (i.isStringSelectMenu() && id.startsWith('prio:')) {
       if (!isDev(i)) return devOnly(i, 'change priority');

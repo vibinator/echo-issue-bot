@@ -282,9 +282,33 @@ const names = board.embeds.flatMap((e) => e.toJSON().fields.map((f) => f.name));
 assert.deepEqual(names.map((n) => n.replace(/^\S+\s/, '').replace(/ \(\d+\)/, '')), ['New', 'Seen', 'Being fixed', 'Fixed', "Can't reproduce", "Won't fix"]);
 const newCol = board.embeds[0].toJSON().fields[0].value;
 assert.ok(newCol.includes(`#${mic.issue.id}`), 'open issues appear as cards in their column');
-assert.ok(board.components.length === 2, 'card picker + buttons');
+assert.ok(board.components.length === 3, 'card picker + move picker + buttons');
 const mineBoard = boardPayload(G, { owner: 'nobody', title: 'Mine' });
 assert.ok(mineBoard.embeds[0].toJSON().fields.every((f) => f.value === '_empty_'), 'personal board only shows your cards');
+
+// Worst case for Discord's limits (6000 characters across all embeds, 1024 per field, 25 menu options)
+{
+  const W = 'gworst';
+  const words = ['crash', 'lag', 'mic', 'avatar', 'quest', 'spark', 'menu', 'audio', 'login', 'sync', 'input', 'map'];
+  let n = 0;
+  for (const st of ['new', 'seen', 'in_progress', 'fixed', 'cannot_reproduce', 'wont_fix']) {
+    for (let k = 0; k < 10; k++) {
+      const t = `${words[n % 12]} ${words[(n * 5 + 3) % 12]} ${'wxyzqv'.repeat(14)} unique${n} ${'ab'.repeat(30)}`;
+      const r = fileReport({ guildId: W, userId: `w${n}`, text: t });
+      issues.setStatus(r.issue.id, st, 'dev', st === 'fixed' ? '1.0' : undefined);
+      issues.setOwner(r.issue.id, '123456789012345678');
+      n++;
+    }
+  }
+  const wp = boardPayload(W);
+  const fields = wp.embeds.flatMap((e) => e.toJSON().fields);
+  const total = wp.embeds.reduce((a, e) => { const j = e.toJSON(); return a + (j.title?.length ?? 0) + (j.description?.length ?? 0) + j.fields.reduce((x, f) => x + f.name.length + f.value.length, 0); }, 0);
+  assert.ok(fields.some((f) => f.value.includes('more_')), 'worst-case board actually overflowed a section');
+  assert.ok(total <= 5500, `board embeds stay well under Discord's 6000 limit (was ${total})`);
+  assert.ok(fields.every((f) => f.value.length <= 1024), 'every section fits a field');
+  assert.ok(wp.components.every((r) => r.components.every((c) => !c.options || c.options.length <= 25)), 'menus have at most 25 options');
+  console.log(`board worst case: ${total} / 6000 characters`);
+}
 
 // ---- ticket type: Install issue vs Bug in game ----
 const K = 'g6';

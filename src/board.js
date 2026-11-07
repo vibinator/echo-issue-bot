@@ -5,21 +5,37 @@ import { PRIORITIES, STATUSES } from './render.js';
 import { trunc } from './text.js';
 
 const DAY = 864e5;
-const MAX_CARDS = 7;
+const MAX_CARDS = 6;
 const ACTIVE = ['new', 'seen', 'in_progress'];
 const DONE = ['fixed', 'cannot_reproduce', 'wont_fix'];
 
 function card(it, staleBefore) {
   const stale = ACTIVE.includes(it.status) && it.updated_at < staleBefore ? ' ⏳' : '';
-  return `${(PRIORITIES[it.priority] ?? PRIORITIES.normal).emoji}${it.kind === 'install' ? '🔧' : '🐞'} **#${it.id}** ${trunc(it.title.replace(/\s+/g, ' '), 40)} · ${it.reporters}👥${stale}${it.owner_id ? ` 🙌<@${it.owner_id}>` : ''}`;
+  return `${(PRIORITIES[it.priority] ?? PRIORITIES.normal).emoji}${it.kind === 'install' ? '🔧' : '🐞'} **#${it.id}** ${trunc(it.title.replace(/\s+/g, ' '), 70)} ·${it.reporters}👥${stale}${it.owner_id ? ` 🙌<@${it.owner_id}>` : ''}`;
+}
+
+/** Is this issue shown on the board? (Fixed issues drop off after 14 days.) */
+const onBoard = (i) => i.status !== 'fixed' || (i.fixed_at ?? 0) >= Date.now() - 14 * DAY;
+
+/** The screen shown after picking a card to move: choose which section it goes to. */
+export function movePayload(issue) {
+  return {
+    content: `**Move #${issue.id} – ${trunc(issue.title.replace(/\s+/g, ' '), 80)}**\nNow in **${STATUSES[issue.status]?.label ?? issue.status}**. Choose the section to move it to:`,
+    embeds: [],
+    components: [
+      new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`bfd:${issue.id}`).setPlaceholder('Move to…')
+        .addOptions(Object.entries(STATUSES).map(([value, s]) => ({ label: s.label, value, emoji: s.emoji, default: value === issue.status })))),
+      new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('dev:board').setLabel('Back to board').setEmoji('⬅️').setStyle(ButtonStyle.Secondary)),
+    ],
+  };
 }
 
 function column(list, status, staleBefore) {
   const st = STATUSES[status];
-  const items = list.filter((i) => i.status === status && (status !== 'fixed' || (i.fixed_at ?? 0) >= Date.now() - 14 * DAY));
+  const items = list.filter((i) => i.status === status && onBoard(i));
   const shown = items.slice(0, MAX_CARDS).map((i) => card(i, staleBefore));
   if (items.length > MAX_CARDS) shown.push(`_…and ${items.length - MAX_CARDS} more_`);
-  return { name: `${st.emoji} ${st.label} (${items.length})`, value: shown.join('\n') || '_empty_', inline: true };
+  return { name: `${st.emoji} ${st.label} (${items.length})`, value: shown.join('\n') || '_empty_', inline: false };
 }
 
 /** owner: restrict to one developer's cards. title: heading override. */
@@ -41,6 +57,16 @@ export function boardPayload(guildId, { owner, title } = {}) {
         label: trunc(`#${it.id} ${it.title}`, 100),
         description: trunc(`${(PRIORITIES[it.priority] ?? PRIORITIES.normal).label} · ${it.category} · ${it.reporters} players${it.owner_id ? ' · assigned' : ''}`, 100),
         emoji: STATUSES[it.status].emoji,
+        value: String(it.id),
+      })))));
+  }
+  const movable = list.filter(onBoard).slice(0, 25);
+  if (movable.length) {
+    components.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder().setCustomId('bfm').setPlaceholder('Move a card to another section…').addOptions(movable.map((it) => ({
+        label: trunc(`#${it.id} ${it.title}`, 100),
+        description: trunc(`Now: ${STATUSES[it.status]?.label ?? it.status}`, 100),
+        emoji: STATUSES[it.status]?.emoji,
         value: String(it.id),
       })))));
   }
