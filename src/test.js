@@ -649,7 +649,7 @@ const fi = { guildId: 'g5', user: { id: 'viewer' } };
   for (let n = 0; n < 30; n++) issues.create(pg, `Paged issue ${n}`, 'Other');
   const closedId = issues.create(pg, 'Old fixed issue', 'Other'); issues.setStatus(closedId, 'fixed', 'dev');
   const view = { guildId: pg, user: { id: 'viewer' }, memberPermissions: { has: () => false }, member: { roles: [] } };
-  const pick = (pl) => pl.components.map((r) => r.toJSON().components).find((c) => c[0].custom_id === 'bfv');
+  const pick = (pl) => pl.components.map((r) => r.toJSON().components).find((c) => c[0].custom_id?.startsWith('bfv:'));
   const nav = (pl) => pl.components.map((r) => r.toJSON().components).find((c) => c[0].custom_id?.startsWith('bfp:'));
   const p0 = ui.browsePayload(view, { s: 'open', c: '-', o: '-', p: 0 });
   assert.equal(pick(p0)[0].options.length, 25, 'the first page holds 25');
@@ -667,7 +667,7 @@ const sampleIssue = issues.list('g5')[0];
 const sampleReport = R.forIssue(sampleIssue.id)[0];
 const screens = {
   panel: ui.panelPayload(), devMenu: ui.devMenuPayload(), type: ui.reportTypePayload(),
-  quickBug: ui.quickModal('bug'), quickInstall: ui.quickModal('install'), reportBug: ui.reportModal('bug'), reportInstall: ui.reportModal('install', 'prefilled text'),
+  reportBug: ui.reportModal('bug'), reportInstall: ui.reportModal('install', 'prefilled text'),
   meToo: ui.meTooModal(sampleIssue), edit: ui.editModal(sampleReport), addEvidence: ui.addEvidenceModal(sampleReport), note: ui.noteModal(sampleIssue), fixed: ui.fixedModal(sampleIssue),
   faqBug: ui.faqPayload('g5', 'bug'), faqInstall: ui.faqPayload('g5', 'install'), browse: ui.browsePayload(fi, { s: 'open', c: '-', o: '-', p: 0 }),
   settings: ui.settingsPayload('g5'), dups: ui.dupPayload(fi), mine: ui.minePayload(fi), track: ui.trackPayload(fi, sampleIssue),
@@ -688,7 +688,7 @@ for (const field of reportForm.components) {
 
 // ---- the requester is named on the card; a wrongly matched report can be separated and the issue restored ----
 const reqA = fileReport({ guildId: 'g10', userId: 'requesterA', text: 'Hand tracking drifts upward whenever I hold the disc near my chest' });
-const reqCard = (id) => renderIssue(issues.get(id)).embeds[0].toJSON().fields.find((f) => f.name === 'Requested by').value;
+const reqCard = (id) => renderIssue(issues.get(id)).embeds[0].toJSON().fields.find((f) => f.name === 'Reported by').value;
 assert.equal(reqCard(reqA.issue.id), '<@requesterA>');
 issues.setStatus(reqA.issue.id, 'fixed', 'dev', '2.0');
 const reqB = fileReport({ guildId: 'g10', userId: 'requesterB', text: 'Hand tracking drifts upward when I hold the disc near my chest' });

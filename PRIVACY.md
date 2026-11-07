@@ -28,7 +28,7 @@ The data is **not sold, shared with third parties, used for advertising, or used
 
 ## Who can see it
 - Anyone in the server who opens **Known issues** from the control panel can see an issue's title (taken from the first line of the first report), the text of each report, your name, and *how many* attachments it has.
-- **Your attachments and links are shown only to you and to developers.** (The *requester* is the person who sent a report; each requester can open only their own files.) The bot checks who is asking every time someone opens them.
+- **Your attachments and links are shown only to you and to developers.** (Each reporter can open only the files they sent themselves.) The bot checks who is asking every time someone opens them.
 - Developers (the developer role, and members with Manage Server) can also see the history, and can export reports **including user IDs** as CSV.
 - The operator can access the database and its backups.
 

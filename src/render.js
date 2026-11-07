@@ -28,8 +28,8 @@ export function person(id, guildId) {
   return n ? `**${trunc(n, 32)}**` : `<@${id}>`;
 }
 
-/** The "requester" = whoever sent the first report; others who hit the same problem are counted. */
-function requesterText(issueId, stats, guildId) {
+/** The reporter = whoever sent the first report; others who hit the same problem are counted. */
+function reporterText(issueId, stats, guildId) {
   const first = reports.earliest(issueId);
   const who = !first ? '_unknown_' : first.user_id === '0' ? '_removed user_' : person(first.user_id, guildId);
   const others = Math.max(0, stats.users - 1);
@@ -56,7 +56,7 @@ export function renderIssue(issue, { back, viewer } = {}) {
       { name: 'Priority', value: `${pr.emoji} ${pr.label}`, inline: true },
       { name: 'Type', value: issue.kind === 'install' ? '🔧 Install issue' : '🐞 Bug in game', inline: true },
       { name: 'Category', value: issue.category, inline: true },
-      { name: 'Requested by', value: requesterText(issue.id, stats, issue.guild_id), inline: true },
+      { name: 'Reported by', value: reporterText(issue.id, stats, issue.guild_id), inline: true },
       { name: "Who's on it", value: issue.owner_id ? person(issue.owner_id, issue.guild_id) : '_Nobody yet_', inline: true },
       { name: 'Players affected', value: `${stats.users} (${stats.total} report${stats.total === 1 ? '' : 's'})`, inline: true },
     )
@@ -79,7 +79,7 @@ export function renderIssue(issue, { back, viewer } = {}) {
   // Attachments are private: this public card only says how many there are, never what or where they are.
   const ev = evidence.forIssue(issue.id);
   if (ev.length) {
-    embed.addFields({ name: '📎 Screenshots, logs & links', value: `${ev.length} attached – only the requester (whoever sent them) and the developers can open them.`, inline: false });
+    embed.addFields({ name: '📎 Screenshots, logs & links', value: `${ev.length} attached – only the person who sent them and the developers can open them.`, inline: false });
   }
   const related = relatedIssues(issue).map((r) => issues.get(r.id)).filter(Boolean);
   if (related.length) {
@@ -111,7 +111,7 @@ ${trunc(linked.body, 500)}${linked.link ? `
     [
       may('report') && btn('plus', 'I have this too', '🙋'),
       may('dev') && btn('assign', 'Assign to me', '🙌'),
-      may('dev') && btn('note', 'Note to requesters', '💬'),
+      may('dev') && btn('note', 'Note to reporters', '💬'),
       may('dev') && btn('merge', 'Merge into…', '🔀'),
       may('dev') && btn('rmrep', 'Remove a report', '🗑️'),
     ],

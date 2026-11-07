@@ -334,9 +334,9 @@ export function talkIntro(issue) {
     new ButtonBuilder().setCustomId(`stbtn:${issue.id}:${value}`).setLabel(st.label).setEmoji(st.emoji).setStyle(['fixed', 'cannot_reproduce', 'wont_fix'].includes(value) ? ButtonStyle.Secondary : ButtonStyle.Success));
   return {
     content: `🧵 **#${issue.id} – ${trunc(issue.title, 150)}**
-Status: **${STATUSES[issue.status]?.emoji ?? ''} ${STATUSES[issue.status]?.label ?? issue.status}**. Use the buttons to move it to another status. Notes to requesters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it.`,
+Status: **${STATUSES[issue.status]?.emoji ?? ''} ${STATUSES[issue.status]?.label ?? issue.status}**. Use the buttons to move it to another status. Notes to reporters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it.`,
     components: [new ActionRowBuilder().addComponents(...moves), new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`note:${issue.id}`).setLabel('Note to requesters').setEmoji('💬').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`note:${issue.id}`).setLabel('Note to reporters').setEmoji('💬').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`merge:${issue.id}`).setLabel('Same problem as another issue…').setEmoji('🔀').setStyle(ButtonStyle.Secondary))],
   };
 }
@@ -436,7 +436,7 @@ export async function postTalkHistory(client, issue, thread = null) {
     list.forEach((r, n) => {
       const who = r.user_id === '0' ? '_removed user_' : `<@${r.user_id}>`;
       const meta = [r.platform, r.version && `v${r.version}`].filter(Boolean).join(' · ');
-      lines.push(`**${n === 0 ? 'Requester' : 'Report'}** ${who} ${when(r.created_at)}${meta ? ` · ${meta}` : ''}\n> ${trunc(String(r.text).replace(/\s+/g, ' '), 600)}`);
+      lines.push(`**${n === 0 ? 'First reporter' : 'Report'}** ${who} ${when(r.created_at)}${meta ? ` · ${meta}` : ''}\n> ${trunc(String(r.text).replace(/\s+/g, ' '), 600)}`);
     });
     if (fresh.owner_id) lines.push(`🙌 Owner: <@${fresh.owner_id}>`);
     if (fresh.dev_note) lines.push(`💬 **Developer note:** ${trunc(fresh.dev_note, 600)}`);
@@ -630,8 +630,16 @@ const DM_GAP_MS = Number(process.env.DM_GAP_MS ?? 150);
 export async function notifyReporters(client, issue, text, only = null) {
   const ids = [...new Set([...reports.forIssue(issue.id).map((r) => r.user_id), ...watchers.forIssue(issue.id)])]
     .filter((id) => (!only || only.includes(id)) && id !== '0' && !prefs.dmOff(id)).slice(0, 500);
+  // Every DM says which server it is about and links back to the panel, so the reader can find My issues (and the off switch).
+  const cfg = settings.get(issue.guild_id);
+  const server = client.guilds?.cache?.get(issue.guild_id)?.name;
+  const panel = cfg?.panel_channel_id && cfg.panel_message_id ? `<https://discord.com/channels/${issue.guild_id}/${cfg.panel_channel_id}/${cfg.panel_message_id}>` : null;
+  const where = panel
+    ? `🔗 ${panel} – open **My issues** there for details, or to turn these messages off.`
+    : `_Open **My issues** on the tracker panel${server ? ` in ${server}` : ''} for details, or to turn these messages off._`;
+  const body = `${server ? `**${server}** · ` : ''}${text}\n${where}`;
   for (const id of ids) {
-    try { await (await client.users.fetch(id)).send(text); } catch { /* DMs closed */ }
+    try { await (await client.users.fetch(id)).send(body); } catch { /* DMs closed */ }
     if (DM_GAP_MS) await new Promise((r) => setTimeout(r, DM_GAP_MS)); // a long run of DMs sent back to back looks like spam to Discord
   }
 }
