@@ -266,7 +266,7 @@ function devMenuPayload(guildId) {
     embeds: [],
     components: [
       row(btn('dev:board', a?.fresh ? `Board (${a.fresh} new)` : 'Board', '📌', a?.total ? ButtonStyle.Danger : ButtonStyle.Secondary), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:articles', 'Knowledge articles', '📚')),
-      row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊'), btn('dev:threads', 'Create threads for open issues', '🧵')),
+      row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊'), ...(guildId && !cfgOf(guildId).threads_backfilled ? [btn('dev:threads', 'Create threads for open issues (one time)', '🧵')] : [])),
       row(btn('dev:export', 'Export CSV', '📤'), btn('dev:backup', 'Back up now', '💾')),
     ],
   };
@@ -1812,6 +1812,7 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
         case 'dev:articles': return show(i, articlesPayload(i.guildId));
         case 'dev:board': return show(i, boardPayload(i.guildId));
         case 'dev:threads': { // step 1: say what will happen
+          if (cfgOf(i.guildId).threads_backfilled) return show(i, { content: '✅ Every open issue already has its private thread (this one-time step was already done).', embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
           if (!cfgOf(i.guildId).board_channel_id) return show(i, { content: 'Pick a **Developer hub** channel first: ⚙️ Settings.', embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
           const todo = missingThreads(i.guildId);
           const players = new Set(todo.flatMap((x) => reports.forIssue(x.id).map((r) => r.user_id).filter((u) => u && u !== '0'))).size;
@@ -1828,6 +1829,7 @@ Each New / Seen / Being fixed issue without one gets a private thread in <#${cfg
           const todo = missingThreads(i.guildId);
           for (const x of todo) await syncTalkThread(client, x);
           const made = todo.filter((x) => issues.get(x.id)?.talk_thread_id).length;
+          if (made === todo.length) settings.update(i.guildId, { threads_backfilled: 1 }); // one time only (if some failed, the button stays so they can be retried)
           return i.editReply({ content: `🧵 Created **${made}** of ${todo.length} thread${todo.length === 1 ? '' : 's'} in <#${cfgOf(i.guildId).board_channel_id}>.${made < todo.length ? '\n⚠️ Some failed – check the bot has Create Private Threads, Send Messages in Threads and Manage Threads there.' : ''}`, embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
         }
         case 'dev:export': {

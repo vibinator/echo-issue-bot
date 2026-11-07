@@ -144,10 +144,11 @@ addColumn('articles', 'source_issue_id', 'INTEGER');                 // the issu
 addColumn('evidence', 'ocr_text', 'TEXT');                           // text read from a screenshot ('' = looked, nothing found; NULL = not looked at yet)
 addColumn('issues', 'article_id', 'INTEGER'); // knowledge article a developer linked to this issue as its answer / workaround
 addColumn('issues', 'thread_archived', 'INTEGER NOT NULL DEFAULT 0'); // 1 = the bot archived this fixed issue's thread
+addColumn('settings', 'threads_backfilled', 'INTEGER NOT NULL DEFAULT 0'); // 1 = the one-time "threads for existing open issues" has been run
 addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = keep closed issues until deleted by hand
 
 const now = () => Date.now();
-const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'article_role_id', 'panel_channel_id', 'panel_message_id', 'auto_merge', 'last_nudge', 'seeded_articles'];
+const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'article_role_id', 'panel_channel_id', 'panel_message_id', 'auto_merge', 'last_nudge', 'seeded_articles', 'threads_backfilled'];
 
 /** What is stored for a server – shown after /setup so you can see nothing was lost. */
 export const summary = (guild) => ({
