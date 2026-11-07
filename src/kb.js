@@ -355,6 +355,33 @@ export const KB = [
     fix: '- The old PC installer is **end-of-life**. Use the **Echo VR Launcher** (github.com/marshmallow-mia/EchoVR_Launcher/releases): `-windows-setup.exe` installs it with no administrator rights; on Linux use the `.AppImage`.\n- Already have Echo VR? On **Install** pick **Use the copy on this PC** (or **Choose echovr.exe**) instead of downloading again.\n- Echo VR on **Quest** still uses the Quest installer guide in the Echo VR Lounge Discord.',
     source: LAUNCHER,
   },
+  {
+    id: 'waiting_period_7day', title: '7-Day Waiting Period (new Discord account can\'t start Echo VR)',
+    symptoms: 'seven day waiting period 7 day waiting new discord account cannot start echo vr blocked from starting game new account less than a week old discord account too new login wait account age',
+    pattern: /(7|seven)[- ]day waiting period|waiting period/i,
+    fix: '- For security, a **7-day waiting period** applies to **new Discord accounts**. If your Discord account is less than a week old, this is why Echo VR won\'t start.\n- **Workaround:** if you have an older Discord account you can still use, switch to that one to skip the waiting period.\n- Otherwise just wait until the account is a week old – sorry for the inconvenience, and thanks for your patience!',
+    source: 'Echo VR community support (PC)',
+  },
+  {
+    id: 'internal_error_lobby', title: '"Internal Error" when loading into a lobby or match',
+    symptoms: 'internal error when loading into a lobby or match internal error joining lobby cannot join match error loading into game set lobby whoami',
+    pattern: /internal error/i,
+    fix: '- Use these commands in <#1227795372244729926>:\n  `/whoami`\n  `/set-lobby`\n- Once the commands have been run, **restart the game**.',
+    source: 'Echo VR community support (PC)',
+  },
+  {
+    id: 'cosmetics_not_saving', title: 'Cosmetics not saving',
+    symptoms: 'cosmetics not saving cosmetics wont save equipped cosmetics reset loadout not saved changes lost after restart equip cosmetic disappears customization not saving',
+    fix: '- This is a **known bug** that stops some players from **saving their cosmetics** after equipping them.\n- Equip your cosmetics, exit the game and restart to see if the changes saved – but this doesn\'t always work. [Worth a try](https://discord.com/channels/779349159852769310/1094663636947054754/1558505195921604751)!\n- A fix [was deployed](https://discord.com/channels/779349159852769310/779349159852769313/1536839914371682344), but unfortunately it doesn\'t appear to have worked. **There is no ETA yet** for a fix.',
+    source: 'Echo VR community support (PC)',
+  },
+  {
+    id: 'pc_wont_open_meta_207', title: 'Echo VR on PC won\'t open (Meta Horizon app v207+)',
+    symptoms: 'echo vr pc wont open will not launch stopped working meta horizon app v207 207 update oculus app echovr.exe closes immediately LibOVRPlatformImpl64_1 dll',
+    pattern: /LibOVRPlatformImpl64/i,
+    fix: '- If Echo VR **used to work** on your PC and now won\'t open, it may be caused by **version 207 (or newer) of the Meta Horizon app**.\n- Check your Meta Horizon version. If it\'s **207 or higher**, try this fix:\n  1. Download the **`LibOVRPlatformImpl64_1.dll`** file.\n  2. Move it into the same folder as `echovr.exe`, for example `ready-at-dawn-echo-arena\\bin\\win10\\`.\n  3. Run Echo VR – it should now launch.',
+    source: 'Echo VR community support (PC)',
+  },
 ];
 
 // Tuned on a set of realistic player sentences (typos, loose wording, and look-alike non-matches). A match only
