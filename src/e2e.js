@@ -145,6 +145,15 @@ console.log('2. access control on the panel');
   check(has(r.out.payload, /developers only/), 'a normal player cannot open the Developer menu');
   r = await press(alice, panelScreen, 'dev:articles');
   check(has(r.out.payload, /can only be changed by developers/), 'a normal player cannot open the article tools');
+  r = await press(alice, panelScreen, 'kb:browse');
+  check(has(r.out.payload, /Knowledge articles/) && buttonsOf(r.out.payload).some((c) => c.custom_id === 'kbv:0') && !labelsOf(r.out.payload).includes('Manage articles'), 'a player can browse the knowledge articles from the panel (read-only)');
+  const firstKb = buttonsOf(r.out.payload).find((c) => c.custom_id === 'kbv:0').options[0].value;
+  r = await choose(alice, r.screen, 'kbv:0', [firstKb]);
+  check(r.out.payload.embeds?.length === 1 && labelsOf(r.out.payload).includes('Back to the list'), 'picking one shows the fix with a way back');
+  r = await press(alice, r.screen, 'report');
+  check(labelsOf(r.out.payload).join() === 'Install issue,Bug in game' && r.out.type === 'update', '"Report a problem" from an article replaces that screen with the report flow');
+  r = await press(editor, panelScreen, 'kb:browse');
+  check(labelsOf(r.out.payload).includes('Manage articles'), 'an article editor also sees Manage articles there');
   r = await press(editor, panelScreen, 'dev:menu');
   check(JSON.stringify(labelsOf(r.out.payload)) === JSON.stringify(['Knowledge articles']), 'an article editor sees only the article tools');
   for (const id of ['dev:settings', 'dev:board', 'dev:export', 'dev:backup', 'dev:digest', 'dev:dups']) {
@@ -286,10 +295,15 @@ console.log('7. My issues');
   const rm = await press(alice, ed.screen, `rematch:${aliceReportId}`);
   check(has(rm.out.payload, /still fits best|moved|own issue/), 'Recalculate match answers with a clear result');
   check(rm.i.responses[0].type === 'deferUpdate', 'Recalculate answers first');
-  let f = await press(carol, panelScreen, `follow:${aliceIssueId}`);
+  const carolCard = cardOf(aliceIssueId, { dev: false, report: true, article: false, userId: 'carol' }); // a private card opened from Known issues
+  let f = await press(carol, carolCard, `follow:${aliceIssueId}`);
   check(has(f.out.payload, /now following/), 'a non-reporter can follow an issue');
+  check(f.out.type === 'update' && buttonsOf(f.out.payload).some((c) => c.label === 'Unfollow'), 'the private card is redrawn and the button now says Unfollow');
+  f = await press(carol, f.screen, `follow:${aliceIssueId}`);
+  check(has(f.out.payload, /stopped following/) && buttonsOf(f.out.payload).some((c) => c.label === 'Follow'), '…and unfollow, with the button back to Follow');
   f = await press(carol, panelScreen, `follow:${aliceIssueId}`);
-  check(has(f.out.payload, /stopped following/), '…and unfollow');
+  check(f.out.type === 'reply' && has(f.out.payload, /now following/), 'from a public message the answer is a private reply instead');
+  db.watchers.remove(aliceIssueId, 'carol');
   f = await press(alice, panelScreen, `follow:${aliceIssueId}`);
   check(has(f.out.payload, /already get its updates/), 'a reporter is told they already get updates');
   const dmOff = await press(alice, r.screen, 'dm:toggle');
@@ -341,6 +355,17 @@ console.log('8. developer workflow');
   check(r.out.modal, 'the note button opens a form');
   r = await submit(dev, cardScreen(), `note:${aliceIssueId}`, { text: 'Reproduced on Quest 3, fix is on the beta channel' });
   check(db.issues.get(aliceIssueId).dev_note?.includes('beta channel') && r.i.responses[0].type === 'deferReply', 'the note is saved (answering first)');
+
+  // edit title / category
+  r = await press(alice, cardScreen(), `retitle:${aliceIssueId}`);
+  check(has(r.out.payload, /developers only/), 'a player cannot edit the title');
+  r = await press(dev, cardScreen(), `retitle:${aliceIssueId}`);
+  check(r.out.modal && /Edit #/.test(JSON.stringify(r.out.modal)) && !/category/.test(JSON.stringify(r.out.modal)), 'a developer gets the edit form (no category choice on an install issue)');
+  const oldTitle = db.issues.get(aliceIssueId).title;
+  r = await submit(dev, cardScreen(), `retitle:${aliceIssueId}`, { title: 'Quest: "problem parsing the package" when installing' });
+  check(db.issues.get(aliceIssueId).title === 'Quest: "problem parsing the package" when installing' && r.i.responses[0].type === 'deferUpdate', 'the new title is saved (answering first)');
+  check(db.events.forIssue(aliceIssueId, 1)[0].kind === 'edited' && db.events.forIssue(aliceIssueId, 1)[0].detail.includes(oldTitle.slice(0, 20)), '…and the history records the old and new title');
+  check(has(r.out.payload, /problem parsing the package" when installing/), 'the card is redrawn with the new title');
 
   // set channels through the settings menus, then fix with a version
   const settingsScreen = (await press(dev, panelScreen, 'dev:settings')).screen;
@@ -546,11 +571,12 @@ console.log('9a. attention');
   const panel = ui.panelPayload('G');
   check(buttonsOf(plain(panel)).some((c) => /need attention/.test(c.label ?? '') && c.style === 4), 'the Developer button on the panel turns red and shows how many need attention');
   const waitingN = db.issues.list('G').filter((x) => x.status === 'new').length;
-  const answeredN = db.issues.list('G').filter((x) => ['seen', 'fixed', 'cannot_reproduce', 'wont_fix'].includes(x.status)).length;
+  const seenN = db.issues.list('G').filter((x) => x.status === 'seen').length;
+  const closedN = db.issues.list('G').filter((x) => ['fixed', 'cannot_reproduce', 'wont_fix'].includes(x.status)).length;
   const workingN = db.issues.list('G').filter((x) => x.status === 'in_progress').length;
   const kbN = db.articles.list('G').filter((a) => !a.draft).length;
   const panelText = JSON.stringify(plain(panel));
-  check(panelText.includes(`**${waitingN}** waiting for a developer reply`) && panelText.includes(`**${answeredN}** answered by a developer`) && panelText.includes(`**${workingN}** being worked on`), `the panel shows ${waitingN} waiting and ${answeredN} answered`);
+  check(panelText.includes(`**${waitingN}** new – not looked at yet`) && panelText.includes(`**${seenN}** seen by a developer`) && panelText.includes(`**${workingN}** being fixed`) && panelText.includes(`**${closedN}** closed`), `the panel shows ${waitingN} new, ${seenN} seen, ${workingN} being fixed and ${closedN} closed`);
   check(panelText.includes(`**${kbN}** written by the team`) && panelText.includes(`**${KB.length}** built-in answers`), `the panel shows ${kbN} stored knowledge articles`);
   const menu = await press(dev, panelScreen, 'dev:menu');
   check(has(menu.out.payload, /Needs attention/) && labelsOf(menu.out.payload).some((l) => /Board \(\d+ new\)/.test(l)), 'the developer menu says what needs attention and the Board button shows the new count');

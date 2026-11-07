@@ -13,8 +13,13 @@ import { trunc } from './text.js';
 export const MATCH_THRESHOLD = 0.25;
 
 
-const makeTitle = (text) => {
-  const first = text.trim().split(/(?<=[.!?\n])\s/)[0].replace(/\s+/g, ' ');
+// Opening lines that say nothing about the problem ("Hi there, hope someone can help.") – skipped when another sentence follows.
+const FILLER = /^(hi|hello|hey|yo|hiya|heya|howdy|greetings|good (morning|afternoon|evening|day)|dear|hope|hoping|please|pls|plz|help|can (someone|anyone|somebody|you) (please )?help|i need help|need help|question|quick question|sorry|first of all|not sure if this is the right place|is this the right place|does anyone|anyone else|thanks|thank you|ty)\b/i;
+/** The issue title: the first sentence that actually describes the problem (greetings and "please help" openers are skipped). */
+export const makeTitle = (text) => {
+  const sentences = String(text).trim().split(/(?<=[.!?])\s+|\n+/).map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const filler = (s) => FILLER.test(s.replace(/^[^a-z0-9]+/i, '')) || s.split(' ').length < 3;
+  const first = sentences.find((s, n) => !filler(s) || n === sentences.length - 1) ?? sentences[0] ?? String(text).trim();
   return trunc(first, 150);
 };
 

@@ -105,6 +105,7 @@ export function interaction({ kind, customId, who, values, fields = {}, files = 
     fields: {
       getTextInputValue: (k) => { if (!(k in fields)) throw new Error(`Modal field "${k}" is not in this form`); return fields[k]; },
       getUploadedFiles: (k) => (files.length ? new Map(files.map((f, n) => [String(n), f])) : null),
+      getStringSelectValues: (k) => { if (!(k in fields)) throw new Error(`Modal field "${k}" is not in this form`); return [].concat(fields[k]); },
     },
     isChatInputCommand: () => kind === 'command', isButton: () => kind === 'button', isModalSubmit: () => kind === 'modal',
     isStringSelectMenu: () => kind === 'select', isChannelSelectMenu: () => kind === 'channelselect', isUserSelectMenu: () => kind === 'userselect',

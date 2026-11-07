@@ -224,6 +224,7 @@ export const issues = {
   ).all(guild).map((r) => r.id),
   setMessage: (id, channel, message) => db.prepare('UPDATE issues SET channel_id = ?, message_id = ? WHERE id = ?').run(channel, message, id),
   setTitle: (id, title) => db.prepare('UPDATE issues SET title = ? WHERE id = ?').run(title, id),
+  setCategory: (id, category) => db.prepare('UPDATE issues SET category = ? WHERE id = ?').run(category, id),
   /** Closed issues with no activity since `ts` (for the optional retention clean-up). */
   closedBefore: (guild, ts) => db.prepare(
     "SELECT * FROM issues WHERE guild_id = ? AND status IN ('fixed', 'wont_fix', 'cannot_reproduce') AND updated_at < ?"

@@ -104,6 +104,8 @@ ${trunc(linked.body, 500)}${linked.link ? `
 
   const btn = (id, label, emoji) => new ButtonBuilder().setCustomId(`${id}:${issue.id}`).setLabel(label).setEmoji(emoji).setStyle(ButtonStyle.Secondary);
   const mine = !viewer || reports.forIssue(issue.id).some((r) => r.user_id === viewer.userId);
+  const reported = !!viewer && reports.hasUser(issue.id, viewer.userId); // already gets every update, so no Follow button
+  const following = !!viewer && watchers.has(issue.id, viewer.userId);
   const rows = [
     ...(may('dev') ? [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu)] : []),
     [
@@ -114,7 +116,7 @@ ${trunc(linked.body, 500)}${linked.link ? `
       may('dev') && btn('rmrep', 'Remove a report', '🗑️'),
     ],
     [
-      btn('follow', 'Follow', '🔔'),
+      !reported && (following ? btn('follow', 'Unfollow', '🔕') : btn('follow', 'Follow', '🔔')), // says what pressing it does
       may('report') && mine && btn('editmine', 'Edit my report', '✏️'),
       may('report') && (mine || watchers.has(issue.id, viewer.userId)) && btn('addev', 'Add screenshots / logs', '📎'), // your own issues, or ones you follow
       btn('history', 'History', '📜'),
@@ -122,6 +124,7 @@ ${trunc(linked.body, 500)}${linked.link ? `
     ],
     // Last row: open the private attachments (the bot only shows them to the reporter and developers), plus Back in menus.
     [
+      may('dev') && btn('retitle', 'Edit title / category', '✏️'),
       (may('dev') || may('article')) && btn('lkart', 'Link knowledge article', '🔗'),
       may('dev') && issue.talk_thread_id && btn('talk', 'Developer thread', '🧵'),
       (!viewer || viewer.dev || ev.some((e) => e.user_id === viewer.userId)) && btn('evall', 'View attachments', '📎'), // others' attachments are private

@@ -8,7 +8,7 @@ process.env.EVIDENCE_DIR = mkdtempSync(join(tmpdir(), 'evr-evidence-')); // uplo
 process.env.EVIDENCE_MAX_MB = '1';
 process.env.BACKUP_DIR = mkdtempSync(join(tmpdir(), 'evr-backups-')); // never write test backups into the real data/backups
 const assert = (await import('node:assert/strict')).default;
-const { fileReport, splitReport, mergeIssues } = await import('./service.js');
+const { fileReport, splitReport, mergeIssues, makeTitle } = await import('./service.js');
 const { issues } = await import('./db.js');
 
 const g = 'guild1';
@@ -510,8 +510,8 @@ assert.deepEqual(unarchived, [false], 'an archived thread is reopened so the car
 const withBack = renderIssue(issues.get(T.issue.id), { back: 'browse' });
 assert.equal(withBack.components.length, 5);
 const lastRowIds = (p) => p.components[4].toJSON().components.map((c) => c.custom_id);
-assert.deepEqual(lastRowIds(withBack), [`lkart:${T.issue.id}`, `evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
-assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`lkart:${T.issue.id}`, `evall:${T.issue.id}`], 'no Back button on the public card');
+assert.deepEqual(lastRowIds(withBack), [`retitle:${T.issue.id}`, `lkart:${T.issue.id}`, `evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
+assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`retitle:${T.issue.id}`, `lkart:${T.issue.id}`, `evall:${T.issue.id}`], 'no Back button on the public card');
 // controls the viewer can't use are left out
 const idsOf = (p) => p.components.flatMap((r) => r.toJSON().components.map((c) => c.custom_id.split(':')[0]));
 const asPlayer = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'someone' } }));
@@ -520,9 +520,14 @@ assert.ok(!asPlayer.includes('addev'), 'adding attachments is offered only on is
 assert.ok(!['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'lkart', 'editmine'].some((x) => asPlayer.includes(x)), 'a player sees no developer controls (and no edit on a report that is not theirs)');
 const asOwner = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 't1' } }));
 assert.ok(asOwner.includes('editmine'), 'the reporter can edit their own report');
+assert.ok(!asOwner.includes('follow'), 'a reporter already gets updates, so no Follow button');
+assert.ok(!asPlayer.includes('retitle') && !asOwner.includes('retitle'), 'only developers can edit the title');
 assert.ok(asOwner.includes('addev'), 'and add attachments to it');
 watchers.add(T.issue.id, 'fol1');
 const asFollower = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'fol1' } }));
+const followBtn = (uid) => renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: uid } }).components.flatMap((r) => r.toJSON().components).find((c) => c.custom_id.startsWith('follow:'));
+assert.equal(followBtn('fol1').label, 'Unfollow', 'someone who follows is offered Unfollow');
+assert.equal(followBtn('someone').label, 'Follow', 'someone who does not is offered Follow');
 assert.ok(asFollower.includes('addev') && !asFollower.includes('editmine'), 'a follower can attach files (but has no report to edit)');
 const asReadOnly = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: false, article: false, userId: 'x' } }));
 assert.ok(!['plus', 'addev', 'editmine'].some((x) => asReadOnly.includes(x)) && asReadOnly.includes('history'), 'someone who cannot report only reads');
@@ -982,5 +987,13 @@ assert.ok(tokenize('Привет мир').length >= 2, 'Cyrillic words are kept'
   const t = fileReport({ guildId: 'g-csv', userId: 'h5', text: '\tcmd|calc is how this report starts, then keeps going for a while' });
   assert.ok(exportCsv('g-csv').reports.toString().includes("'\tcmd"), 'tab-led cells are quoted with a leading apostrophe');
 }
+
+// titles skip greetings and "please help" openers, but never end up empty
+assert.equal(makeTitle('Hi there, hope someone can help. The game crashes every time the lobby loads.'), 'The game crashes every time the lobby loads.', 'a greeting sentence is skipped');
+assert.equal(makeTitle('Please help!'), 'Please help!', 'a report that is only a plea keeps its text');
+assert.equal(makeTitle('So the game crashes when I boost. It happens in arena.'), 'So the game crashes when I boost.', 'an ordinary first sentence is kept');
+assert.equal(makeTitle('Hello\nController tracking drops out in every match'), 'Controller tracking drops out in every match', 'a one-word greeting line is skipped');
+assert.equal(makeTitle('Sorry if this is known. Hey all. Audio cuts out when someone joins my party, every time.'), 'Audio cuts out when someone joins my party, every time.', 'several openers are skipped');
+assert.equal(makeTitle('Crash.'), 'Crash.', 'a very short report still gets a title');
 
 console.log('All tests passed.');

@@ -6,7 +6,7 @@ import {
 import { semanticScores, warmEmbeddings } from './embed.js';
 import { articles, restoreArticles, db, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, seen, settings, summary, watchers } from './db.js';
 import { erasePayload, privacyPayload, termsPayload } from './legal.js';
-import { CATEGORIES } from './categories.js';
+import { CATEGORIES, INSTALL_CATEGORY } from './categories.js';
 import { PRIORITIES, STATUSES, person, renderIssue } from './render.js';
 import { relatedIssues } from './related.js';
 import { extractLinks, KIND_EMOJI } from './evidence.js';
@@ -224,9 +224,11 @@ async function alertDevs(issue, why) {
 function panelPayload(guildId) {
   const todo = guildId ? attention(guildId).total : 0;
   const open = guildId ? issues.list(guildId) : [];
-  const waiting = open.filter((x) => x.status === 'new').length;
-  const answered = open.filter((x) => ['seen', 'fixed', 'cannot_reproduce', 'wont_fix'].includes(x.status)).length;
-  const working = open.filter((x) => x.status === 'in_progress').length;
+  const count = (...st) => open.filter((x) => st.includes(x.status)).length;
+  const waiting = count('new');
+  const seenN = count('seen');
+  const working = count('in_progress');
+  const closed = count('fixed', 'cannot_reproduce', 'wont_fix');
   const kbCount = guildId ? articles.list(guildId).filter((a) => !a.draft).length : 0;
   const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('Echo VR – Problem Tracker').setFooter({ text: `Bot ${versionLabel()}` })
     .setDescription([
@@ -235,13 +237,14 @@ function panelPayload(guildId) {
       '📝 **Report a problem** – we\'ll first show quick fixes for common problems. If none help, you can send a report.',
       '',
       '📋 **Known issues** – see what has already been reported and how it\'s going.',
-      `• **${waiting}** waiting for a developer reply`,
-      `• **${answered}** answered by a developer`,
-      `• **${working}** being worked on`,
+      `• **${waiting}** new – not looked at yet`,
+      `• **${seenN}** seen by a developer`,
+      `• **${working}** being fixed`,
+      `• **${closed}** closed – fixed, can't reproduce or won't fix`,
       '',
-      '📌 **My issues** – follow your reports, see developer replies (marked 🔴 until you read them), add details, and turn update messages on or off.',
+      '📌 **My issues** – follow your reports, see what the developers changed (🔴 = changed since you last looked), add details, and turn update messages on or off.',
       '',
-      '📚 **Knowledge articles** – quick fixes for common problems, shown to you automatically before you send a report.',
+      '📚 **Knowledge articles** – browse the quick fixes for common problems (they are also shown to you automatically before you send a report).',
       `• **${KB.length}** built-in answers`,
       `• **${kbCount}** written by the team`,
       '',
@@ -252,7 +255,7 @@ function panelPayload(guildId) {
     components: [
       row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Known issues', '📋'), btn('mine', 'My issues', '📌'),
         btn('legal:privacy', 'Data & privacy', '🔒'), btn('legal:terms', 'Terms of use', '📜')),
-      row(btn('dev:articles', 'Knowledge articles', '📚'), todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️')),
+      row(btn('kb:browse', 'Knowledge articles', '📚'), todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️')),
     ],
   };
 }
@@ -399,6 +402,44 @@ function faqAnswerPayload(entry, kind) {
   };
 }
 
+const KB_PAGE = 25;
+/** Everything players may read: the server's own published articles first, then the built-in answers. */
+const browsableKnowledge = (guildId) => [
+  ...articles.list(guildId, { enabledOnly: true }).filter((a) => !a.draft)
+    .map((a) => ({ id: `a:${a.id}`, title: a.title, fix: a.link ? `${a.body}\n\n🔗 ${a.link}` : a.body, source: 'Written by this server\'s team', custom: true })),
+  ...KB.map((e) => ({ id: `kb:${e.id}`, title: e.title, fix: e.fix, source: e.source, custom: false })),
+];
+/** Read-only browsing of the knowledge articles, for everyone (no suggestion stats are counted here – nobody was pointed at these). */
+function kbBrowsePayload(i, page = 0) {
+  const all = browsableKnowledge(i.guildId);
+  const pages = Math.max(1, Math.ceil(all.length / KB_PAGE));
+  page = Math.min(Math.max(0, page), pages - 1);
+  const shown = all.slice(page * KB_PAGE, (page + 1) * KB_PAGE);
+  const own = all.filter((e) => e.custom).length;
+  const components = [];
+  if (shown.length) {
+    components.push(row(new StringSelectMenuBuilder().setCustomId(`kbv:${page}`).setPlaceholder('Pick a problem to read the fix…')
+      .addOptions(shown.map((e) => ({ label: trunc(e.title, 100), value: e.id, emoji: e.custom ? '📚' : '💡', description: e.custom ? 'Written by this server\'s team' : 'Built-in answer' })))));
+  }
+  if (pages > 1) {
+    components.push(row(btn(`kbp:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('kbp:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
+      btn(`kbp:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
+  }
+  components.push(row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), ...(canManageArticles(i) ? [btn('dev:articles', 'Manage articles', '🛠️')] : [])));
+  return {
+    content: `**📚 Knowledge articles** – ${all.length} quick fixes for common problems: **${own}** written by this server's team (📚) and **${all.length - own}** built-in (💡).${pages > 1 ? ` Page ${page + 1} of ${pages}.` : ''}\nPick one to read the fix. If none fits, press **Report a problem** – the closest matches to what you describe are shown to you again there.`,
+    embeds: [], components,
+  };
+}
+/** One article, read-only, with a way back to the page it came from. */
+function kbShowPayload(entry, page) {
+  return {
+    content: '',
+    embeds: [new EmbedBuilder().setColor(0xfee75c).setTitle(`💡 ${trunc(entry.title, 250)}`).setDescription(trunc(entry.fix, 4000)).setFooter({ text: `Source: ${entry.source}` })],
+    components: [row(btn(`kbp:${page}`, 'Back to the list', '⬅️'), btn('report', 'Didn\'t help – report a problem', '📝'))],
+  };
+}
+
 const meTooModal = (issue) => new ModalBuilder().setCustomId(`plus:${issue.id}`).setTitle(`I have this too · #${issue.id}`).addLabelComponents(
   labelled('Anything to add? (optional)', lText('text', { style: TextInputStyle.Paragraph, max: 1000 })),
   platformField(), versionField(), ...evidenceFields());
@@ -493,6 +534,18 @@ function readEvidence(i) {
 
 const noteModal = (issue) => new ModalBuilder().setCustomId(`note:${issue.id}`).setTitle(`Note to requesters · #${issue.id}`).addComponents(
   input('text', 'Note to requesters (empty = remove note)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note, placeholder: 'Shown on the issue, and sent as a message to everyone who reported or follows it.' }));
+
+/** Developers: fix a bad title (the first sentence of a report isn't always the problem) and the detected category. */
+const retitleModal = (issue) => {
+  const m = new ModalBuilder().setCustomId(`retitle:${issue.id}`).setTitle(`Edit #${issue.id}`).addLabelComponents(
+    labelled('Title', lText('title', { max: 150, required: true, min: 5, value: issue.title }), 'What players see in Known issues and on the board – say what goes wrong.'));
+  if (issue.kind !== 'install') { // install issues all share one category
+    m.addLabelComponents(new LabelBuilder().setLabel('Category').setDescription('Leave as is to keep the current one.').setStringSelectMenuComponent(
+      new StringSelectMenuBuilder().setCustomId('category').setRequired(false)
+        .addOptions([...Object.keys(CATEGORIES).filter((c) => c !== INSTALL_CATEGORY), 'Other'].map((c) => ({ label: c, value: c, default: c === issue.category })))));
+  }
+  return m;
+};
 
 const fixedModal = (issue) => new ModalBuilder().setCustomId(`fixed:${issue.id}`).setTitle(`Mark fixed · #${issue.id}`).addComponents(
   input('version', 'Fixed in version (optional)', { max: 40, placeholder: 'e.g. 0.13.15', value: issue.fixed_version }),
@@ -802,7 +855,7 @@ function confirmRemovePayload(issue, report) {
 
 const EVENT_LABEL = {
   created: '🆕 Reported', status: '🔄 Status', priority: '⚑ Priority', owner: '🙌 Owner',
-  merged: '🔀 Merged', article: '📚 Article', reopened: '⚠️ Reopened', rematched: '🔁 Report moved',
+  merged: '🔀 Merged', article: '📚 Article', reopened: '⚠️ Reopened', rematched: '🔁 Report moved', edited: '✏️ Edited',
 };
 function timeline(issueId, showActors, limit = 8) {
   const evs = events.forIssue(issueId, limit);
@@ -825,11 +878,11 @@ function minePayload(i) {
     return { content: "You haven't sent or followed any reports yet. Press **Report a problem** on the panel, or 🔔 **Follow** on any issue to get updates.", embeds: [], components: [dmRow] };
   }
   return {
-    content: `**📌 My issues** (${list.length}) – pick one to see how it's going, add details or edit it.${unread ? `\n🔴 **${unread}** ${unread === 1 ? 'has' : 'have'} a new reply from the developers – marked below.` : ''}\nUpdate messages: **${dmOff ? 'off 🔕' : 'on 🔔'}** – use the button below to change this.`,
+    content: `**📌 My issues** (${list.length}) – pick one to see how it's going, add details or edit it.${unread ? `\n🔴 **${unread}** changed since you last looked (a new status or a note from the developers) – marked below.` : ''}\nUpdate messages: **${dmOff ? 'off 🔕' : 'on 🔔'}** – use the button below to change this.`,
     embeds: [],
     components: [row(new StringSelectMenuBuilder().setCustomId('mine_view').setPlaceholder('Open one…').addOptions(list.map(({ it, tag, unread: isNew }) => ({
       label: trunc(`${isNew ? '🔴 ' : ''}#${it.id} ${it.title}`, 100),
-      description: trunc(`${isNew ? 'New developer reply · ' : ''}${tag} · ${STATUSES[it.status]?.label} · ${(PRIORITIES[it.priority] ?? PRIORITIES.normal).label}`, 100),
+      description: trunc(`${isNew ? 'Changed since you looked · ' : ''}${tag} · ${STATUSES[it.status]?.label} · ${(PRIORITIES[it.priority] ?? PRIORITIES.normal).label}`, 100),
       emoji: STATUSES[it.status]?.emoji,
       value: String(it.id),
     })))), dmRow],
@@ -1163,7 +1216,7 @@ async function handleInteraction(i) {
       if (!settings.get(i.guildId)) return i.reply({ content: "This isn't ready yet – a server admin needs to run `/setup` first.", flags: EPH });
       if (!canReport(i)) return noReportAccess(i);
       const wait = cooldownLeft(i);
-      return wait ? i.reply(waitMsg(wait)) : i.reply({ ...reportTypePayload(), flags: EPH });
+      return wait ? i.reply(waitMsg(wait)) : show(i, reportTypePayload()); // from a hidden screen (e.g. an article) it replaces that screen
     }
     // Step 2: show the known problems for this ticket type before any form opens.
     if (i.isButton() && (id === 'rtype:install' || id === 'rtype:bug')) {
@@ -1299,6 +1352,15 @@ async function handleInteraction(i) {
       });
     }
 
+    // ----- knowledge articles: read-only browsing for everyone -----
+    if (i.isButton() && id === 'kb:browse') return show(i, kbBrowsePayload(i));
+    if (i.isButton() && id.startsWith('kbp:')) return i.update(kbBrowsePayload(i, Number(id.slice(4)) || 0));
+    if (i.isStringSelectMenu() && id.startsWith('kbv:')) {
+      const page = Number(id.slice(4)) || 0;
+      const entry = browsableKnowledge(i.guildId).find((e) => e.id === i.values[0]);
+      return i.update(entry ? kbShowPayload(entry, page) : kbBrowsePayload(i, page));
+    }
+
     // ----- browsing -----
     if (i.isButton() && id === 'browse') return show(i, browsePayload(i, { s: OPEN, c: NONE, o: NONE, p: 0 }));
     if (i.isStringSelectMenu() && id.startsWith('bfs:')) {
@@ -1428,6 +1490,37 @@ async function handleInteraction(i) {
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
       if (!mine) await threadSay(client, issue, `🙌 <@${i.user.id}> took this issue${issue.owner_id ? ` (from <@${issue.owner_id}>)` : ''}.`);
       return i.editReply(card(i, issues.get(issue.id)));
+    }
+
+    // ----- issue message: edit title / category (developers) -----
+    if (i.isButton() && id.startsWith('retitle:')) {
+      if (!isDev(i)) return devOnly(i, 'edit the title or category');
+      const issue = await loadIssue(i, idOf(i));
+      return issue && i.showModal(retitleModal(issue));
+    }
+    if (i.isModalSubmit() && id.startsWith('retitle:')) {
+      if (!isDev(i)) return devOnly(i, 'edit the title or category');
+      const issue = await loadIssue(i, idOf(i));
+      if (!issue) return;
+      const title = i.fields.getTextInputValue('title').replace(/\s+/g, ' ').trim();
+      let category = issue.category;
+      try { category = i.fields.getStringSelectValues('category')[0] ?? issue.category; } catch { /* install issues have no category field */ }
+      if (issue.kind === 'install' || category === INSTALL_CATEGORY || (!CATEGORIES[category] && category !== 'Other')) category = issue.category;
+      const changes = [];
+      if (title && title !== issue.title) { issues.setTitle(issue.id, title); changes.push(`title “${trunc(issue.title, 60)}” → “${trunc(title, 60)}”`); }
+      if (category !== issue.category) { issues.setCategory(issue.id, category); changes.push(`category ${issue.category} → ${category}`); }
+      const fromCard = i.isFromMessage();
+      if (fromCard) await i.deferUpdate(); else await i.deferReply({ flags: EPH });
+      if (changes.length) {
+        events.add(issue.id, 'edited', i.user.id, changes.join('; '));
+        const fresh = issues.get(issue.id);
+        await syncMessage(client, fresh, trackerChannel(i));
+        await talkSay(client, fresh, `✏️ <@${i.user.id}> changed the ${changes.join(' and the ')}.`);
+        await syncTalkThread(client, fresh); // the developer thread is named after the title
+        refreshPanel(i.guildId);
+      }
+      const fresh = issues.get(issue.id);
+      return i.editReply(fromCard ? card(i, fresh) : { content: changes.length ? `✏️ Updated #${issue.id}: ${changes.join('; ')}.` : `Nothing changed on #${issue.id}.` });
     }
 
     // ----- private thread with the players of an issue (developer hub) -----
@@ -1638,12 +1731,13 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
       if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You sent a report for this issue, so you already get its updates. 🔔', flags: EPH });
-      if (watchers.has(issue.id, i.user.id)) {
-        watchers.remove(issue.id, i.user.id);
-        return i.reply({ content: `🔕 You've stopped following **#${issue.id}**.`, flags: EPH });
-      }
-      watchers.add(issue.id, i.user.id);
-      return i.reply({ content: `🔔 You're now following **#${issue.id}** – you'll get a message when its status changes. You can find everything you follow under **My issues**.`, flags: EPH });
+      const was = watchers.has(issue.id, i.user.id);
+      if (was) watchers.remove(issue.id, i.user.id); else watchers.add(issue.id, i.user.id);
+      const msg = was ? `🔕 You've stopped following **#${issue.id}**.` : `🔔 You're now following **#${issue.id}** – you'll get a message when its status changes. You can find everything you follow under **My issues**.`;
+      if (!hidden(i)) return i.reply({ content: msg, flags: EPH }); // the shared card of an older issue: leave the public message alone
+      // a private card: redraw it so the button now shows the opposite action (Follow ⇄ Unfollow)
+      const onTrack = i.message?.components?.flatMap((r) => r.components ?? []).some((c) => c.customId === 'mine:back');
+      return i.update({ ...(onTrack ? trackPayload(i, issue) : card(i, issue)), content: msg });
     }
     if (i.isButton() && id.startsWith('history:')) {
       const issue = await loadIssue(i, idOf(i));
