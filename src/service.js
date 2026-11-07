@@ -302,6 +302,7 @@ export async function purgeEvidence(client, reportId) {
 
 const OPEN_STATUSES = ['new', 'seen', 'in_progress'];
 const talkLocks = new Map();
+const threadWarned = new Map();
 
 /** Open (or find and un-archive) the issue's developer thread in the hub channel. */
 export async function openTalkThread(client, issue) {
@@ -345,7 +346,15 @@ export function syncTalkThread(client, issue) {
         const t = await client.channels.fetch(fresh.talk_thread_id);
         if (!t.archived) await t.setArchived(true, `Issue ${fresh.status}`);
       }
-    } catch (e) { console.error('Developer thread sync failed:', e.message); }
+    } catch (e) {
+      console.error('Developer thread sync failed:', e.message);
+      // Say so in the hub (at most once an hour) instead of failing silently, usually a missing permission.
+      const g = issue.guild_id, hub = settings.get(g)?.board_channel_id;
+      if (hub && Date.now() - (threadWarned.get(g) ?? 0) > 3600e3) {
+        threadWarned.set(g, Date.now());
+        try { await (await client.channels.fetch(hub)).send(`⚠️ I couldn't create the thread for issue #${issue.id}: ${e.message}\nCheck the bot has **Create Public Threads**, **Send Messages in Threads** and **Manage Threads** in this channel, then press **Developer → Process previous requests into threads**.`); } catch { /* no access at all */ }
+      }
+    }
   });
   talkLocks.set(issue.id, turn);
   turn.finally(() => { if (talkLocks.get(issue.id) === turn) talkLocks.delete(issue.id); });

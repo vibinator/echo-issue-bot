@@ -160,7 +160,10 @@ export function refreshBoard(client, guildId) {
       const ch = await client.channels.fetch(cfg.board_channel_id);
       await (await ch.messages.fetch(cfg.board_message_id)).edit(boardPayload(guildId));
     } catch (e) {
-      if ([10003, 10008].includes(e.code)) settings.update(guildId, { board_channel_id: null, board_message_id: null }); // deleted
+      if (e.code === 10003) settings.update(guildId, { board_channel_id: null, board_message_id: null }); // channel deleted
+      else if (e.code === 10008) { // only the board message was deleted: keep the hub (threads depend on it) and post the board again
+        try { await postBoard(client, guildId, await client.channels.fetch(cfg.board_channel_id)); } catch { /* retry on the next change */ }
+      }
     }
   }, 3000);
   t.unref?.();
