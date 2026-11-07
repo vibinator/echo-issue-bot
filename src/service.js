@@ -1,4 +1,4 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, StringSelectMenuBuilder } from 'discord.js';
 import { articles, db, decisions, events, evidence, issues, prefs, reports, seen, settings, watchers } from './db.js';
 import { refreshBoard } from './board.js';
 import { kindOfFile, kindOfLink, linkName } from './evidence.js';
@@ -304,6 +304,19 @@ const OPEN_STATUSES = ['new', 'seen', 'in_progress'];
 const talkLocks = new Map();
 const threadWarned = new Map();
 
+/** The first message of an issue's developer thread: what it is, a status menu for developers, and the note / merge buttons. */
+export function talkIntro(issue) {
+  const menu = new StringSelectMenuBuilder().setCustomId(`status:${issue.id}`).setPlaceholder('Move to another status (developers only)')
+    .addOptions(Object.entries(STATUSES).map(([value, s]) => ({ label: s.label, value, emoji: s.emoji, default: value === issue.status })));
+  return {
+    content: `🧵 **#${issue.id} – ${trunc(issue.title, 150)}**
+Status: **${STATUSES[issue.status]?.emoji ?? ''} ${STATUSES[issue.status]?.label ?? issue.status}**. Use the menu to move the issue to another status. Notes to requesters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it.`,
+    components: [new ActionRowBuilder().addComponents(menu), new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`note:${issue.id}`).setLabel('Note to requesters').setEmoji('💬').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`merge:${issue.id}`).setLabel('Same problem as another issue…').setEmoji('🔀').setStyle(ButtonStyle.Secondary))],
+  };
+}
+
 /** Open (or find and un-archive) the issue's developer thread in the hub channel. */
 export async function openTalkThread(client, issue) {
   const fresh = issues.get(issue.id);
@@ -322,10 +335,7 @@ export async function openTalkThread(client, issue) {
     autoArchiveDuration: 1440, reason: `Developer thread for issue #${fresh.id}`,
   });
   issues.setTalkThread(fresh.id, thread.id);
-  await thread.send({ content: `🧵 **#${fresh.id} – ${trunc(fresh.title, 150)}**\nDeveloper notes and updates for this issue. Notes to requesters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it. Status: ${STATUSES[fresh.status]?.label ?? fresh.status}.`,
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`note:${fresh.id}`).setLabel('Note to requesters').setEmoji('💬').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`merge:${fresh.id}`).setLabel('Same problem as another issue…').setEmoji('🔀').setStyle(ButtonStyle.Secondary))] }).catch(() => {});
+  await thread.send(talkIntro(fresh)).catch(() => {});
   await postTalkHistory(client, fresh, thread);
   await thread.setLocked(true, 'Only developers write here').catch(() => {}); // a locked thread can only be written in by people with Manage Threads (and the bot)
   return { thread, existing: false };
@@ -430,6 +440,11 @@ export async function processPrevious(client, guildId) {
     let cur = issues.get(x.id);
     if (!cur?.talk_thread_id) { out.failed++; continue; }
     if (!had) out.threads++;
+    if (had) try { // older threads: give the first (bot) message the status menu too
+      const t = await client.channels.fetch(cur.talk_thread_id);
+      const first = (await t.messages.fetch({ after: '0', limit: 1 })).first();
+      if (first?.author.id === client.user.id && !first.components.some((r) => r.components.some((c) => c.customId?.startsWith('status:')))) await first.edit(talkIntro(cur));
+    } catch { /* leave it */ }
     if (!cur.talk_history && await postTalkHistory(client, cur)) out.histories++;
   }
   return out;
@@ -440,6 +455,23 @@ export async function talkSay(client, issue, text) {
   const fresh = issues.get(issue.id);
   if (!fresh?.talk_thread_id) return;
   try { await (await client.channels.fetch(fresh.talk_thread_id)).send(text); } catch { /* thread gone */ }
+}
+
+/**
+ * Post a player's own words into the issue's developer thread, live: who, what kind of action, platform/version and the text itself.
+ * Call BEFORE syncTalkThread so a thread created just now (whose history already holds this report) does not get it twice. Never throws.
+ */
+export async function talkReport(client, issue, { label, userId, text, platform, version }) {
+  const fresh = issues.get(issue.id);
+  if (!fresh?.talk_thread_id) return;
+  const meta = [platform, version && `v${version}`].filter(Boolean).join(' · ');
+  const body = String(text ?? '').trim();
+  try {
+    await (await client.channels.fetch(fresh.talk_thread_id)).send({
+      content: trunc(`${label} <@${userId}>${meta ? ` · ${meta}` : ''}${body ? `\n> ${body.replace(/\s+/g, ' ')}` : ''}`, 1900),
+      allowedMentions: { parse: [] },
+    });
+  } catch { /* thread gone */ }
 }
 
 /** Delete an issue's tracker message and thread (used when an issue is removed outright). */

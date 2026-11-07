@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored, storedSize } from './evidenceStore.js';
 import {
   attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, removeMessage, retireMessage,
-  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkSay, carryTalkOnMerge, processPrevious,
+  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkIntro, talkSay, talkReport, carryTalkOnMerge, processPrevious,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
 import { boardPayload, confirmMovePayload, movePayload, postBoard, sectionPayload } from './board.js';
@@ -693,6 +693,7 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
     await threadSay(client, res.issue, `⚠️ Reopened by a new report${res.fixedVersion ? ` (it was fixed in \`${res.fixedVersion}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
   }
   const fresh = issues.get(res.issue.id);
+  if (!res.created) await talkReport(client, fresh, { label: `➕ New report added (${Math.round(res.score * 100)}% alike)${res.reopened ? ', reopened it' : ''}:`, userId: i.user.id, text, platform, version });
   await syncTalkThread(client, fresh);
   if (res.created) alertDevs(fresh, 'new'); else if (res.reopened) alertDevs(fresh, 'reopened');
   refreshPanel(i.guildId);
@@ -1293,7 +1294,8 @@ async function handleInteraction(i) {
       const status = i.values[0];
       if (status === 'fixed' && issue.status !== 'fixed') return i.showModal(fixedModal(issue));
       await i.deferUpdate(); // acknowledge first: changing a status edits the card and sends DMs
-      return i.editReply(card(i, await applyStatus(i, issue, status)));
+      const done = await applyStatus(i, issue, status);
+      return i.editReply(i.channelId === issue.talk_thread_id ? talkIntro(done) : card(i, done)); // in the developer thread the intro message stays the control
     }
     if (i.isModalSubmit() && id.startsWith('fixed:')) {
       if (!isDev(i)) return devOnly(i, "change an issue's status");
@@ -1306,7 +1308,7 @@ async function handleInteraction(i) {
         note: i.fields.getTextInputValue('text').trim(),
       });
       const fromMove = fromCard && i.message?.components?.some((r) => r.components?.some((c) => c.customId?.startsWith('bfd:')));
-      return i.editReply(fromMove ? boardPayload(i.guildId) : fromCard ? card(i, fresh) : { content: `Marked #${issue.id} fixed.` });
+      return i.editReply(fromMove ? boardPayload(i.guildId) : fromCard && i.channelId === issue.talk_thread_id ? talkIntro(fresh) : fromCard ? card(i, fresh) : { content: `Marked #${issue.id} fixed.` });
     }
     if (i.isStringSelectMenu() && id.startsWith('prio:')) {
       if (!isDev(i)) return devOnly(i, 'change priority');
@@ -1374,8 +1376,8 @@ async function handleInteraction(i) {
         await threadSay(client, issue, `⚠️ Reopened by another report${issue.fixed_version ? ` (it was fixed in \`${issue.fixed_version}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
       } else issues.touch(issue.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
+      await talkReport(client, issue, { label: "➕ **I have this too**:", userId: i.user.id, text: i.fields.getTextInputValue('text').trim(), platform: i.fields.getTextInputValue('platform').trim(), version });
       await syncTalkThread(client, issues.get(issue.id));
-      await threadSay(client, issues.get(issue.id), "➕ A player added their own report to this issue ('I have this too').");
       if (reopened) { alertDevs(issues.get(issue.id), 'reopened'); refreshPanel(i.guildId); }
       return i.editReply({ content: `✅ **Thanks – your report was added to #${issue.id}.**${saved ? `\n📎 Saved ${countLine(saved)} with it – only you and the developers can see them.` : ''}${failNote(ev)}\nYou'll get a message when its status changes. See everything under **My issues**.` });
       } finally { filing.delete(i.user.id); }
@@ -1591,8 +1593,8 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
       issues.touch(issue.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
       const added = saved ? ` and added ${saved} attachment${saved === 1 ? '' : 's'}/link${saved === 1 ? '' : 's'}` : '';
-      await threadSay(client, issue, `✏️ A reporter ${editing ? 'edited their report' : 'added evidence'}${editing ? added : ''}.`);
-      return i.editReply({
+      const nowRep = reports.get(report.id);
+      await talkReport(client, issue, { label: editing ? `✏️ **Report edited**${added}:` : `📎 **Evidence added**${saved ? ` (${saved})` : ''}:`, userId: i.user.id, text: editing ? nowRep.text : '', platform: nowRep.platform, version: nowRep.version });      return i.editReply({
         content: `✅ ${editing ? `Your report was updated${added}.` : saved ? `Saved ${countLine(saved)} with your report – only you and the developers can see them.` : 'Nothing new was added.'}${failNote(ev)}\nIf your new details change what the problem is, press **Recalculate match** and I'll check whether your report belongs with a different issue.`,
         components: [row(btn(`rematch:${report.id}`, 'Recalculate match', '🔄', ButtonStyle.Primary), btn(`trk:${issue.id}`, 'See how it\'s going', '📌'))],
       });
