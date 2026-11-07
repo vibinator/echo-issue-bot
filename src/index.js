@@ -1799,8 +1799,8 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
           return show(i, {
             content: todo.length
               ? `🧵 **Process ${todo.length} previous request${todo.length === 1 ? '' : 's'} into threads?**\nFor each New / Seen / Being fixed issue: ${noThread ? `create its thread in <#${cfgOf(i.guildId).board_channel_id}> (${noThread} missing), and ` : ''}post its history (reports, developer note, activity) into it. Players are not added and nobody is notified. This can take a few minutes.`
-              : '✅ Every open issue already has its thread and history.',
-            embeds: [], components: [row(...(todo.length ? [btn('dev:threadsok', 'Yes, process them', '🧵', ButtonStyle.Success)] : []), btn('dev:menu', 'Developer menu', '⬅️'))],
+              : '✅ Every open issue has a thread and history. If you deleted some threads, press **Check and recreate** and any missing ones are made again with their history.',
+            embeds: [], components: [row(btn('dev:threadsok', todo.length ? 'Yes, process them' : 'Check and recreate', '🧵', ButtonStyle.Success), btn('dev:menu', 'Developer menu', '⬅️'))],
           });
         }
         case 'dev:threadsok': { // step 2: do it

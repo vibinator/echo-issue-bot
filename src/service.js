@@ -449,7 +449,11 @@ export async function processPrevious(client, guildId) {
   const out = { threads: 0, histories: 0, failed: 0 };
   for (const x of issues.list(guildId)) {
     if (!OPEN_STATUSES.includes(x.status)) continue;
-    const had = !!x.talk_thread_id;
+    if (x.talk_thread_id) { // a thread someone deleted: forget it, so a new one is made and its history is posted again
+      try { await client.channels.fetch(x.talk_thread_id); }
+      catch (e) { if (e.code === 10003 || e.status === 404) { issues.setTalkThread(x.id, null); issues.setTalkHistory(x.id, 0); } }
+    }
+    const had = !!issues.get(x.id).talk_thread_id;
     await syncTalkThread(client, x);
     let cur = issues.get(x.id);
     if (!cur?.talk_thread_id) { out.failed++; continue; }
