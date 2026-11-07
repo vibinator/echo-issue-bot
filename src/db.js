@@ -141,6 +141,7 @@ addColumn('settings', 'seeded_articles', 'TEXT');      // JSON list of starter a
 addColumn('articles', 'draft', 'INTEGER NOT NULL DEFAULT 0');       // 1 = proposed from a resolved issue, waiting for a person to publish it
 addColumn('articles', 'source_issue_id', 'INTEGER');                 // the issue a draft was proposed from (one draft per issue)
 addColumn('evidence', 'ocr_text', 'TEXT');                           // text read from a screenshot ('' = looked, nothing found; NULL = not looked at yet)
+addColumn('issues', 'article_id', 'INTEGER'); // knowledge article a developer linked to this issue as its answer / workaround
 addColumn('issues', 'thread_archived', 'INTEGER NOT NULL DEFAULT 0'); // 1 = the bot archived this fixed issue's thread
 addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = keep closed issues until deleted by hand
 
@@ -207,6 +208,8 @@ export const issues = {
     }
   },
   setPriority: (id, p, userId) => db.prepare('UPDATE issues SET priority = ?, handled_by = ?, updated_at = ? WHERE id = ?').run(p, userId, now(), id),
+  /** Link a knowledge article to an issue (null removes the link). */
+  setArticle: (id, articleId) => db.prepare('UPDATE issues SET article_id = ?, updated_at = ? WHERE id = ?').run(articleId, now(), id),
   setOwner: (id, owner) => db.prepare('UPDATE issues SET owner_id = ?, updated_at = ? WHERE id = ?').run(owner, now(), id),
   setNote: (id, note, userId) => db.prepare(
     'UPDATE issues SET dev_note = ?, handled_by = ?, updated_at = ?, dev_replied_at = CASE WHEN ? IS NULL THEN dev_replied_at ELSE ? END WHERE id = ?'
@@ -404,7 +407,7 @@ export const articles = {
   drafts: (guild) => db.prepare('SELECT * FROM articles WHERE guild_id = ? AND draft = 1 ORDER BY id DESC').all(guild),
   /** The article (draft or not) that was proposed from this issue, if any, so an issue only ever gets one. */
   forIssue: (issueId) => db.prepare('SELECT * FROM articles WHERE source_issue_id = ?').get(issueId),
-  delete: (id) => { db.prepare('DELETE FROM articles WHERE id = ?').run(id); writeJournal(); },
+  delete: (id) => { db.prepare('UPDATE issues SET article_id = NULL WHERE article_id = ?').run(id); db.prepare('DELETE FROM articles WHERE id = ?').run(id); writeJournal(); },
 };
 restoreArticles(); // on every start: bring back anything the database lost, then begin keeping the file up to date
 

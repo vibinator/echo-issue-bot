@@ -509,14 +509,14 @@ assert.deepEqual(unarchived, [false], 'an archived thread is reopened so the car
 const withBack = renderIssue(issues.get(T.issue.id), { back: 'browse' });
 assert.equal(withBack.components.length, 5);
 const lastRowIds = (p) => p.components[4].toJSON().components.map((c) => c.custom_id);
-assert.deepEqual(lastRowIds(withBack), [`evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
-assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`evall:${T.issue.id}`], 'no Back button on the public card');
+assert.deepEqual(lastRowIds(withBack), [`lkart:${T.issue.id}`, `evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
+assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`lkart:${T.issue.id}`, `evall:${T.issue.id}`], 'no Back button on the public card');
 // controls the viewer can't use are left out
 const idsOf = (p) => p.components.flatMap((r) => r.toJSON().components.map((c) => c.custom_id.split(':')[0]));
 const asPlayer = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'someone' } }));
 assert.ok(asPlayer.includes('plus') && asPlayer.includes('follow'));
 assert.ok(!asPlayer.includes('addev'), 'adding attachments is offered only on issues you reported');
-assert.ok(!['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'editmine'].some((x) => asPlayer.includes(x)), 'a player sees no developer controls (and no edit on a report that is not theirs)');
+assert.ok(!['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'lkart', 'editmine'].some((x) => asPlayer.includes(x)), 'a player sees no developer controls (and no edit on a report that is not theirs)');
 const asOwner = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 't1' } }));
 assert.ok(asOwner.includes('editmine'), 'the reporter can edit their own report');
 assert.ok(asOwner.includes('addev'), 'and add attachments to it');
@@ -530,7 +530,25 @@ const evT = evidence.add({ issue_id: T.issue.id, report_id: reports.forIssue(T.i
 assert.ok(idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 't1' } })).includes('evall'), 'the person who attached something can open it');
 assert.ok(!idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'someone' } })).includes('evall'), 'and nobody else is offered it');
 const asDev = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: true, report: true, article: true, userId: 'd' } }));
-assert.ok(['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart'].every((x) => asDev.includes(x)), 'a developer sees everything');
+assert.ok(['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'lkart'].every((x) => asDev.includes(x)), 'a developer sees everything');
+
+// ---- linking an existing knowledge article to an issue ----
+{
+  const { articles: A } = await import('./db.js');
+  const art = A.get(A.add({ guild_id: g, title: 'Fix mic', symptoms: 'mic not working', body: 'Pick the right input device in settings.', created_by: 'd' }));
+  const fieldNames = () => (renderIssue(issues.get(T.issue.id)).embeds[0].toJSON().fields ?? []).map((f) => f.name);
+  assert.ok(!fieldNames().includes('📚 Knowledge article'), 'nothing shown before a link');
+  issues.setArticle(T.issue.id, art.id);
+  assert.ok(fieldNames().includes('📚 Knowledge article'), 'the linked article shows on the card');
+  A.setEnabled(art.id, false);
+  assert.ok(!fieldNames().includes('📚 Knowledge article'), 'a disabled article is not shown');
+  A.setEnabled(art.id, true);
+  const other = file('u50', 'Totally unrelated gamma ray flicker on the settings screen');
+  mergeIssues(T.issue.id, other.issue.id);
+  assert.equal(issues.get(other.issue.id).article_id, art.id, 'a merge keeps the linked article');
+  A.delete(art.id);
+  assert.equal(issues.get(other.issue.id).article_id, null, 'deleting an article unlinks it');
+}
 
 // ---- recovery: re-run /setup keeps settings; a re-created bot reuses existing threads ----
 const { settings: S2, summary } = await import('./db.js');

@@ -141,6 +141,8 @@ export function rematchReport(reportId, actorId, threshold = MATCH_THRESHOLD) {
 /** Returns the ids of the people who reported or followed the merged-away issue, so they can be told where it stands. */
 export function mergeIssues(fromId, intoId) {
   const moved = [...new Set([...reports.forIssue(fromId).map((r) => r.user_id), ...watchers.forIssue(fromId)])];
+  const from = issues.get(fromId);
+  if (from?.article_id && !issues.get(intoId)?.article_id) issues.setArticle(intoId, from.article_id); // keep the linked answer
   reports.moveAll(fromId, intoId);
   evidence.moveAll(fromId, intoId);
   watchers.moveAll(fromId, intoId);

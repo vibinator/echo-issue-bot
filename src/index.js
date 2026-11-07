@@ -702,7 +702,7 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
 
 const EVENT_LABEL = {
   created: '🆕 Reported', status: '🔄 Status', priority: '⚑ Priority', owner: '🙌 Owner',
-  merged: '🔀 Merged', reopened: '⚠️ Reopened', rematched: '🔁 Report moved',
+  merged: '🔀 Merged', article: '📚 Article', reopened: '⚠️ Reopened', rematched: '🔁 Report moved',
 };
 function timeline(issueId, showActors, limit = 8) {
   const evs = events.forIssue(issueId, limit);
@@ -1596,6 +1596,48 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
       await i.deferUpdate();
       const { issueDeleted } = await dropReport(i, issues.get(report.issue_id), report);
       return i.editReply({ content: issueDeleted ? '🗑️ Your report was withdrawn. Because it was the only one, the issue was removed too.' : '🗑️ Your report was withdrawn.', embeds: [], components: [] });
+    }
+
+    // ----- issue message: link a knowledge article -----
+    if (id.startsWith('lkart:') || id.startsWith('lkartto:')) { // link an existing knowledge article to this issue
+      if (!canManageArticles(i)) return noArticleAccess(i);
+      const issue = await loadIssue(i, idOf(i));
+      if (!issue) return;
+      if (i.isButton()) {
+        const pool = articles.list(i.guildId, { enabledOnly: true }).filter((a) => !a.draft);
+        if (!pool.length) return i.reply({ content: 'There are no published knowledge articles yet. Use **Make knowledge article** to write one.', flags: EPH });
+        const text = [issue.title, ...reports.forIssue(issue.id).slice(0, 3).map((r) => r.text)].join('\n');
+        const score = new Map(suggest(text, pool, 25).filter((s) => s.custom).map((s) => [s.id.replace('a:', ''), s.score]));
+        const ranked = [...pool].sort((a, b) => (score.get(`${b.id}`) ?? 0) - (score.get(`${a.id}`) ?? 0)).slice(0, 24);
+        const options = ranked.map((a) => ({ label: trunc(a.title, 100), description: trunc(`${score.has(`${a.id}`) ? '⭐ Looks related · ' : ''}${a.body.replace(/\s+/g, ' ')}`, 100), value: String(a.id), default: a.id === issue.article_id }));
+        if (issue.article_id) options.push({ label: 'Remove the linked article', value: 'none', emoji: '🚫' });
+        return i.reply({
+          content: `Link which knowledge article to **#${issue.id} – ${trunc(issue.title, 80)}**? Players who reported it are sent the answer. ⭐ marks articles that look related.`,
+          components: [row(new StringSelectMenuBuilder().setCustomId(`lkartto:${issue.id}`).setPlaceholder('Choose an article…').addOptions(options))],
+          flags: EPH,
+        });
+      }
+      const pick = i.values[0];
+      if (pick === 'none') {
+        issues.setArticle(issue.id, null);
+        events.add(issue.id, 'article', i.user.id, 'Linked article removed');
+        await syncMessage(client, issues.get(issue.id), trackerChannel(i));
+        return i.update({ content: `Removed the linked article from #${issue.id}.`, components: [] });
+      }
+      const art = articles.get(Number(pick));
+      if (!art || art.guild_id !== i.guildId) return i.update({ content: 'That article no longer exists.', components: [] });
+      if (art.id === issue.article_id) return i.update({ content: 'That article is already linked.', components: [] });
+      await i.deferUpdate();
+      issues.setArticle(issue.id, art.id);
+      events.add(issue.id, 'article', i.user.id, trunc(art.title, 80));
+      await syncMessage(client, issues.get(issue.id), trackerChannel(i));
+      notifyReporters(client, issues.get(issue.id), `📚 The developers linked a knowledge article to **#${issue.id} – ${trunc(issue.title, 120)}**:
+**${trunc(art.title, 150)}**
+> ${trunc(art.body, 700)}${art.link ? `
+🔗 ${art.link}` : ''}
+_You can turn these messages off under **My issues**._`).catch(() => {});
+      refreshPanel(i.guildId);
+      return i.editReply({ content: `🔗 Linked **${trunc(art.title, 100)}** to #${issue.id}.`, components: [] });
     }
 
     // ----- knowledge articles (developers) -----
