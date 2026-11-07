@@ -800,7 +800,7 @@ assert.deepEqual(editorMenu.components.flatMap((r) => r.components.map((c) => c.
 const botClient = ui.client;
 const fakeClick = (customId, reply) => ({
   guildId: 'gX', customId, user: { id: 'clicker' }, replied: false, deferred: false,
-  isChatInputCommand: () => false, isButton: () => true, isModalSubmit: () => false, isStringSelectMenu: () => false, isChannelSelectMenu: () => false,
+  isChatInputCommand: () => false, isButton: () => true, isModalSubmit: () => false, isStringSelectMenu: () => false, isChannelSelectMenu: () => false, isUserSelectMenu: () => false,
   reply, followUp: async () => {},
 });
 let unhandled = 0;

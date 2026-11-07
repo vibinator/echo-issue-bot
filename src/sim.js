@@ -106,7 +106,7 @@ export function interaction({ kind, customId, who, values, fields = {}, files = 
       getUploadedFiles: (k) => (files.length ? new Map(files.map((f, n) => [String(n), f])) : null),
     },
     isChatInputCommand: () => kind === 'command', isButton: () => kind === 'button', isModalSubmit: () => kind === 'modal',
-    isStringSelectMenu: () => kind === 'select', isChannelSelectMenu: () => kind === 'channelselect',
+    isStringSelectMenu: () => kind === 'select', isChannelSelectMenu: () => kind === 'channelselect', isUserSelectMenu: () => kind === 'userselect',
     isFromMessage: () => kind === 'modal' && !!screen,
     replied: false, deferred: false, responses: [], lateAck: false, ackAfterMs: null, calls: 0, startedAt,
   };

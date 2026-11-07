@@ -348,6 +348,16 @@ console.log('8. developer workflow');
   check(has(r.out.payload, /developers only/), 'a player cannot use the live board');
   r = await press(alice, cardScreen(), `talk:${aliceIssueId}`);
   check(has(r.out.payload, /developers only/) && !db.issues.get(aliceIssueId).talk_thread_id, 'a player cannot start a private thread');
+  check(!db.issues.get(aliceIssueId).talk_thread_id, 'existing issues are not given threads on their own');
+  r = await press(dev, panelScreen, 'dev:threads');
+  check(has(r.out.payload, /Create private threads for \d+ open issue/), 'the backfill button first says how many issues and players it affects');
+  const withThread = () => db.issues.list('G').filter((x) => ['new', 'seen', 'in_progress'].includes(x.status) && x.talk_thread_id).length;
+  check(withThread() === 0, 'nothing is created before confirming');
+  r = await press(dev, r.screen, 'dev:threadsok');
+  check(withThread() > 0 && db.issues.list('G').filter((x) => ['new', 'seen', 'in_progress'].includes(x.status)).every((x) => x.talk_thread_id), 'confirming gives every open issue its private thread');
+  r = await press(dev, panelScreen, 'dev:threads');
+  check(has(r.out.payload, /already has its private thread/), 'pressing it again finds nothing left to do');
+  db.db.prepare('UPDATE issues SET talk_thread_id = NULL WHERE id = ?').run(aliceIssueId);
   r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
   check(has(r.out.payload, /adds \d+ player/) && !db.issues.get(aliceIssueId).talk_thread_id, 'starting a private thread first asks for confirmation');
   r = await press(dev, cardScreen(), `talkok:${aliceIssueId}`);
@@ -355,8 +365,39 @@ console.log('8. developer workflow');
   const talk = hubCh.threadsList.find((t) => t.id === talkId);
   check(talk && talk.memberIds.has('alice') && talk.memberIds.has('dev') && has(r.out.payload, new RegExp(talkId)), 'the private thread is created in the hub with the reporter and the developer');
   check(/see each other/.test(JSON.stringify(plain(talk.sent[0].payload))), 'the thread warns that members see each other');
+  const threadCount = hubCh.threadsList.length;
   r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
-  check(hubCh.threadsList.length === 1 && has(r.out.payload, new RegExp(talkId)), 'pressing it again opens the same thread instead of making another');
+  check(hubCh.threadsList.length === threadCount && has(r.out.payload, new RegExp(talkId)), 'pressing it again opens the same thread instead of making another');
+  {
+    const sv = await import('./service.js');
+    const n = sv.fileReport({ guildId: 'G', userId: 'zed', threshold: 0.99, text: 'Totally unrelated: fireworks never stop playing in the lobby' });
+    await sv.syncTalkThread(client, n.issue, 'zed');
+    const nt = hubCh.threadsList.find((t) => t.id === db.issues.get(n.issue.id).talk_thread_id);
+    check(nt && nt.memberIds.has('zed'), 'a new issue gets its own private thread with its reporter automatically');
+    await sv.syncTalkThread(client, n.issue, 'zed');
+    check(hubCh.threadsList.filter((t) => t.id === nt.id).length === 1 && db.issues.get(n.issue.id).talk_thread_id === nt.id, 'syncing again does not make a second thread');
+    db.issues.setStatus(n.issue.id, 'fixed', 'dev', '1.0');
+    await sv.syncTalkThread(client, n.issue);
+    check(nt.archived, 'a closed issue has its thread archived');
+    db.issues.setStatus(n.issue.id, 'new', null);
+    await sv.syncTalkThread(client, n.issue);
+    check(!nt.archived, 'a reopened issue has its thread opened again');
+    // combine two issues' threads, add a person
+    const aliceThread = db.issues.get(aliceIssueId).talk_thread_id;
+    const mine = { payload: { content: '', components: [] }, ephemeral: true, id: 'TALK' };
+    let q = await choose(dev, mine, `tjoin:${n.issue.id}`, [String(aliceIssueId)]);
+    check(has(q.out.payload, /Move #\d+'s \d+ player/) && db.issues.get(n.issue.id).talk_thread_id === nt.id, 'combining asks for confirmation first');
+    q = await press(dev, q.screen, `tjoinok:${n.issue.id}:${aliceIssueId}`);
+    const joined = hubCh.threadsList.find((t) => t.id === aliceThread);
+    check(db.issues.get(n.issue.id).talk_thread_id === aliceThread && joined.memberIds.has('zed') && joined.memberIds.has('alice'), "combining puts the other issue's players into the same thread");
+    check(nt.archived, 'the emptied thread is archived');
+    q = await choose(dev, q.screen, `tadd:${aliceIssueId}`, ['bob'], 'userselect');
+    check(joined.memberIds.has('bob'), 'a developer can add any person to the thread');
+    await sv.syncTalkThread(client, n.issue);
+    db.issues.setStatus(n.issue.id, 'fixed', 'dev', '1.0');
+    await sv.syncTalkThread(client, n.issue);
+    check(!joined.archived, 'closing one of two issues sharing a thread leaves the thread open');
+  }
   r = await choose(dev, settingsScreen, 'set_thr', ['0.35']);
   check(db.settings.get('G').threshold === 0.35, 'matching strictness can be changed'); await choose(dev, settingsScreen, 'set_thr', ['0.25']);
 
@@ -641,13 +682,13 @@ async function crawl(who, name) {
     const { screen, depth } = queue.shift();
     for (const c of buttonsOf(screen.payload)) {
       if (!c.custom_id || c.style === 5) continue;
-      const targets = c.type === 3 ? (c.options ?? []).slice(0, 3).map((o) => o.value) : [null];
+      const targets = c.type === 3 ? (c.options ?? []).slice(0, 3).map((o) => o.value) : c.type === 5 ? ['bob'] : [null];
       for (const value of targets) {
         const key = `${name}|${screen.id}|${c.custom_id}|${value}`;
         const loose = `${name}|${c.custom_id}|${value}`;
         if (seen.has(key) || seen.has(loose) || SKIP.some((re) => re.test(c.custom_id))) continue;
         seen.add(key); seen.add(loose); pressed++;
-        const i = interaction({ kind: c.type === 3 ? 'select' : c.type === 8 ? 'channelselect' : 'button', customId: c.custom_id, who, values: value ? [value] : undefined, screen, channel: panelCh });
+        const i = interaction({ kind: c.type === 3 ? 'select' : c.type === 8 ? 'channelselect' : c.type === 5 ? 'userselect' : 'button', customId: c.custom_id, who, values: value ? [value] : undefined, screen, channel: panelCh });
         const out = await run(i, `${name}: ${c.custom_id}${value ? ` = ${value}` : ''}`);
         let next = nextScreen(screen, i, out);
         if (out.modal) {
