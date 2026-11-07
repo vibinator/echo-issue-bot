@@ -241,7 +241,7 @@ function panelPayload(guildId) {
       '',
       '📌 **My issues** – follow your reports, see developer replies (marked 🔴 until you read them), add details, and turn update messages on or off.',
       '',
-      '📚 **Quick fixes** – answers to common problems, shown to you automatically before you send a report.',
+      '📚 **Knowledge articles** – quick fixes for common problems, shown to you automatically before you send a report.',
       `• **${KB.length}** built-in answers`,
       `• **${kbCount}** written by the team`,
       '',
@@ -252,7 +252,7 @@ function panelPayload(guildId) {
     components: [
       row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Known issues', '📋'), btn('mine', 'My issues', '📌'),
         btn('legal:privacy', 'Data & privacy', '🔒'), btn('legal:terms', 'Terms of use', '📜')),
-      row(todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️')),
+      row(btn('dev:articles', 'Knowledge articles', '📚'), todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️')),
     ],
   };
 }
