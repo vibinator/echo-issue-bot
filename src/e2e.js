@@ -334,7 +334,7 @@ console.log('8. developer workflow');
   const settingsScreen = (await press(dev, panelScreen, 'dev:settings')).screen;
   r = await choose(dev, settingsScreen, 'set_devch', ['digest'], 'channelselect');
 
-  // developer hub: a live board message plus private threads with the players of an issue
+  // developer hub: a live board message
   const hubCh = digestCh;
   check(db.settings.get('G').board_channel_id === 'digest' && hubCh.sent.filter((m) => m.payload.embeds?.length === 2).length === 1, 'choosing a hub channel posts the live board there');
   const boardMsg = hubCh.sent.find((m) => m.payload.embeds?.length === 2);
@@ -343,49 +343,6 @@ console.log('8. developer workflow');
   check(r.i.responses[0].type === 'reply', 'opening a card from the live board answers privately and leaves the board message alone');
   r = await choose(alice, liveBoard, 'bfb', [String(aliceIssueId)]);
   check(has(r.out.payload, /developers only/), 'a player cannot use the live board');
-  r = await press(alice, cardScreen(), `talk:${aliceIssueId}`);
-  check(has(r.out.payload, /developers only/) && !db.issues.get(aliceIssueId).talk_thread_id, 'a player cannot start a private thread');
-  check(!db.issues.get(aliceIssueId).talk_thread_id, 'existing issues are not given threads on their own');
-  r = await press(dev, panelScreen, 'dev:threads');
-  check(has(r.out.payload, /Create private threads for \d+ open issue/), 'the backfill button first says how many issues and players it affects');
-  const withThread = () => db.issues.list('G').filter((x) => ['new', 'seen', 'in_progress'].includes(x.status) && x.talk_thread_id).length;
-  check(withThread() === 0, 'nothing is created before confirming');
-  r = await press(dev, r.screen, 'dev:threadsok');
-  check(withThread() > 0 && db.issues.list('G').filter((x) => ['new', 'seen', 'in_progress'].includes(x.status)).every((x) => x.talk_thread_id), 'confirming gives every open issue its private thread');
-  r = await press(dev, panelScreen, 'dev:threads');
-  check(has(r.out.payload, /already has its private thread/), 'pressing it again finds nothing left to do');
-  const talkId = db.issues.get(aliceIssueId).talk_thread_id;
-  const talk = hubCh.threadsList.find((t) => t.id === talkId);
-  check(talk && talk.memberIds.has('alice'), 'the requester is in the issue private thread');
-  r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
-  check(talk.memberIds.has('dev') && has(r.out.payload, new RegExp(talkId)), 'the Private thread button adds the developer and shows the thread');
-  check(/see each other/.test(JSON.stringify(plain(talk.sent[0].payload))), 'the thread warns that members see each other');
-  const threadCount = hubCh.threadsList.length;
-  r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
-  check(hubCh.threadsList.length === threadCount && has(r.out.payload, new RegExp(talkId)), 'pressing it again opens the same thread instead of making another');
-  {
-    const sv = await import('./service.js');
-    const n = sv.fileReport({ guildId: 'G', userId: 'zed', threshold: 0.99, text: 'Totally unrelated: fireworks never stop playing in the lobby' });
-    await sv.syncTalkThread(client, n.issue, 'zed');
-    const nt = hubCh.threadsList.find((t) => t.id === db.issues.get(n.issue.id).talk_thread_id);
-    check(nt && nt.memberIds.has('zed'), 'a new issue gets its own private thread with its reporter automatically');
-    await sv.syncTalkThread(client, n.issue, 'zed');
-    check(hubCh.threadsList.filter((t) => t.id === nt.id).length === 1 && db.issues.get(n.issue.id).talk_thread_id === nt.id, 'syncing again does not make a second thread');
-    db.issues.setStatus(n.issue.id, 'fixed', 'dev', '1.0');
-    await sv.syncTalkThread(client, n.issue);
-    check(nt.archived, 'a closed issue has its thread archived');
-    db.issues.setStatus(n.issue.id, 'new', null);
-    await sv.syncTalkThread(client, n.issue);
-    check(!nt.archived, 'a reopened issue has its thread opened again');
-    // merging joins the threads; a developer can add any person
-    const aliceThread = db.issues.get(aliceIssueId).talk_thread_id;
-    await sv.carryTalkOnMerge(client, n.issue, db.issues.get(aliceIssueId));
-    const joined = hubCh.threadsList.find((t) => t.id === aliceThread);
-    check(joined.memberIds.has('zed') && joined.memberIds.has('alice') && nt.archived, 'merging an issue puts its players into the other thread and archives the old one');
-    const mine = { payload: { content: '', components: [] }, ephemeral: true, id: 'TALK' };
-    const q = await choose(dev, mine, `tadd:${aliceIssueId}`, ['bob'], 'userselect');
-    check(joined.memberIds.has('bob'), 'a developer can add any person to the thread');
-  }
   r = await choose(dev, settingsScreen, 'set_thr', ['0.35']);
   check(db.settings.get('G').threshold === 0.35, 'matching strictness can be changed'); await choose(dev, settingsScreen, 'set_thr', ['0.25']);
 

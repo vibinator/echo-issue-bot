@@ -123,7 +123,6 @@ ${trunc(linked.body, 500)}${linked.link ? `
     // Last row: open the private attachments (the bot only shows them to the reporter and developers), plus Back in menus.
     [
       (may('dev') || may('article')) && btn('lkart', 'Link knowledge article', '🔗'),
-      may('dev') && issue.talk_thread_id && btn('talk', 'Private thread', '🧵'),
       (!viewer || viewer.dev || ev.some((e) => e.user_id === viewer.userId)) && btn('evall', 'View attachments', '📎'), // others' attachments are private
       back && new ButtonBuilder().setCustomId(back).setLabel('Back').setEmoji('⬅️').setStyle(ButtonStyle.Secondary),
     ],

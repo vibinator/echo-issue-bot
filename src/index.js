@@ -1,5 +1,5 @@
 import {
-  ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, UserSelectMenuBuilder, Client,
+  ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, Client,
   EmbedBuilder, FileUploadBuilder, GatewayIntentBits, LabelBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder,
   StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
 } from 'discord.js';
@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored, storedSize } from './evidenceStore.js';
 import {
   attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, removeMessage, retireMessage,
-  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkSay, carryTalkOnMerge, addPeopleToTalk,
+  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
 import { boardPayload, confirmMovePayload, movePayload, postBoard, sectionPayload } from './board.js';
@@ -266,7 +266,7 @@ function devMenuPayload(guildId) {
     embeds: [],
     components: [
       row(btn('dev:board', a?.fresh ? `Board (${a.fresh} new)` : 'Board', '📌', a?.total ? ButtonStyle.Danger : ButtonStyle.Secondary), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:articles', 'Knowledge articles', '📚')),
-      row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊'), ...(guildId && !cfgOf(guildId).threads_backfilled ? [btn('dev:threads', 'Create threads for open issues (one time)', '🧵')] : [])),
+      row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊')),
       row(btn('dev:export', 'Export CSV', '📤'), btn('dev:backup', 'Back up now', '💾')),
     ],
   };
@@ -545,24 +545,6 @@ function browsePayload(i, f) {
   return { content, embeds: [], components };
 }
 
-/** Manage an issue's private thread: where it is, who shares it, combine with another issue's thread, add people. */
-function talkPayload(issue, note = '') {
-  const fresh = issues.get(issue.id);
-  const sharing = issues.byTalkThread(fresh.talk_thread_id).filter((x) => x.id !== fresh.id);
-  const components = [];
-  components.push(row(new UserSelectMenuBuilder().setCustomId(`tadd:${fresh.id}`).setPlaceholder('Add people to this thread…').setMinValues(1).setMaxValues(10)));
-  return {
-    content: `${note ? `${note}
-` : ''}🧵 **Private thread for #${fresh.id}:** <#${fresh.talk_thread_id}>${sharing.length ? `
-Shared with ${sharing.map((x) => `#${x.id}`).join(', ')}` : ''}
-Everyone in a thread sees each other's names and messages. Merging two issues joins their threads.`,
-    embeds: [], components,
-  };
-}
-
-/** Open (New / Seen / Being fixed) issues that have no private thread yet. */
-const missingThreads = (guildId) => issues.list(guildId).filter((x) => ['new', 'seen', 'in_progress'].includes(x.status) && !x.talk_thread_id);
-
 function settingsPayload(guildId) {
   const c = cfgOf(guildId);
   const pick = (id, placeholder, opts, current) => row(new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder)
@@ -581,14 +563,14 @@ function settingsPayload(guildId) {
       `• Who can send reports: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} _(change with \`/setup\`)_ · developers can change an issue's status`,
       `• Who can edit knowledge articles: developers${articleRole(guildId) ? ` and <@&${articleRole(guildId)}>` : ''} _(editor role: \`/setup article_role:\`)_`,
       `• Closed issues are ${c.retention_days ? `deleted after **${c.retention_days} days** without activity` : '**kept** until deleted by hand'} _(change with \`/setup retention_days:\`)_`,
-      `• Developer hub (live board, alerts, weekly digest, private threads with players – keep it developers-only): ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'}`,
+      `• Developer hub (live board, alerts and weekly digest – keep it developers-only): ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'}`,
     ].join('\n'),
     embeds: [],
     components: [
       pick('set_thr', 'How alike must reports be to group together?', [['Strict – fewer groups', 0.35, 'Keeps more reports as separate issues'], ['Balanced', 0.25, 'Recommended'], ['Loose – more groups', 0.18, 'Groups similar reports more eagerly']], c.threshold),
       pick('set_stale', 'Flag issues that go quiet after…', [['3 days', 3], ['7 days', 7], ['14 days', 14], ['30 days', 30]], c.stale_days),
       pick('set_cd', 'Pause between one player\'s reports', [['No pause', 0], ['30 seconds', 30], ['1 minute', 60], ['5 minutes', 300]], c.cooldown_sec),
-      chanMenu('set_devch', 'Developer hub: live board, alerts, digest, private threads (developers only)', c.dev_channel_id),
+      chanMenu('set_devch', 'Developer hub: live board, alerts, digest (developers only)', c.dev_channel_id),
     ],
   };
 }
@@ -657,8 +639,6 @@ async function applyStatus(i, issue, status,{ version, note } = {}) {
     const ver = status === 'fixed' && fresh.fixed_version ? ` (fixed in \`${fresh.fixed_version}\`)` : '';
     events.add(issue.id, 'status', i.user.id, `${STATUSES[old]?.label} → ${s.label}${ver}`);
     await threadSay(client, fresh, `${s.emoji} <@${i.user.id}> set the status to **${s.label}**${ver}.`);
-    await syncTalkThread(client, fresh); // closed -> archived, reopened -> created/unarchived
-    await talkSay(client, fresh, `${s.emoji} Status is now **${s.label}**${ver}.`);
     if (STATUS_DM[status]) {
       const update = status === 'fixed' && fresh.fixed_version ? `\nUpdate to version \`${fresh.fixed_version}\` (or newer) to get the fix.` : '';
       const devNote = fresh.dev_note ? `\n> ${fresh.dev_note}` : '';
@@ -702,7 +682,6 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
     await threadSay(client, res.issue, `⚠️ Reopened by a new report${res.fixedVersion ? ` (it was fixed in \`${res.fixedVersion}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
   }
   const fresh = issues.get(res.issue.id);
-  await syncTalkThread(client, fresh, i.user.id);
   if (res.created) alertDevs(fresh, 'new'); else if (res.reopened) alertDevs(fresh, 'reopened');
   refreshPanel(i.guildId);
   const where = fresh.channel_id ? ` You can follow the discussion in <#${fresh.channel_id}>.` : '';
@@ -1341,31 +1320,6 @@ async function handleInteraction(i) {
       return i.editReply(card(i, issues.get(issue.id)));
     }
 
-    // ----- private thread with the players of an issue (developer hub) -----
-    if (i.isButton() && id.startsWith('talk:')) { // open the issue's private thread (it is created automatically) and manage who is in it
-      if (!isDev(i)) return devOnly(i, 'open a private thread');
-      const issue = await loadIssue(i, idOf(i));
-      if (!issue) return;
-      if (!issue.talk_thread_id) return i.reply({ content: 'This issue has no private thread (threads are made for New / Seen / Being fixed issues once a **Developer hub** is set in ⚙️ Settings).', flags: EPH });
-      await i.deferReply({ flags: EPH });
-      try {
-        await openTalkThread(client, issue, i.user.id); // adds you and reopens it if archived
-        return i.editReply(talkPayload(issues.get(issue.id)));
-      } catch (e) { return i.editReply({ content: `⚠️ I couldn't open the thread: ${errorMessage(e)}` }); }
-    }
-
-    // add people to an issue's private thread
-    if (i.isUserSelectMenu() && id.startsWith('tadd:')) {
-      if (!isDev(i)) return devOnly(i, 'add people to a thread');
-      const issue = await loadIssue(i, idOf(i));
-      if (!issue) return;
-      await i.deferUpdate();
-      try {
-        const added = await addPeopleToTalk(client, issue, i.values, i.user.id);
-        return i.editReply(talkPayload(issues.get(issue.id), `✅ Added **${added}** of ${i.values.length}.`));
-      } catch (e) { return i.editReply({ content: `⚠️ I couldn't add them: ${errorMessage(e)}`, embeds: [], components: [] }); }
-    }
-
     // ----- issue message: I have this too -----
     if (i.isButton() && id.startsWith('plus:')) {
       const issue = await loadIssue(i, idOf(i));
@@ -1399,7 +1353,6 @@ async function handleInteraction(i) {
         await threadSay(client, issue, `⚠️ Reopened by another report${issue.fixed_version ? ` (it was fixed in \`${issue.fixed_version}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
       } else issues.touch(issue.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
-      await syncTalkThread(client, issues.get(issue.id), i.user.id);
       if (reopened) { alertDevs(issues.get(issue.id), 'reopened'); refreshPanel(i.guildId); }
       return i.editReply({ content: `✅ **Thanks – your report was added to #${issue.id}.**${saved ? `\n📎 Saved ${countLine(saved)} with it – only you and the developers can see them.` : ''}${failNote(ev)}\nYou'll get a message when its status changes. See everything under **My issues**.` });
       } finally { filing.delete(i.user.id); }
@@ -1629,7 +1582,7 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
           embeds: [], components: [row(btn(`trk:${res.to.id}`, 'See how it\'s going', '📌'))],
         });
       }
-      if (res.fromDeleted) { await carryTalkOnMerge(client, res.from, res.to); await retireMessage(client, res.from, res.to.id); }
+      if (res.fromDeleted) await retireMessage(client, res.from, res.to.id);
       else await syncMessage(client, issues.get(res.from.id), trackerChannel(i));
       await syncMessage(client, res.to, trackerChannel(i));
       await threadSay(client, res.to, res.action === 'moved'
@@ -1811,27 +1764,6 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
         case 'dev:dups': { await deferHidden(i); return i.editReply(dupPayload(i)); } // comparing many issues can take a few seconds
         case 'dev:articles': return show(i, articlesPayload(i.guildId));
         case 'dev:board': return show(i, boardPayload(i.guildId));
-        case 'dev:threads': { // step 1: say what will happen
-          if (cfgOf(i.guildId).threads_backfilled) return show(i, { content: '✅ Every open issue already has its private thread (this one-time step was already done).', embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
-          if (!cfgOf(i.guildId).board_channel_id) return show(i, { content: 'Pick a **Developer hub** channel first: ⚙️ Settings.', embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
-          const todo = missingThreads(i.guildId);
-          const players = new Set(todo.flatMap((x) => reports.forIssue(x.id).map((r) => r.user_id).filter((u) => u && u !== '0'))).size;
-          return show(i, {
-            content: todo.length
-              ? `🧵 **Create private threads for ${todo.length} open issue${todo.length === 1 ? '' : 's'}?**
-Each New / Seen / Being fixed issue without one gets a private thread in <#${cfgOf(i.guildId).board_channel_id}>, and **${players} player${players === 1 ? '' : 's'}** are added (they get a notification). Everyone in a thread sees each other's names and messages. This can take a minute.`
-              : '✅ Every open issue already has its private thread.',
-            embeds: [], components: [row(...(todo.length ? [btn('dev:threadsok', 'Yes, create them', '🧵', ButtonStyle.Success)] : []), btn('dev:menu', 'Developer menu', '⬅️'))],
-          });
-        }
-        case 'dev:threadsok': { // step 2: do it
-          await deferHidden(i);
-          const todo = missingThreads(i.guildId);
-          for (const x of todo) await syncTalkThread(client, x);
-          const made = todo.filter((x) => issues.get(x.id)?.talk_thread_id).length;
-          if (made === todo.length) settings.update(i.guildId, { threads_backfilled: 1 }); // one time only (if some failed, the button stays so they can be retried)
-          return i.editReply({ content: `🧵 Created **${made}** of ${todo.length} thread${todo.length === 1 ? '' : 's'} in <#${cfgOf(i.guildId).board_channel_id}>.${made < todo.length ? '\n⚠️ Some failed – check the bot has Create Private Threads, Send Messages in Threads and Manage Threads there.' : ''}`, embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
-        }
         case 'dev:export': {
           const files = exportCsv(i.guildId);
           return i.reply({
@@ -1864,7 +1796,7 @@ Each New / Seen / Being fixed issue without one gets a private thread in <#${cfg
         await i.deferUpdate();
         settings.update(i.guildId, { dev_channel_id: v, last_digest: Date.now() });
         try { await postBoard(client, i.guildId, await client.channels.fetch(v)); } catch (e) {
-          await i.followUp({ content: `⚠️ I couldn't post the board in <#${v}>: ${errorMessage(e)}. Give the bot View Channel, Send Messages, Embed Links, Create Private Threads and Send Messages in Threads there.`, flags: EPH });
+          await i.followUp({ content: `⚠️ I couldn't post the board in <#${v}>: ${errorMessage(e)}. Give the bot View Channel, Send Messages, Embed Links and Read Message History there.`, flags: EPH });
         }
         return i.editReply(settingsPayload(i.guildId));
       }

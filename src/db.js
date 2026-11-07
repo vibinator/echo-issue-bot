@@ -112,7 +112,6 @@ addColumn('issues', 'owner_id', 'TEXT');
 addColumn('issues', 'fixed_version', 'TEXT');
 addColumn('issues', 'fixed_at', 'INTEGER');
 addColumn('issues', 'thread_id', 'TEXT');
-addColumn('issues', 'talk_thread_id', 'TEXT'); // private developer<->players thread in the developer hub channel
 addColumn('issues', 'kind', "TEXT NOT NULL DEFAULT 'bug'"); // 'install' (install issue) | 'bug' (bug in game)
 addColumn('reports', 'version', 'TEXT');
 addColumn('settings', 'dev_channel_id', 'TEXT');
@@ -144,11 +143,10 @@ addColumn('articles', 'source_issue_id', 'INTEGER');                 // the issu
 addColumn('evidence', 'ocr_text', 'TEXT');                           // text read from a screenshot ('' = looked, nothing found; NULL = not looked at yet)
 addColumn('issues', 'article_id', 'INTEGER'); // knowledge article a developer linked to this issue as its answer / workaround
 addColumn('issues', 'thread_archived', 'INTEGER NOT NULL DEFAULT 0'); // 1 = the bot archived this fixed issue's thread
-addColumn('settings', 'threads_backfilled', 'INTEGER NOT NULL DEFAULT 0'); // 1 = the one-time "threads for existing open issues" has been run
 addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = keep closed issues until deleted by hand
 
 const now = () => Date.now();
-const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'article_role_id', 'panel_channel_id', 'panel_message_id', 'auto_merge', 'last_nudge', 'seeded_articles', 'threads_backfilled'];
+const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'article_role_id', 'panel_channel_id', 'panel_message_id', 'auto_merge', 'last_nudge', 'seeded_articles'];
 
 /** What is stored for a server – shown after /setup so you can see nothing was lost. */
 export const summary = (guild) => ({
@@ -230,9 +228,6 @@ export const issues = {
   /** Fixed issues quiet since `ts` whose thread the bot has not archived yet. */
   fixedToArchive: (guild, ts) => db.prepare("SELECT * FROM issues WHERE guild_id = ? AND status = 'fixed' AND thread_id IS NOT NULL AND thread_archived = 0 AND updated_at < ?").all(guild, ts),
   setThreadArchived: (id, v) => db.prepare('UPDATE issues SET thread_archived = ? WHERE id = ?').run(v ? 1 : 0, id),
-  /** All issues that share one private thread. */
-  byTalkThread: (thread) => db.prepare('SELECT * FROM issues WHERE talk_thread_id = ?').all(thread),
-  setTalkThread: (id, thread) => db.prepare('UPDATE issues SET talk_thread_id = ? WHERE id = ?').run(thread, id),
   setThread: (id, thread) => db.prepare('UPDATE issues SET thread_id = ? WHERE id = ?').run(thread, id),
   touch: (id) => db.prepare('UPDATE issues SET updated_at = ? WHERE id = ?').run(now(), id),
   delete: (id) => {
