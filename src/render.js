@@ -94,7 +94,7 @@ export function renderIssue(issue, { back, viewer } = {}) {
 ${trunc(linked.body, 500)}${linked.link ? `
 🔗 ${linked.link}` : ''}`, 1024) });
   }
-  if (issue.dev_note) embed.addFields({ name: '💬 Developer note', value: trunc(issue.dev_note, 1024) });
+  if (issue.dev_note) embed.addFields({ name: '💬 Note from the developers', value: trunc(issue.dev_note, 1024) });
   if (issue.handled_by) embed.setFooter({ text: 'Last updated by a developer' });
 
   const statusMenu = new StringSelectMenuBuilder().setCustomId(`status:${issue.id}`).setPlaceholder('Change status (developers only)')
@@ -109,7 +109,7 @@ ${trunc(linked.body, 500)}${linked.link ? `
     [
       may('report') && btn('plus', 'I have this too', '🙋'),
       may('dev') && btn('assign', 'Assign to me', '🙌'),
-      may('dev') && btn('note', 'Developer note', '💬'),
+      may('dev') && btn('note', 'Note to requesters', '💬'),
       may('dev') && btn('merge', 'Merge into…', '🔀'),
       may('dev') && btn('rmrep', 'Remove a report', '🗑️'),
     ],

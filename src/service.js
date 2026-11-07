@@ -321,9 +321,9 @@ export async function openTalkThread(client, issue) {
     autoArchiveDuration: 1440, reason: `Developer thread for issue #${fresh.id}`,
   });
   issues.setTalkThread(fresh.id, thread.id);
-  await thread.send({ content: `🧵 **#${fresh.id} – ${trunc(fresh.title, 150)}**\nDeveloper notes and updates for this issue. Developer notes, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it. Status: ${STATUSES[fresh.status]?.label ?? fresh.status}.`,
+  await thread.send({ content: `🧵 **#${fresh.id} – ${trunc(fresh.title, 150)}**\nDeveloper notes and updates for this issue. Notes to requesters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it. Status: ${STATUSES[fresh.status]?.label ?? fresh.status}.`,
     components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`note:${fresh.id}`).setLabel('Send a note to the requesters').setEmoji('💬').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`note:${fresh.id}`).setLabel('Note to requesters').setEmoji('💬').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`merge:${fresh.id}`).setLabel('Same problem as another issue…').setEmoji('🔀').setStyle(ButtonStyle.Secondary))] }).catch(() => {});
   await postTalkHistory(client, fresh, thread);
   await thread.setLocked(true, 'Only developers write here').catch(() => {}); // a locked thread can only be written in by people with Manage Threads (and the bot)

@@ -157,7 +157,7 @@ const pendingFixed = new Map();
 function alreadyFixedPayload(issue) {
   const embed = new EmbedBuilder().setColor(0x2ecc71).setTitle(trunc(`✅ Already fixed: #${issue.id} · ${issue.title}`, 256))
     .addFields({ name: 'Fixed in', value: issue.fixed_version ? `\`${issue.fixed_version}\` (or newer)` : 'The next update', inline: true });
-  if (issue.dev_note) embed.addFields({ name: 'Developer note', value: trunc(issue.dev_note, 1000) });
+  if (issue.dev_note) embed.addFields({ name: '💬 Note from the developers', value: trunc(issue.dev_note, 1000) });
   return {
     content: `✅ **This looks like a problem that has already been fixed.**\n${issue.fixed_version ? `Update to version \`${issue.fixed_version}\` (or newer) and check if it still happens.` : 'Check if it still happens after the next update.'}\nYour report has **not** been sent yet.`,
     embeds: [embed],
@@ -241,7 +241,7 @@ function panelPayload(guildId) {
       '',
       '📌 **My issues** – follow your reports, see developer replies (marked 🔴 until you read them), add details, and turn update messages on or off.',
       '',
-      '📚 **Knowledge articles** – quick fixes players see before sending a report.',
+      '📚 **Quick fixes** – answers to common problems, shown to you automatically before you send a report.',
       `• **${KB.length}** built-in answers`,
       `• **${kbCount}** written by the team`,
       '',
@@ -252,7 +252,7 @@ function panelPayload(guildId) {
     components: [
       row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Known issues', '📋'), btn('mine', 'My issues', '📌'),
         btn('legal:privacy', 'Data & privacy', '🔒'), btn('legal:terms', 'Terms of use', '📜')),
-      row(todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️'), btn('dev:articles', 'Knowledge articles', '📚')),
+      row(todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️')),
     ],
   };
 }
@@ -491,12 +491,12 @@ function readEvidence(i) {
   return { links: extractLinks(i.fields.getTextInputValue('links')), files };
 }
 
-const noteModal = (issue) => new ModalBuilder().setCustomId(`note:${issue.id}`).setTitle(`Developer note · #${issue.id}`).addComponents(
-  input('text', 'Note shown on the issue (empty clears it)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note }));
+const noteModal = (issue) => new ModalBuilder().setCustomId(`note:${issue.id}`).setTitle(`Note to requesters · #${issue.id}`).addComponents(
+  input('text', 'Note to requesters (empty = remove note)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note, placeholder: 'Shown on the issue, and sent as a message to everyone who reported or follows it.' }));
 
 const fixedModal = (issue) => new ModalBuilder().setCustomId(`fixed:${issue.id}`).setTitle(`Mark fixed · #${issue.id}`).addComponents(
   input('version', 'Fixed in version (optional)', { max: 40, placeholder: 'e.g. 0.13.15', value: issue.fixed_version }),
-  input('text', 'Note for players (optional)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note }));
+  input('text', 'Note to requesters (optional)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note, placeholder: 'Shown on the issue and sent to everyone who reported or follows it.' }));
 
 const issueOption = (it) => ({
   label: trunc(`#${it.id} ${it.title}`, 100),
@@ -719,7 +719,7 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
       { name: 'Status', value: `${STATUSES[fresh.status]?.emoji ?? ''} ${STATUSES[fresh.status]?.label ?? fresh.status}`, inline: true },
       { name: 'Players affected', value: String(stats.users), inline: true },
     );
-  if (fresh.dev_note) embed.addFields({ name: 'Developer note', value: trunc(fresh.dev_note, 1000) });
+  if (fresh.dev_note) embed.addFields({ name: '💬 Note from the developers', value: trunc(fresh.dev_note, 1000) });
   return {
     content: `🔗 **We found a similar issue, so your report was added to it.**\nIf that's not the same problem, press **Make it a separate issue**.${res.reopened ? '\n⚠️ That issue had been marked fixed, so it has been reopened for the developers to look at again.' : ''}${where}${evidenceLine}${next}`,
     embeds: [embed, ...hints],
@@ -790,7 +790,7 @@ function trackPayload(i, issue) {
       value: trunc(mine.text, 1000),
     });
   }
-  if (issue.dev_note) embed.addFields({ name: '💬 Developer note', value: trunc(issue.dev_note, 1024) });
+  if (issue.dev_note) embed.addFields({ name: '💬 Note from the developers', value: trunc(issue.dev_note, 1024) });
   embed.addFields({ name: '📜 Timeline', value: timeline(issue.id, false) });
 
   const rows = [];
@@ -1403,7 +1403,9 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
         refreshPanel(i.guildId);
       }
       if (noteChanged) await talkSay(client, issue, `💬 <@${i.user.id}> left a note (players were messaged): ${trunc(noteText, 900)}`);
-      return i.editReply({ content: `Note saved on #${issue.id}.` });
+      return i.editReply({ content: noteChanged
+        ? `✅ Note saved on #${issue.id} and sent to everyone who reported or follows it (except people who turned messages off).`
+        : noteText ? `Note on #${issue.id} is unchanged, so nobody was messaged.` : `Note removed from #${issue.id}. Nobody was messaged.` });
     }
 
     // ----- issue message: merge into… -----
@@ -1775,7 +1777,7 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
 
     // ----- article editors (not developers) get only the knowledge-article tools behind the same button -----
     if (i.isButton() && (id === 'dev:menu' || id === 'dev:articles') && !isDev(i)) {
-      if (!canManageArticles(i)) return id === 'dev:articles' ? noArticleAccess(i) : devOnly(i, 'use these tools');
+      if (!canManageArticles(i)) return id === 'dev:articles' ? noArticleAccess(i) : i.reply({ content: '🔒 This button is for developers only. To get help, use **Report a problem**; to follow your reports, use **My issues**.', flags: EPH });
       return show(i, id === 'dev:menu' ? articleMenuPayload() : articlesPayload(i.guildId));
     }
 
