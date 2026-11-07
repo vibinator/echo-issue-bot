@@ -1907,6 +1907,16 @@ client.once('clientReady', async () => {
     try { console.log(`Developer hub restored in ${cfg.guild_id}: ${await applyHub(cfg.guild_id, await client.channels.fetch(cfg.dev_channel_id))} thread(s) created.`); }
     catch (e) { console.error(`Could not restore the developer hub in ${cfg.guild_id}: ${e.message}`); }
   }
+  // The developer hub holds only the board and the threads: remove any copy of the public panel the bot once posted there.
+  for (const cfg of settings.all()) {
+    if (!cfg.board_channel_id || cfg.panel_channel_id === cfg.board_channel_id) continue;
+    try {
+      const msgs = await (await client.channels.fetch(cfg.board_channel_id)).messages.fetch({ limit: 100 });
+      for (const m of msgs.values()) {
+        if (m.author.id === client.user.id && m.embeds[0]?.title === 'Echo VR – Problem Tracker' && m.id !== cfg.panel_message_id) await m.delete().catch(() => {});
+      }
+    } catch { /* no access */ }
+  }
   warmEmbeddings(); // load the meaning model in the background (the bot answers by words until it's ready)
   suggest('warm up the word cache so the first player is not slower than the rest', [], 1); // fills the matcher's caches
   for (const cfg of settings.all()) try { for (const t of issues.withText(cfg.guild_id)) suggest(t.text, [], 1); } catch { /* not critical */ }
