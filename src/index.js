@@ -625,6 +625,7 @@ async function applyStatus(i, issue, status,{ version, note } = {}) {
 }
 
 async function submitReport(i, { text, platform, version, evidence, kind = 'bug' }) {
+  rememberName(i);
   const cfg = cfgOf(i.guildId);
   const res = fileReport({ guildId: i.guildId, userId: i.user.id, text, platform, version, kind, threshold: cfg.threshold });
   await syncMessage(client, res.issue, cfg.channel_id);
@@ -721,7 +722,7 @@ function trackPayload(i, issue) {
     .addFields(
       { name: 'Status', value: `${st.emoji} ${st.label}${issue.status === 'fixed' && issue.fixed_version ? ` in \`${issue.fixed_version}\`` : ''}`, inline: true },
       { name: 'Priority', value: `${pr.emoji} ${pr.label}`, inline: true },
-      { name: "Who's on it", value: issue.owner_id ? person(issue.owner_id) : '_nobody yet_', inline: true },
+      { name: "Who's on it", value: issue.owner_id ? person(issue.owner_id, issue.guild_id) : '_nobody yet_', inline: true },
       { name: 'Players affected', value: String(stats.users), inline: true },
     );
   if (mine) {
@@ -947,16 +948,17 @@ async function failInteraction(i, err) {
   } catch { /* could not even tell them – already logged above */ }
 }
 
-const knownNames = new Map(); // userId -> the name last saved, so the database is only written when a name changes
+const knownNames = new Map(); // "server:user" -> the name last saved, so the database is only written when a name changes
+/** Remember the name this person uses in THIS server. Called only when they file a report or take an issue – not for people who just look around. */
 function rememberName(i) {
   const name = (i.member?.displayName ?? i.user?.globalName ?? i.user?.username ?? '').toString().trim().slice(0, 40);
-  if (!name || !i.user?.id || knownNames.get(i.user.id) === name) return;
-  knownNames.set(i.user.id, name);
-  try { prefs.setName(i.user.id, name); } catch (e) { console.error(`Could not save a display name: ${e.message}`); }
+  const key = `${i.guildId}:${i.user?.id}`;
+  if (!name || !i.guildId || !i.user?.id || knownNames.get(key) === name) return;
+  knownNames.set(key, name);
+  try { prefs.setName(i.user.id, i.guildId, name); } catch (e) { console.error(`Could not save a display name: ${e.message}`); }
 }
 
 async function handleInteraction(i) {
-  rememberName(i);
   try {
     if (!i.guildId) { // used in a private message: the bot only works inside a server
       if (i.isRepliable?.() ?? true) await i.reply({ content: 'This only works inside a server, not in private messages.', flags: EPH });
@@ -1253,6 +1255,7 @@ async function handleInteraction(i) {
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
       await i.deferUpdate();
+      rememberName(i);
       const mine = issue.owner_id === i.user.id;
       issues.setOwner(issue.id, mine ? null : i.user.id);
       events.add(issue.id, 'owner', i.user.id, mine ? 'unassigned' : 'took the issue');
@@ -1278,6 +1281,7 @@ async function handleInteraction(i) {
       const wait = cooldownLeft(i);
       if (wait) return i.reply(waitMsg(wait));
       await i.deferReply({ flags: EPH });
+      rememberName(i);
       const version = i.fields.getTextInputValue('version').trim();
       const reportId = reports.add(issue.id, i.user.id, i.fields.getTextInputValue('text').trim() || '(me too)', i.fields.getTextInputValue('platform').trim(), version);
       const ev = await attachEvidence(client, issue, i.user.id, reportId, readEvidence(i));

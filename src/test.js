@@ -849,11 +849,11 @@ assert.ok(tokenize('Привет мир').length >= 2, 'Cyrillic words are kept'
   seen.removeUser('pl1');
   assert.equal(seen.at(f.issue.id, 'pl1'), 0, 'erasing a user removes what they had read');
 
-  assert.equal(person('nobody'), '<@nobody>', 'unknown people stay a mention');
-  prefs.setName('named1', 'Cool *Player* <@123>');
-  assert.equal(person('named1'), '**Cool Player 123**', 'a known name replaces the mention, with markup stripped');
+  assert.equal(person('nobody', 'g'), '<@nobody>', 'unknown people stay a mention');
+  prefs.setName('named1', 'g', 'Cool *Player* <@123>');
+  assert.equal(person('named1', 'g'), '**Cool Player 123**', 'a known name replaces the mention, with markup stripped');
   prefs.delete('named1');
-  assert.equal(person('named1'), '<@named1>', 'erasing the user removes the name');
+  assert.equal(person('named1', 'g'), '<@named1>', 'erasing the user removes the name');
 
   const long = 'Hello so I run an old quest 2 so maybe everything cant be all fixed but might as well report its when I unplugged my earphone jack off my headset the audio doesnt switch';
   const t = fileReport({ guildId: 'g-title', userId: 'pl9', text: long });

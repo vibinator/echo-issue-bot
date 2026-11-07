@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-const DB_PATH = process.env.DB_PATH ?? 'data/issues.db';
+export const DB_PATH = process.env.DB_PATH ?? 'data/issues.db';
 /** Where backups go. Point this at a different folder/share than the database so one accident can't take both. */
 export const BACKUP_DIR = process.env.BACKUP_DIR ?? path.join('data', 'backups');
 
@@ -126,7 +126,10 @@ addColumn('settings', 'board_channel_id', 'TEXT');
 addColumn('settings', 'board_message_id', 'TEXT');
 addColumn('reports', 'edited_at', 'INTEGER');
 addColumn('issues', 'dev_replied_at', 'INTEGER'); // when a developer last changed the status or wrote a note: drives the "new reply" marker in My issues
-addColumn('user_prefs', 'display_name', 'TEXT'); // shown instead of a raw <@id> on cards; erased with the user's data
+addColumn('user_prefs', 'display_name', 'TEXT'); // no longer used (it was one name for every server); cleared below
+db.exec('UPDATE user_prefs SET display_name = NULL WHERE display_name IS NOT NULL');
+// A name is remembered per server (the nickname they use THERE) and only for people who report or take issues.
+db.exec('CREATE TABLE IF NOT EXISTS user_names (guild_id TEXT NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (guild_id, user_id))');
 db.exec('CREATE TABLE IF NOT EXISTS issue_seen (issue_id INTEGER NOT NULL, user_id TEXT NOT NULL, seen_at INTEGER NOT NULL, PRIMARY KEY (issue_id, user_id))');
 addColumn('evidence', 'path', 'TEXT'); // uploaded files live in the private evidence folder; this is their relative path
 addColumn('settings', 'article_role_id', 'TEXT');    // can manage knowledge articles without being a full developer
@@ -411,11 +414,11 @@ export const prefs = {
   setDmOff: (userId, off) => db.prepare(
     'INSERT INTO user_prefs (user_id, dm_off) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET dm_off = excluded.dm_off'
   ).run(userId, off ? 1 : 0),
-  delete: (userId) => db.prepare('DELETE FROM user_prefs WHERE user_id = ?').run(userId),
-  name: (userId) => db.prepare('SELECT display_name FROM user_prefs WHERE user_id = ?').get(userId)?.display_name ?? null,
-  setName: (userId, name) => db.prepare(
-    'INSERT INTO user_prefs (user_id, display_name) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name'
-  ).run(userId, name),
+  delete: (userId) => { db.prepare('DELETE FROM user_prefs WHERE user_id = ?').run(userId); db.prepare('DELETE FROM user_names WHERE user_id = ?').run(userId); },
+  name: (userId, guildId) => db.prepare('SELECT name FROM user_names WHERE guild_id = ? AND user_id = ?').get(guildId, userId)?.name ?? null,
+  setName: (userId, guildId, name) => db.prepare(
+    'INSERT INTO user_names (guild_id, user_id, name) VALUES (?, ?, ?) ON CONFLICT(guild_id, user_id) DO UPDATE SET name = excluded.name'
+  ).run(guildId, userId, name),
 };
 
 const STAT_FIELDS = ['shown', 'helped', 'denied', 'filed'];

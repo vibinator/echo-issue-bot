@@ -23,15 +23,15 @@ export const PRIORITIES = {
 
 
 /** A person on a card: their name when known (a raw <@id> shows as a number to anyone whose client hasn't seen them), else a mention. */
-export function person(id) {
-  const n = prefs.name(id)?.replace(/[\*_~`>|<@#:\[\]()]/g, '').trim();
+export function person(id, guildId) {
+  const n = prefs.name(id, guildId)?.replace(/[\*_~`>|<@#:\[\]()]/g, '').trim();
   return n ? `**${trunc(n, 32)}**` : `<@${id}>`;
 }
 
 /** The "requester" = whoever sent the first report; others who hit the same problem are counted. */
-function requesterText(issueId, stats) {
+function requesterText(issueId, stats, guildId) {
   const first = reports.earliest(issueId);
-  const who = !first ? '_unknown_' : first.user_id === '0' ? '_removed user_' : person(first.user_id);
+  const who = !first ? '_unknown_' : first.user_id === '0' ? '_removed user_' : person(first.user_id, guildId);
   const others = Math.max(0, stats.users - 1);
   return others ? `${who} + ${others} other${others === 1 ? '' : 's'}` : who;
 }
@@ -56,8 +56,8 @@ export function renderIssue(issue, { back, viewer } = {}) {
       { name: 'Priority', value: `${pr.emoji} ${pr.label}`, inline: true },
       { name: 'Type', value: issue.kind === 'install' ? '🔧 Install issue' : '🐞 Bug in game', inline: true },
       { name: 'Category', value: issue.category, inline: true },
-      { name: 'Requested by', value: requesterText(issue.id, stats), inline: true },
-      { name: "Who's on it", value: issue.owner_id ? person(issue.owner_id) : '_Nobody yet_', inline: true },
+      { name: 'Requested by', value: requesterText(issue.id, stats, issue.guild_id), inline: true },
+      { name: "Who's on it", value: issue.owner_id ? person(issue.owner_id, issue.guild_id) : '_Nobody yet_', inline: true },
       { name: 'Players affected', value: `${stats.users} (${stats.total} report${stats.total === 1 ? '' : 's'})`, inline: true },
     )
     .setTimestamp(issue.updated_at);
@@ -68,7 +68,7 @@ export function renderIssue(issue, { back, viewer } = {}) {
     // One field per report so each can show (nearly) its full text instead of a short preview.
     latest.forEach((r, n) => {
       const meta = [r.platform, r.version].filter(Boolean).map((x) => trunc(x, 30)).join(' · ');
-      const who = `${r.user_id === '0' ? '_removed user_' : person(r.user_id)}${meta ? ` _(${meta})_` : ''}${r.edited_at ? ' ✏️' : ''}`;
+      const who = `${r.user_id === '0' ? '_removed user_' : person(r.user_id, issue.guild_id)}${meta ? ` _(${meta})_` : ''}${r.edited_at ? ' ✏️' : ''}`;
       embed.addFields({
         name: n === 0 ? 'Latest reports' : '​',
         value: `• ${who}:\n${trunc(r.text.trim(), 1024 - who.length - 4)}`,
