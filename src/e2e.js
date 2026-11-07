@@ -7,6 +7,8 @@ const { join } = await import('node:path');
 process.env.EVIDENCE_DIR = mkdtempSync(join(tmpdir(), 'evr-e2e-'));
 process.env.EVIDENCE_MAX_MB = '1';
 process.env.BACKUP_DIR = mkdtempSync(join(tmpdir(), 'evr-e2e-backups-'));
+process.env.ROLE_PING_GAP_MIN = '0'; // the once-per-10-minutes ping limit would hide the pings these tests look for
+process.env.DM_GAP_MS = '0';
 delete process.env.REPORTER_ROLE_ID; delete process.env.ARTICLE_ROLE_ID;
 
 const ocr = await import('./ocr.js');

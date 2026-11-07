@@ -11,6 +11,28 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const TIMEOUT_MS = 60_000;
 const IDLE_MS = 5 * 60_000; // free the engine's memory when nobody has sent a screenshot for a while
 const MAX_CHARS = 2000;
+const MAX_PIXELS = 25_000_000; // a small file can unpack to a gigantic picture; refuse those before the engine sees them
+
+/** Width x height read from the file header (PNG, JPEG, BMP, WebP-VP8X), or 0 when unknown. */
+export function pixelsOf(b) {
+  try {
+    if (b.length > 24 && b.readUInt32BE(0) === 0x89504e47) return b.readUInt32BE(16) * b.readUInt32BE(20);
+    if (b.length > 26 && b[0] === 0x42 && b[1] === 0x4d) return Math.abs(b.readInt32LE(18)) * Math.abs(b.readInt32LE(22));
+    if (b.length > 30 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') {
+      if (b.toString('latin1', 12, 16) === 'VP8X') return (1 + b.readUIntLE(24, 3)) * (1 + b.readUIntLE(27, 3));
+      return 0;
+    }
+    if (b[0] === 0xff && b[1] === 0xd8) {
+      for (let p = 2; p + 9 < b.length;) {
+        if (b[p] !== 0xff) { p++; continue; }
+        const m = b[p + 1];
+        if (m >= 0xc0 && m <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(m)) return b.readUInt16BE(p + 5) * b.readUInt16BE(p + 7);
+        p += 2 + b.readUInt16BE(p + 2);
+      }
+    }
+  } catch { /* truncated header */ }
+  return 0;
+}
 
 let override = null; // tests plug in a fake reader here
 export const setRecognizer = (fn) => { override = fn; };
@@ -43,12 +65,19 @@ export function cleanOcrText(raw = '') {
   return lines.join('\n').slice(0, MAX_CHARS);
 }
 
-/** Text found in one image (a Buffer), or '' if there's none or OCR isn't available. Never throws. */
+/**
+ * Text found in one image (a Buffer): '' when the image has no readable text (or is not safe to read), and null when OCR could
+ * not run at all (switched off, engine or language data unavailable) so the caller does not record that as "nothing found".
+ * Never throws.
+ */
 export function readImageText(buf) {
-  if (!OCR_ENABLED || !buf?.length || buf.length > MAX_IMAGE_BYTES) return Promise.resolve('');
+  if (!OCR_ENABLED) return Promise.resolve(null);
+  if (!buf?.length || buf.length > MAX_IMAGE_BYTES) return Promise.resolve('');
   const job = queue.then(async () => {
     try {
       if (override) return cleanOcrText(await override(buf));
+      const px = pixelsOf(buf);
+      if (!px || px > MAX_PIXELS) return '';
       const worker = await getWorker();
       const { data } = await Promise.race([
         worker.recognize(buf),
@@ -60,7 +89,7 @@ export function readImageText(buf) {
     } catch (e) {
       if (!warned) { warned = true; console.error(`Screenshot text reading is unavailable (${e.message}). Reports still work normally.`); }
       await stopWorker();
-      return '';
+      return null;
     }
   });
   queue = job.catch(() => {});

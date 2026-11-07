@@ -1,9 +1,9 @@
 import { issues, reports } from './db.js';
 
-// Cells starting with = + - @ are prefixed so spreadsheets don't run user text as a formula.
+// Cells starting with = + - @ (or a tab / carriage return) are prefixed so spreadsheets don't run user text as a formula.
 const esc = (v) => {
   let s = v == null ? '' : String(v);
-  if (/^[=+\-@]/.test(s)) s = `'${s}`;
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 const csv = (header, rows) => `﻿${[header, ...rows].map((r) => r.map(esc).join(',')).join('\r\n')}`;

@@ -12,11 +12,11 @@ Per server, in a database on the operator's own hardware:
 |---|---|
 | Your Discord **user ID** | to attribute reports, show you your own reports, and DM you about them |
 | What you submit: description, headset/platform, last update / version number | to understand, group and fix the problem |
-| **Links** you add and **files** you upload (screenshots, logs, video) | as evidence. Files are copied into a private folder on the operator's server (not posted in any channel or thread); links are stored as text. Files are limited in size (25 MB each by default) |
+| **Links** you add and **files** you upload (screenshots, logs, video) | as evidence. Files are copied into a private folder on the operator's server (not posted in any channel or thread); links are stored as text. Files are limited in size (10 MB each by default, 15 per report), and programs/scripts are not accepted |
 | Timestamps; whether a report was edited | to show history |
 | Issues you **follow** | to DM you when they change |
 | Your **DM preference** | so you can turn DMs off |
-| Your **display name** | shown on issue cards instead of a numeric ID; deleted with your data |
+| Your **display name in this server** | shown on issue cards instead of a numeric ID. Saved only when you send a report or take an issue as a developer (not when you just browse), per server, and deleted with your data |
 | Each issue's status history and which developer made changes | to show progress and for developer coordination |
 
 The bot does **not** read general messages in the server. It only receives the forms, buttons and menus people use and the `/setup` command. It does not request any privileged Discord intents.
@@ -27,13 +27,13 @@ Only to run the issue tracker: group similar reports (word-similarity run locall
 The data is **not sold, shared with third parties, used for advertising, or used to train AI models**. No third-party analytics are used.
 
 ## Who can see it
-- People who can see the server's issue channel see your mention and the text of your report. The issue only shows *how many* attachments it has.
+- Anyone in the server who opens **Known issues** from the control panel can see an issue's title (taken from the first line of the first report), the text of each report, your name, and *how many* attachments it has.
 - **Your attachments and links are shown only to you and to developers.** (The *requester* is the person who sent a report; each requester can open only their own files.) The bot checks who is asking every time someone opens them.
 - Developers (the developer role, and members with Manage Server) can also see the history, and can export reports **including user IDs** as CSV.
 - The operator can access the database and its backups.
 
 ## Backups and retention
-The database is backed up daily on the operator's hardware (newest 14 backups kept). Uploaded files live in the bot's data folder (`data/evidence`) and are deleted together with their report. Data is kept until you erase it, a developer deletes it, or – if the operator enabled it with `/setup retention_days` – closed issues are deleted after that many days without activity. Erased data can remain in backups until those rotate out (up to 14 days).
+The database is backed up hourly (only when something changed) on the operator's hardware, and the newest 168 backups (about a week) are kept. Uploaded files live in the bot's data folder (`data/evidence`) and are deleted together with their report. Data is kept until you erase it, a developer deletes it, or – if the operator enabled it with `/setup retention_days` – closed issues are deleted after that many days without activity. Erased data can remain in backups until those rotate out (about a week). Unpublished knowledge-article drafts built from your reports are deleted when you erase your data; an article a developer has already reviewed and published is the developer's own writing and stays.
 
 ## Your choices and rights
 - **Edit, add to, or withdraw** your reports: panel → **My issues**.

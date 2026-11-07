@@ -11,7 +11,7 @@ import { relatedIssues } from './related.js';
 import { extractLinks, KIND_EMOJI } from './evidence.js';
 import { errorMessage, explainError, fileFailureReason } from './errors.js';
 import { pathToFileURL } from 'node:url';
-import { MAX_FILE_MB, readStored } from './evidenceStore.js';
+import { MAX_FILE_MB, readStored, storedSize } from './evidenceStore.js';
 import {
   attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
   eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay,
@@ -28,6 +28,17 @@ import { versionLabel } from './version.js';
 import { confirmUpdate, rollbackIfCrashLooping } from './updater.js';
 
 const EPH = MessageFlags.Ephemeral;
+/** One count per person, per answer, per kind of reaction, per hour – so nobody can steer the answer ranking by clicking in a loop. */
+const statSeen = new Map();
+function bumpStat(i, articleId, field) {
+  const key = `${i.guildId}|${i.user.id}|${articleId}|${field}`;
+  if ((statSeen.get(key) ?? 0) > Date.now()) return;
+  statSeen.set(key, Date.now() + 3_600_000);
+  kbStats.bump(i.guildId, articleId, field);
+}
+/** People whose report is being sent right now: a second click/submit meanwhile would slip past the cooldown. */
+const filing = new Set();
+const busyMsg = { content: '⏳ Your report is still being sent – one moment.', flags: EPH };
 const NONE = '-'; // "no filter" placeholder inside custom ids
 const row = (...c) => new ActionRowBuilder().addComponents(...c);
 const btn = (id, label, emoji, style = ButtonStyle.Secondary) =>
@@ -189,12 +200,17 @@ function refreshPanel(guildId) {
 }
 
 /** A new issue was filed or a fixed one came back: tell the developers where they'll see it (pinging them only when it's urgent). */
+const lastPing = new Map();
+const PING_GAP_MS = Number(process.env.ROLE_PING_GAP_MIN ?? 10) * 60_000;
 async function alertDevs(issue, why) {
   try {
     const chId = cfgOf(issue.guild_id).dev_channel_id;
     if (!chId) return; // no developer channel chosen: the panel button and developer menu still show the count
     const urgent = why === 'reopened' || ['critical', 'high'].includes(issue.priority);
-    const role = urgent ? settings.get(issue.guild_id)?.dev_role_id : null;
+    let role = urgent ? settings.get(issue.guild_id)?.dev_role_id : null;
+    // A player can write "crash…" to make an urgent issue, so the role is pinged at most once per 10 minutes per server.
+    if (role && Date.now() - (lastPing.get(issue.guild_id) ?? 0) < PING_GAP_MS) role = null;
+    if (role) lastPing.set(issue.guild_id, Date.now());
     const pr = PRIORITIES[issue.priority] ?? PRIORITIES.normal;
     await (await client.channels.fetch(chId)).send({
       content: `${role ? `<@&${role}> ` : ''}${why === 'reopened' ? '⚠️ **Reopened**' : '🆕 **New issue**'} #${issue.id} · ${pr.emoji} ${pr.label} · ${trunc(issue.title.replace(/\s+/g, ' '), 150)}`,
@@ -395,11 +411,17 @@ const failNote = (ev) => (ev.failed.length
  * Show attachments privately in a hidden message. Callers have already checked that the viewer is the person who
  * sent them or a developer – this is the only place stored files ever leave the bot.
  */
+const SEND_LIMIT = 9 * 1024 * 1024; // what fits safely in one Discord message
+const MAX_ATTACHED = 30;            // files shown per request; the rest are listed by name
 async function sendEvidence(i, rows, heading) {
   if (!rows.length) return i.reply({ content: 'There are no attachments yet.', flags: EPH });
   await i.deferReply({ flags: EPH }); // reading and uploading files can take a while – acknowledge first
   const lines = [heading];
-  const files = [];
+  // Plan first (sizes only), read files only while sending: a big issue never has all its files in memory at once, and
+  // every message stays under Discord's size and count limits so one large file cannot make the whole view fail.
+  const batches = [[]];
+  let batchBytes = 0;
+  let attached = 0;
   let lastReport = null;
   for (const r of rows) {
     if (r.report_id !== lastReport) {
@@ -407,18 +429,22 @@ async function sendEvidence(i, rows, heading) {
       lines.push(`\n**Report #${r.report_id}** – requested by ${r.user_id === '0' ? 'a removed user' : `<@${r.user_id}>`}`);
     }
     const emoji = KIND_EMOJI[r.kind] ?? '📎';
-    if (r.path) {
-      const data = readStored(r.path);
-      if (data) {
-        files.push(new AttachmentBuilder(data, { name: r.name })); lines.push(`• ${emoji} ${trunc(r.name, 80)} _(attached)_`);
-        if (r.ocr_text) lines.push(`  🔎 _Text read from the image:_ ${trunc(r.ocr_text.replace(/\s+/g, ' '), 220)}`);
-      }
-      else lines.push(`• ${emoji} ${trunc(r.name, 80)} _(file is no longer available)_`);
-    } else lines.push(`• ${emoji} ${r.url}`);
+    if (!r.path) { lines.push(`• ${emoji} ${r.url}`); continue; }
+    const size = storedSize(r.path);
+    if (size == null) lines.push(`• ${emoji} ${trunc(r.name, 80)} _(file is no longer available)_`);
+    else if (size > SEND_LIMIT) lines.push(`• ${emoji} ${trunc(r.name, 80)} _(${(size / 1048576).toFixed(1)} MB – too big to show here)_`);
+    else if (attached >= MAX_ATTACHED) lines.push(`• ${emoji} ${trunc(r.name, 80)} _(not shown – too many files at once; open one report at a time)_`);
+    else {
+      let batch = batches.at(-1);
+      if (batch.length >= 10 || batchBytes + size > SEND_LIMIT) { batch = []; batches.push(batch); batchBytes = 0; }
+      batch.push(r); batchBytes += size; attached++;
+      lines.push(`• ${emoji} ${trunc(r.name, 80)} _(attached)_`);
+      if (r.ocr_text) lines.push(`  🔎 _Text read from the image:_ ${trunc(r.ocr_text.replace(/\s+/g, ' '), 220)}`);
+    }
   }
-  const body = { content: trunc(lines.join('\n'), 1900), allowedMentions: { parse: [] } };
-  await i.editReply({ ...body, files: files.slice(0, 10) });
-  for (let n = 10; n < files.length; n += 10) await i.followUp({ files: files.slice(n, n + 10), flags: EPH }); // Discord allows 10 per message
+  const build = (batch) => batch.flatMap((r) => { const data = readStored(r.path); return data ? [new AttachmentBuilder(data, { name: r.name })] : []; });
+  await i.editReply({ content: trunc(lines.join('\n'), 1900), allowedMentions: { parse: [] }, files: build(batches[0]) });
+  for (const batch of batches.slice(1)) await i.followUp({ files: build(batch), flags: EPH });
 }
 
 /**
@@ -431,7 +457,7 @@ async function scanScreenshots(i, { reportId, text, kind }) {
     if (!found) return;
     const matches = suggest(`${text}\n${found.slice(0, 800)}`, articles.list(i.guildId, { enabledOnly: true }), 3, kind, kbBoosts(i.guildId));
     if (!matches.length) return;
-    for (const m of matches) kbStats.bump(i.guildId, m.id, 'shown');
+    for (const m of matches) bumpStat(i, m.id, 'shown');
     await i.followUp({
       content: `🔎 **I read the text in your screenshot** and found ${matches.length === 1 ? 'a known fix' : 'some known fixes'} that may help while the developers look at your report:`,
       embeds: matches.map((m) => new EmbedBuilder().setColor(0xfee75c).setTitle(`💡 ${trunc(m.title, 250)}`).setDescription(trunc(m.fix, 4000)).setFooter({ text: `Source: ${m.source}` })),
@@ -602,7 +628,7 @@ async function tellMerged(into, userIds) {
 async function applyStatus(i, issue, status,{ version, note } = {}) {
   const old = issue.status;
   issues.setStatus(issue.id, status, i.user.id, version);
-  if (note) issues.setNote(issue.id, note, i.user.id);
+  if (note !== undefined) issues.setNote(issue.id, note || null, i.user.id); // an empty box clears the note
   const fresh = issues.get(issue.id);
   await syncMessage(client, fresh, trackerChannel(i));
   if (status !== old) {
@@ -990,13 +1016,14 @@ async function handleInteraction(i) {
       if (retention !== null) settings.update(i.guildId, { retention_days: retention });
       const autoMerge = i.options.getBoolean('auto_merge');
       if (autoMerge !== null) settings.update(i.guildId, { auto_merge: autoMerge ? 1 : 0 });
-      // Only ONE public message: replace the previous panel (and any old live board) instead of adding another.
+      // Only ONE public message: post the new panel first (if that fails nothing is lost), then remove the previous one.
+      const target = i.channel; // the panel goes where /setup is run (see README)
+      const panelMsg = await target.send(panelPayload(i.guildId));
       if (prev?.panel_message_id && prev.panel_channel_id) {
         try { await (await (await client.channels.fetch(prev.panel_channel_id)).messages.fetch(prev.panel_message_id)).delete(); } catch { /* gone */ }
       }
       await dropBoard(client, i.guildId);
-      const panelMsg = await i.channel.send(panelPayload(i.guildId));
-      settings.update(i.guildId, { panel_channel_id: i.channel.id, panel_message_id: panelMsg.id });
+      settings.update(i.guildId, { panel_channel_id: target.id, panel_message_id: panelMsg.id });
       const rr = reporterRole(i.guildId);
       // Check up front what the bot can't do in the issues channel and say why it matters, instead of failing later.
       let permissionWarning = '';
@@ -1017,7 +1044,7 @@ async function handleInteraction(i) {
         : '';
       return i.editReply({
         content: [
-          '✅ **All set!** The control panel is posted above.',
+          `✅ **All set!** The control panel is posted in <#${target.id}>.`,
           `• Issues are not posted in <#${ch.id}> – everything is opened from **Known issues** on the control panel`,
           `• Developers: <@&${role.id}> (and anyone with Manage Server) – they can change an issue's status and use the Developer menu`,
           `• Who can send reports: ${rr ? `<@&${rr}>` : 'everyone'}`,
@@ -1054,7 +1081,7 @@ async function handleInteraction(i) {
       const kind = id.slice(4);
       const entry = faqEntries(kind, articles.list(i.guildId, { enabledOnly: true })).find((e) => e.id === i.values[0]);
       if (!entry) return i.update(faqFor(i, kind));
-      kbStats.bump(i.guildId, entry.id, 'shown');
+      bumpStat(i, entry.id, 'shown');
       return i.update(faqAnswerPayload(entry, kind));
     }
     if (i.isButton() && id.startsWith('faqp:')) {
@@ -1063,21 +1090,22 @@ async function handleInteraction(i) {
     }
     if (i.isButton() && id.startsWith('faqok:')) {
       const [, , ...rest] = id.split(':');
-      kbStats.bump(i.guildId, rest.join(':'), 'helped');
+      bumpStat(i, rest.join(':'), 'helped');
       return i.update({ content: 'Great, glad that helped! 🎉 No report was needed.', embeds: [], components: [] });
     }
     if (i.isButton() && id.startsWith('faqno:')) {
       const [, kind, ...rest] = id.split(':');
-      kbStats.bump(i.guildId, rest.join(':'), 'denied');
+      bumpStat(i, rest.join(':'), 'denied');
       return i.update(faqFor(i, kind));
     }
     // "None of these" / "Still happening": open the form.
     if (i.isButton() && id.startsWith('rform:')) {
       if (!canReport(i)) return noReportAccess(i);
       const [, kind, ...rest] = id.split(':');
-      if (rest.length) kbStats.bump(i.guildId, rest.join(':'), 'filed');
       const wait = cooldownLeft(i);
-      return wait ? i.reply(waitMsg(wait)) : i.showModal(reportModal(kind, getDraft(i.user.id))); // pre-filled with what they already wrote
+      if (wait) return i.reply(waitMsg(wait));
+      if (rest.length) bumpStat(i, rest.join(':'), 'filed');
+      return i.showModal(reportModal(kind, getDraft(i.user.id))); // pre-filled with what they already wrote
     }
     if (i.isModalSubmit() && (id === 'report:install' || id === 'report:bug')) {
       if (!canReport(i)) return noReportAccess(i);
@@ -1097,10 +1125,14 @@ async function handleInteraction(i) {
         return show(i, alreadyFixedPayload(fixedMatch));
       }
       // The player already went through the known-problems list and chose to report: file it, no more searching.
-      setDraft(i.user.id, '');
-      await deferHidden(i); // re-hosting files can take longer than Discord's 3s limit
-      const payload = await submitReport(i, data); // (not inlined: submitReport may wrap i.editReply, so look it up afterwards)
-      return i.editReply(payload);
+      if (filing.has(i.user.id)) return i.reply(busyMsg);
+      filing.add(i.user.id);
+      try {
+        setDraft(i.user.id, '');
+        await deferHidden(i); // re-hosting files can take longer than Discord's 3s limit
+        const payload = await submitReport(i, data); // (not inlined: submitReport may wrap i.editReply, so look it up afterwards)
+        return await i.editReply(payload);
+      } finally { filing.delete(i.user.id); }
     }
     if (i.isButton() && id.startsWith('fxok:')) {
       pendingFixed.delete(i.user.id); setDraft(i.user.id, '');
@@ -1112,10 +1144,14 @@ async function handleInteraction(i) {
       if (!p || p.exp < Date.now()) return i.update({ content: 'That took a while, so your report was not kept. Open **Report a problem** to start again.', embeds: [], components: [] });
       const wait = cooldownLeft(i);
       if (wait) return i.reply(waitMsg(wait));
-      pendingFixed.delete(i.user.id); setDraft(i.user.id, '');
-      await deferHidden(i);
-      const payload = await submitReport(i, p.data);
-      return i.editReply(payload);
+      if (filing.has(i.user.id)) return i.reply(busyMsg);
+      filing.add(i.user.id);
+      try {
+        pendingFixed.delete(i.user.id); setDraft(i.user.id, '');
+        await deferHidden(i);
+        const payload = await submitReport(i, p.data);
+        return await i.editReply(payload);
+      } finally { filing.delete(i.user.id); }
     }
     if (i.isButton() && id.startsWith('keep:')) {
       const report = reports.get(idOf(i));
@@ -1280,6 +1316,9 @@ async function handleInteraction(i) {
       if (reports.hasUser(issue.id, i.user.id)) return i.reply({ content: 'You\'ve already added your report to this issue. 👍', flags: EPH });
       const wait = cooldownLeft(i);
       if (wait) return i.reply(waitMsg(wait));
+      if (filing.has(i.user.id)) return i.reply(busyMsg);
+      filing.add(i.user.id);
+      try {
       await i.deferReply({ flags: EPH });
       rememberName(i);
       const version = i.fields.getTextInputValue('version').trim();
@@ -1287,12 +1326,16 @@ async function handleInteraction(i) {
       const ev = await attachEvidence(client, issue, i.user.id, reportId, readEvidence(i));
       const saved = ev.saved;
       if (saved) scanAfterReply(i, { reportId, text: i.fields.getTextInputValue('text').trim(), kind: issue.kind });
-      if (issue.status === 'fixed') {
+      const reopened = issue.status === 'fixed';
+      if (reopened) {
         issues.setStatus(issue.id, 'new', null);
+        events.add(issue.id, 'reopened', i.user.id, issue.fixed_version ? `was fixed in ${issue.fixed_version}` : null);
         await threadSay(client, issue, `⚠️ Reopened by another report${issue.fixed_version ? ` (it was fixed in \`${issue.fixed_version}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
       } else issues.touch(issue.id);
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
+      if (reopened) { alertDevs(issues.get(issue.id), 'reopened'); refreshPanel(i.guildId); }
       return i.editReply({ content: `✅ **Thanks – your report was added to #${issue.id}.**${saved ? `\n📎 Saved ${countLine(saved)} with it – only you and the developers can see them.` : ''}${failNote(ev)}\nYou'll get a message when its status changes. See everything under **My issues**.` });
+      } finally { filing.delete(i.user.id); }
     }
 
     // ----- issue message: dev note -----
@@ -1654,7 +1697,7 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
       switch (id) {
         case 'dev:menu': return show(i, devMenuPayload(i.guildId));
         case 'dev:settings': return show(i, settingsPayload(i.guildId));
-        case 'dev:dups': return show(i, dupPayload(i));
+        case 'dev:dups': { await deferHidden(i); return i.editReply(dupPayload(i)); } // comparing many issues can take a few seconds
         case 'dev:articles': return show(i, articlesPayload(i.guildId));
         case 'dev:board': return show(i, boardPayload(i.guildId));
         case 'dev:export': {
@@ -1753,6 +1796,7 @@ client.once('clientReady', async () => {
     try { const f = maybeBackup(); if (f) console.log(`Backup written: ${f}`); } catch (e) { console.error('Backup failed:', e.message); }
     for (const [k, v] of drafts) if (v.exp < Date.now()) drafts.delete(k);
     for (const [k, v] of pendingFixed) if (v.exp < Date.now()) pendingFixed.delete(k);
+    for (const [k, t] of statSeen) if (t < Date.now()) statSeen.delete(k);
   };
   setTimeout(tick, 30_000);
   setInterval(tick, 3_600_000);

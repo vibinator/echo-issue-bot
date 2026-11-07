@@ -6,6 +6,7 @@ services:
     restart: unless-stopped
     environment:
       # --- edit these ---
+      # Keep this file out of git/screenshots once the token is in it – or move the token to a .env file next to it and use `env_file: .env` instead.
       DISCORD_TOKEN: "paste-your-bot-token-here"
       GUILD_ID: ""                                   # optional: your server ID (instant slash-command registration)
       AUTO_UPDATE: "on"                              # install new versions from GitHub automatically (checks every 10 min, then restarts)

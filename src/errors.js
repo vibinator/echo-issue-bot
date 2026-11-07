@@ -54,6 +54,9 @@ export function errorMessage(err) {
 /** Why an uploaded file couldn't be saved, in plain words (reason codes come from evidenceStore). */
 export function fileFailureReason(reason, maxMb) {
   if (reason === 'too large') return `it's over the ${maxMb} MB limit`;
+  if (reason === 'file type not allowed') return "programs and scripts can't be attached – paste a link or zip it";
+  if (reason === 'storage full') return "the bot's evidence storage is full – tell a developer";
+  if (reason === 'too many files') return 'this report already has the maximum number of attachments';
   if (reason === 'not a Discord attachment') return "it didn't come from Discord";
   const m = /^download failed \((\d+)\)/.exec(reason);
   if (m) return `Discord wouldn't let the bot download it (error ${m[1]})`;

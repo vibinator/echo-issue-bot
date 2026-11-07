@@ -1,5 +1,5 @@
 import { EmbedBuilder } from 'discord.js';
-import { decisions, events, evidence, issues, prefs, reports, seen, watchers } from './db.js';
+import { articles, db, decisions, events, evidence, issues, prefs, reports, seen, watchers } from './db.js';
 import { refreshBoard } from './board.js';
 import { kindOfFile, kindOfLink, linkName } from './evidence.js';
 import { readStored, removeReportFiles, saveFromUrl } from './evidenceStore.js';
@@ -155,10 +155,27 @@ export function mergeIssues(fromId, intoId) {
  * Candidate duplicate pairs for the review queue: related issues the matcher did NOT merge,
  * minus pairs developers already marked "keep separate" and pairs of two closed issues.
  */
+const dupCache = new Map();
+/** Changes whenever an issue or report is added, removed or edited, so a cached answer is only reused while nothing changed. */
+const dupSignature = (g) => {
+  const a = db.prepare('SELECT COUNT(*) AS n, COALESCE(MAX(updated_at), 0) AS m, COALESCE(SUM(id), 0) AS s FROM issues WHERE guild_id = ?').get(g);
+  const b = db.prepare('SELECT COUNT(*) AS n, COALESCE(MAX(COALESCE(r.edited_at, 0) + r.id), 0) AS m FROM reports r JOIN issues i ON i.id = r.issue_id WHERE i.guild_id = ?').get(g);
+  return `${a.n}/${a.m}/${a.s}/${b.n}/${b.m}`;
+};
+const DUP_MAX_ISSUES = 3000; // comparing is quadratic and blocks the bot while it runs: only the newest issues are compared
 export function duplicatePairs(guildId, floor = 0.12) {
+  const sig = `${floor}|${dupSignature(guildId)}`;
+  const hit = dupCache.get(guildId);
+  const live = (p) => issues.get(p.a) && issues.get(p.b) && !decisions.has(guildId, p.a, p.b);
+  if (hit?.sig === sig) return hit.pairs.filter(live);
+  const pairs = computeDuplicatePairs(guildId, floor);
+  dupCache.set(guildId, { sig, pairs });
+  return pairs;
+}
+function computeDuplicatePairs(guildId, floor) {
   const closed = new Set(['fixed', 'wont_fix', 'cannot_reproduce']);
   const status = new Map(issues.list(guildId).map((it) => [it.id, it.status]));
-  return similarPairs(issues.withText(guildId), floor)
+  return similarPairs(issues.withText(guildId).sort((x, y) => y.id - x.id).slice(0, DUP_MAX_ISSUES), floor)
     .map((p) => (p.a < p.b ? p : { a: p.b, b: p.a, score: p.score }))
     .filter((p) => !decisions.has(guildId, p.a, p.b))
     .filter((p) => !(closed.has(status.get(p.a)) && closed.has(status.get(p.b))))
@@ -218,6 +235,8 @@ export async function threadSay(client, issue, text) {
   try { await (await client.channels.fetch(fresh.thread_id)).send(text); } catch { /* thread gone */ }
 }
 
+const MAX_REPORT_FILES = 15; // attachments (files and links) one report may hold in total
+
 /**
  * Save a report's links and uploaded files. Nothing is posted in Discord: files are downloaded into the bot's
  * private evidence folder and links are stored as text, so only the reporter and developers can ever be shown them
@@ -226,13 +245,14 @@ export async function threadSay(client, issue, text) {
 export async function attachEvidence(client, issue, userId, reportId, { links = [], files = [] } = {}) {
   const result = { saved: 0, failed: [] };
   const base = { issue_id: issue.id, report_id: reportId, user_id: userId };
-  for (const l of links) {
+  for (const l of links.slice(0, Math.max(0, MAX_REPORT_FILES - evidence.forReport(reportId).length))) {
     evidence.add({ ...base, kind: kindOfLink(l), name: linkName(l), url: l });
     result.saved++;
   }
   const already = evidence.forReport(reportId).length; // keeps file names unique across later additions
   for (const [n, f] of files.entries()) {
     try {
+      if (already + n >= MAX_REPORT_FILES) throw new Error('too many files');
       const rel = await saveFromUrl(reportId, already + n, f);
       evidence.add({ ...base, kind: kindOfFile(f.name, f.contentType), name: f.name, url: '', path: rel });
       result.saved++;
@@ -257,6 +277,7 @@ export async function readScreenshots(reportId) {
     if (text == null) {
       const data = readStored(r.path);
       text = data ? await readImageText(data) : '';
+      if (text === null) continue; // OCR could not run: leave it unread so a later report or a fixed setup can still read it
       evidence.setOcr(r.id, text);
     }
     if (text) found.push(text);
@@ -335,11 +356,13 @@ export async function autoMergeDuplicates(client, guildId, channelId) {
  */
 export async function eraseUser(client, guildId, userId) {
   const touched = new Set();
+  const affected = new Set(); // every issue the person's text was on
   let removed = 0;
   let anonymised = 0;
   for (const r of reports.byUser(guildId, userId)) {
     const issue = issues.get(r.issue_id);
     if (!issue) continue;
+    affected.add(issue.id);
     await purgeEvidence(client, r.id);
     const total = reports.stats(issue.id).total;
     const devTouched = issue.status !== 'new' || !!issue.owner_id || !!issue.dev_note;
@@ -362,6 +385,8 @@ export async function eraseUser(client, guildId, userId) {
       touched.add(issue.id);
     }
   }
+  // A proposed (unpublished) knowledge article copies text from the reports on its issue: drop those drafts too.
+  for (const id of affected) { const a = articles.forIssue(id); if (a?.draft) articles.delete(a.id); }
   watchers.removeUser(guildId, userId);
   events.clearActor(userId);
   prefs.delete(userId);
@@ -386,12 +411,15 @@ export async function purgeExpired(client, guildId, days) {
   return old.length;
 }
 
+const DM_GAP_MS = Number(process.env.DM_GAP_MS ?? 150);
+
 /** DM everyone who reported or follows the issue and hasn't turned DMs off (best effort). */
 export async function notifyReporters(client, issue, text, only = null) {
   const ids = [...new Set([...reports.forIssue(issue.id).map((r) => r.user_id), ...watchers.forIssue(issue.id)])]
     .filter((id) => (!only || only.includes(id)) && id !== '0' && !prefs.dmOff(id)).slice(0, 500);
   for (const id of ids) {
     try { await (await client.users.fetch(id)).send(text); } catch { /* DMs closed */ }
+    if (DM_GAP_MS) await new Promise((r) => setTimeout(r, DM_GAP_MS)); // a long run of DMs sent back to back looks like spam to Discord
   }
 }
 

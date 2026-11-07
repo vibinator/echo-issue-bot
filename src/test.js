@@ -885,4 +885,57 @@ assert.ok(tokenize('Привет мир').length >= 2, 'Cyrillic words are kept'
   }
 }
 
+// ---- hardening: uploads, images, duplicates cache, erase, CSV ----
+{
+  const { attachEvidence: attach, duplicatePairs: dupPairs, eraseUser: erase } = await import('./service.js');
+  const { pixelsOf } = await import('./ocr.js');
+  const { storedSize, usedBytes } = await import('./evidenceStore.js');
+  const { articles: Art, evidence: Ev, reports: Rep } = await import('./db.js');
+  const G = 'g-hard';
+  const client = { channels: { fetch: async () => ({}) }, users: { fetch: async () => ({ send: async () => {} }) } };
+
+  // programs/scripts are refused, and a report can only hold so many attachments
+  const r = fileReport({ guildId: G, userId: 'h1', text: 'Voice chat cuts out whenever somebody joins the lobby' });
+  const bad = await attach(client, r.issue, 'h1', r.reportId, { files: [{ name: 'setup.exe', url: 'https://cdn.discordapp.com/a/setup.exe', size: 10 }] });
+  assert.equal(bad.saved, 0);
+  assert.equal(bad.failed[0].reason, 'file type not allowed');
+  const many = await attach(client, r.issue, 'h1', r.reportId, { files: Array.from({ length: 20 }, (_, n) => ({ name: `a${n}.png`, url: `https://cdn.discordapp.com/a/a${n}.png`, size: 10 })) });
+  assert.equal(many.saved, 15, 'one report keeps at most 15 attachments');
+  assert.ok(many.failed.every((f) => f.reason === 'too many files'));
+  const stored = Ev.forReport(r.reportId).find((e) => e.path);
+  assert.ok(storedSize(stored.path) > 0 && storedSize('../../etc/passwd') === null, 'stored size is read inside the evidence folder only');
+  assert.ok(usedBytes() > 0);
+
+  // a redirect is never followed (the host check would be pointless otherwise)
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 302, headers: { get: () => null } });
+  const r2 = fileReport({ guildId: G, userId: 'h6', text: 'Menu music stutters after a long session in the lobby' });
+  const redir = await attach(client, r2.issue, 'h6', r2.reportId, { files: [{ name: 'a.png', url: 'https://cdn.discordapp.com/a/a.png', size: 10 }] });
+  assert.equal(redir.saved, 0);
+  assert.equal(redir.failed[0].reason, 'download failed (302)', 'a redirect is refused, not followed');
+  globalThis.fetch = realFetch;
+
+  // image header sizes: a tiny PNG file that claims to be huge is recognised before the OCR engine sees it
+  const png = Buffer.alloc(33); png.writeUInt32BE(0x89504e47, 0); png.writeUInt32BE(30000, 16); png.writeUInt32BE(30000, 20);
+  assert.equal(pixelsOf(png), 900_000_000);
+  assert.equal(pixelsOf(Buffer.from('not an image at all, just text bytes here....')), 0);
+
+  // the duplicates list reflects new issues straight away even though it is cached
+  const a = fileReport({ guildId: G, userId: 'h2', text: 'Scoreboard flickers during overtime on the arena map' });
+  const before = dupPairs(G).length;
+  const b = fileReport({ guildId: G, userId: 'h3', text: 'Overtime scoreboard flicker, arena map, very annoying', threshold: 0.99 });
+  assert.ok(dupPairs(G).length >= before && dupPairs(G).some((p) => [p.a, p.b].includes(b.issue.id)), 'a new issue shows up in the duplicate review without waiting');
+
+  // erasing a person also removes the unpublished article drafted from their report
+  const dr = fileReport({ guildId: G, userId: 'h4', text: 'Headset tracking drifts after the game resumes from sleep' });
+  issues.setStatus(dr.issue.id, 'fixed', 'dev', '1.0');
+  Art.add({ guild_id: G, title: 'Tracking drift', symptoms: 'Headset tracking drifts after the game resumes from sleep', body: 'Restart', draft: true, source_issue_id: dr.issue.id });
+  await erase(client, G, 'h4');
+  assert.equal(Art.forIssue(dr.issue.id), undefined, 'the draft built from the erased report is gone');
+
+  // CSV: cells starting with a tab are neutralised too
+  const t = fileReport({ guildId: 'g-csv', userId: 'h5', text: '\tcmd|calc is how this report starts, then keeps going for a while' });
+  assert.ok(exportCsv('g-csv').reports.toString().includes("'\tcmd"), 'tab-led cells are quoted with a leading apostrophe');
+}
+
 console.log('All tests passed.');
