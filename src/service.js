@@ -1,4 +1,4 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, MessageType, StringSelectMenuBuilder } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, StringSelectMenuBuilder } from 'discord.js';
 import { articles, db, decisions, events, evidence, issues, prefs, reports, seen, settings, watchers } from './db.js';
 import { refreshBoard } from './board.js';
 import { kindOfFile, kindOfLink, linkName } from './evidence.js';
@@ -304,19 +304,6 @@ const OPEN_STATUSES = ['new', 'seen', 'in_progress'];
 const talkLocks = new Map();
 const threadWarned = new Map();
 
-/**
- * Delete the "Echo Issue Tracker started a thread" notices Discord posts in the hub channel for every new thread, so the live board
- * is the only thing in the channel (the threads stay in the thread list). Needs Manage Messages; silently does nothing without it.
- */
-export async function tidyHub(client, hubId, limit = 100) {
-  try {
-    const hub = await client.channels.fetch(hubId);
-    for (const m of (await hub.messages.fetch({ limit })).values()) {
-      if (m.type === MessageType.ThreadCreated && m.author.id === client.user.id) await m.delete().catch(() => {});
-    }
-  } catch { /* no access */ }
-}
-
 /** The first message of an issue's developer thread: what it is, a status menu for developers, and the note / merge buttons. */
 export function talkIntro(issue) {
   const menu = new StringSelectMenuBuilder().setCustomId(`status:${issue.id}`).setPlaceholder('Move to another status (developers only)')
@@ -348,7 +335,6 @@ export async function openTalkThread(client, issue) {
     autoArchiveDuration: 1440, reason: `Developer thread for issue #${fresh.id}`,
   });
   issues.setTalkThread(fresh.id, thread.id);
-  tidyHub(client, hubId, 10);
   await thread.send(talkIntro(fresh)).catch(() => {});
   await postTalkHistory(client, fresh, thread);
   await thread.setLocked(true, 'Only developers write here').catch(() => {}); // a locked thread can only be written in by people with Manage Threads (and the bot)
