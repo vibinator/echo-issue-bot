@@ -1833,7 +1833,7 @@ Each New / Seen / Being fixed issue without one gets a thread in <#${cfgOf(i.gui
         await i.deferUpdate();
         settings.update(i.guildId, { dev_channel_id: v, last_digest: Date.now() });
         try { await postBoard(client, i.guildId, await client.channels.fetch(v)); } catch (e) {
-          await i.followUp({ content: `⚠️ I couldn't post the board in <#${v}>: ${errorMessage(e)}. Give the bot View Channel, Send Messages, Embed Links, Create Private Threads and Send Messages in Threads there.`, flags: EPH });
+          await i.followUp({ content: `⚠️ I couldn't post the board in <#${v}>: ${errorMessage(e)}. Give the bot View Channel, Send Messages, Embed Links, Create Public Threads and Send Messages in Threads there.`, flags: EPH });
         }
         return i.editReply(settingsPayload(i.guildId));
       }
