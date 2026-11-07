@@ -650,6 +650,23 @@ async function applyStatus(i, issue, status,{ version, note } = {}) {
   return fresh;
 }
 
+/**
+ * After a report is filed: the knowledge article a developer linked to its issue, plus the closest fuzzy matches of what
+ * the player wrote, as embeds to show right under the confirmation. Returns [] when nothing fits.
+ */
+function articleHints(i, issue, text, kind) {
+  const pool = articles.list(i.guildId, { enabledOnly: true }).filter((a) => !a.draft);
+  const found = [];
+  const linked = pool.find((a) => a.id === issue.article_id);
+  if (linked) found.push({ id: `a:${linked.id}`, title: linked.title, fix: linked.link ? `${linked.body}
+
+🔗 ${linked.link}` : linked.body, source: 'Linked to this issue by the developers' });
+  for (const m of suggest(text, pool, 3, kind, kbBoosts(i.guildId))) if (m.custom && !found.some((f) => f.id === m.id)) found.push(m);
+  const top = found.slice(0, 2);
+  for (const m of top) bumpStat(i, m.id, 'shown');
+  return top.map((m) => new EmbedBuilder().setColor(0xfee75c).setTitle(`📚 Might help while you wait: ${trunc(m.title, 200)}`).setDescription(trunc(m.fix, 4000)).setFooter({ text: `Source: ${m.source}` }));
+}
+
 async function submitReport(i, { text, platform, version, evidence, kind = 'bug' }) {
   rememberName(i);
   const cfg = cfgOf(i.guildId);
@@ -668,11 +685,12 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
   const where = fresh.channel_id ? ` You can follow the discussion in <#${fresh.channel_id}>.` : '';
   const evidenceLine = (saved ? `\n📎 Saved ${countLine(saved)} with your report – only you and the developers can see them.` : '') + failNote(ev);
   const next = '\nYou\'ll get a message when its status changes. See everything under **My issues**.';
+  const hints = articleHints(i, fresh, text, kind);
 
   if (res.created) {
     return {
       content: `✅ **Thanks – your report has been sent!**\nIt's now ${fresh.kind === 'install' ? '🔧 install issue' : '🐞 issue'} **#${fresh.id}** (${fresh.category}).${where}${evidenceLine}${next}`,
-      embeds: [], components: [],
+      embeds: hints, components: [],
     };
   }
 
@@ -690,7 +708,7 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
   if (fresh.dev_note) embed.addFields({ name: 'Developer note', value: trunc(fresh.dev_note, 1000) });
   return {
     content: `🔗 **We found a similar issue, so your report was added to it.**\nIf that's not the same problem, press **Make it a separate issue**.${res.reopened ? '\n⚠️ That issue had been marked fixed, so it has been reopened for the developers to look at again.' : ''}${where}${evidenceLine}${next}`,
-    embeds: [embed],
+    embeds: [embed, ...hints],
     components: [row(
       btn(`keep:${res.reportId}`, 'Yes, same problem', '👍', ButtonStyle.Success),
       btn(`split:${res.reportId}`, 'Make it a separate issue', '↩️', ButtonStyle.Danger),
