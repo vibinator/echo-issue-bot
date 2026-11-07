@@ -545,16 +545,3 @@ export async function notifyReporters(client, issue, text, only = null) {
   }
 }
 
-/** Release-note style post for the public changelog channel. */
-export async function postChangelog(client, issue, channelId) {
-  if (!channelId) return;
-  const stats = reports.stats(issue.id);
-  const embed = new EmbedBuilder().setColor(0x2ecc71).setTitle(trunc(`✅ Fixed: ${issue.title}`, 256))
-    .addFields(
-      { name: 'Category', value: issue.category, inline: true },
-      { name: 'Fixed in', value: issue.fixed_version ? `\`${issue.fixed_version}\`` : 'The next update', inline: true },
-      { name: 'Reported by', value: `${stats.users} player${stats.users === 1 ? '' : 's'}`, inline: true },
-    ).setTimestamp();
-  if (issue.dev_note) embed.setDescription(trunc(issue.dev_note, 1000));
-  try { await (await client.channels.fetch(channelId)).send({ embeds: [embed] }); } catch (e) { console.error('Changelog post failed:', e.message); }
-}

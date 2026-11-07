@@ -48,7 +48,6 @@ const outsider = person('outsider');
 const panelCh = new FakeChannel('panel', 'panel'); sim.registry.set('panel', panelCh);
 const issuesCh = new FakeChannel('issues', 'issues'); sim.registry.set('issues', issuesCh);
 const digestCh = new FakeChannel('digest', 'digest'); sim.registry.set('digest', digestCh);
-const logCh = new FakeChannel('changelog', 'changelog'); sim.registry.set('changelog', logCh);
 
 let screenSeq = 0;
 /** Runs one interaction through the real handler and checks the rules every interaction must obey. */
@@ -333,8 +332,6 @@ console.log('8. developer workflow');
 
   // set channels through the settings menus, then fix with a version
   const settingsScreen = (await press(dev, panelScreen, 'dev:settings')).screen;
-  r = await choose(dev, settingsScreen, 'set_logch', ['changelog'], 'channelselect');
-  check(db.settings.get('G').changelog_channel_id === 'changelog', 'the changelog channel can be chosen from the settings menu');
   r = await choose(dev, settingsScreen, 'set_devch', ['digest'], 'channelselect');
 
   // developer hub: a live board message plus private threads with the players of an issue
@@ -399,7 +396,6 @@ console.log('8. developer workflow');
   check(r.i.responses[0].type === 'deferUpdate', 'marking fixed answers first');
   check(db.issues.get(aliceIssueId).status === 'fixed' && db.issues.get(aliceIssueId).fixed_version === '0.13.20', 'fixed + version saved');
   await new Promise((res) => setTimeout(res, 20));
-  check(logCh.sent.some((m) => /0\.13\.20/.test(JSON.stringify(plain(m.payload)))), 'a "fixed" announcement with the version is posted');
   check(sim.dms.some((d) => d.to === 'alice' && /0\.13\.20/.test(d.content)), 'the reporter is told which version has the fix');
 
   // the fix proposes a knowledge article: a draft players can't see, announced to developers, published by a person

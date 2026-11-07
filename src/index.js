@@ -14,7 +14,7 @@ import { errorMessage, explainError, fileFailureReason } from './errors.js';
 import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored, storedSize } from './evidenceStore.js';
 import {
-  attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
+  attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, removeMessage, retireMessage,
   eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkSay, carryTalkOnMerge, addPeopleToTalk,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
@@ -581,7 +581,7 @@ function settingsPayload(guildId) {
       `• Who can send reports: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} _(change with \`/setup\`)_ · developers can change an issue's status`,
       `• Who can edit knowledge articles: developers${articleRole(guildId) ? ` and <@&${articleRole(guildId)}>` : ''} _(editor role: \`/setup article_role:\`)_`,
       `• Closed issues are ${c.retention_days ? `deleted after **${c.retention_days} days** without activity` : '**kept** until deleted by hand'} _(change with \`/setup retention_days:\`)_`,
-      `• Developer hub (live board, alerts, weekly digest, private threads with players – keep it developers-only): ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'} · fixed-issue announcements go to: ${c.changelog_channel_id ? `<#${c.changelog_channel_id}>` : '_not set_'}`,
+      `• Developer hub (live board, alerts, weekly digest, private threads with players – keep it developers-only): ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'}`,
     ].join('\n'),
     embeds: [],
     components: [
@@ -589,7 +589,6 @@ function settingsPayload(guildId) {
       pick('set_stale', 'Flag issues that go quiet after…', [['3 days', 3], ['7 days', 7], ['14 days', 14], ['30 days', 30]], c.stale_days),
       pick('set_cd', 'Pause between one player\'s reports', [['No pause', 0], ['30 seconds', 30], ['1 minute', 60], ['5 minutes', 300]], c.cooldown_sec),
       chanMenu('set_devch', 'Developer hub: live board, alerts, digest, private threads (developers only)', c.dev_channel_id),
-      chanMenu('set_logch', 'Where should "fixed" announcements go? (public)', c.changelog_channel_id),
     ],
   };
 }
@@ -666,7 +665,6 @@ async function applyStatus(i, issue, status,{ version, note } = {}) {
       notifyReporters(client, fresh, `${STATUS_DM[status](`#${fresh.id} – ${trunc(fresh.title, 120)}`)}${update}${devNote}\n_You can turn these messages off under **My issues**._`).catch(() => {});
     }
     if (status === 'fixed') {
-      await postChangelog(client, fresh, cfgOf(i.guildId).changelog_channel_id);
       await proposeArticle(fresh, i.user.id);
     }
     refreshPanel(i.guildId);
@@ -1873,7 +1871,6 @@ Each New / Seen / Being fixed issue without one gets a private thread in <#${cfg
         set_stale: { stale_days: Number(v) },
         set_cd: { cooldown_sec: Number(v) },
         set_devch: { dev_channel_id: v, last_digest: Date.now() },
-        set_logch: { changelog_channel_id: v },
       }[id];
       if (patch) settings.update(i.guildId, patch);
       return i.update(settingsPayload(i.guildId));
