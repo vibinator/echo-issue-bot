@@ -25,6 +25,7 @@ import { exportCsv } from './export.js';
 import { backupNow, maybeBackup } from './backup.js';
 import { trunc } from './text.js';
 import { versionLabel } from './version.js';
+import { confirmUpdate, rollbackIfCrashLooping } from './updater.js';
 
 const EPH = MessageFlags.Ephemeral;
 const NONE = '-'; // "no filter" placeholder inside custom ids
@@ -1129,6 +1130,9 @@ async function handleInteraction(i) {
       await i.deferUpdate(); // answer Discord straight away; the work below talks to Discord several times
       const before = issues.get(report.issue_id);
       const res = splitReport(report.id);
+      if (!res || res.alone) {
+        return i.editReply({ content: `ℹ️ Yours is the only report on **#${before.id}**, so it is already its own issue – nothing to separate.`, embeds: [], components: [row(btn(`trk:${before.id}`, 'See how it\'s going', '📌'))] });
+      }
       if (res.old) await syncMessage(client, res.old, trackerChannel(i));
       else await removeMessage(client, res.emptiedIssue);
       await syncMessage(client, res.fresh, trackerChannel(i));
@@ -1720,9 +1724,15 @@ client.on('error', (err) => console.error('Discord client error:', err?.code ?? 
 
 client.once('clientReady', async () => {
   const guild = process.env.GUILD_ID;
-  if (guild) await (await client.guilds.fetch(guild)).commands.set(commands);
-  else await client.application.commands.set(commands);
-  console.log(`Logged in as ${client.user.tag}; commands registered ${guild ? `to guild ${guild}` : 'globally'}.`);
+  confirmUpdate(); // the bot got as far as logging in: a freshly installed version is good
+  // A failure here (bad GUILD_ID, Discord hiccup, rate limit) must not stop the rest of the start-up work below.
+  try {
+    if (guild) await (await client.guilds.fetch(guild)).commands.set(commands);
+    else await client.application.commands.set(commands);
+    console.log(`Logged in as ${client.user.tag}; commands registered ${guild ? `to guild ${guild}` : 'globally'}.`);
+  } catch (e) {
+    console.error(`Logged in as ${client.user.tag}, but registering the slash commands failed: ${e.message}. The bot keeps running; fix GUILD_ID / permissions and restart to register /setup.`);
+  }
   suggest('warm up the word cache so the first player is not slower than the rest', [], 1); // fills the matcher's caches
   for (const cfg of settings.all()) try { for (const t of issues.withText(cfg.guild_id)) suggest(t.text, [], 1); } catch { /* not critical */ }
 
@@ -1779,6 +1789,7 @@ async function start() {
     console.error('No bot token found: set DISCORD_TOKEN (copy .env.example to .env, or add it to the YAML), then start the bot again.');
     process.exit(1);
   }
+  if (rollbackIfCrashLooping()) process.exit(1); // a just-installed version keeps failing: old code is back, the restart policy relaunches it
   process.on('unhandledRejection', (e) => console.error('Unhandled error:', e?.message ?? e));
   // `docker stop` sends SIGTERM: leave Discord and close the database cleanly (finishes writing its journal) instead of being cut off.
   for (const signal of ['SIGTERM', 'SIGINT']) {

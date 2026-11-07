@@ -198,6 +198,13 @@ assert.equal(mixed.failed.find((f) => f.name === 'big.mp4').reason, 'too large')
 assert.ok(!downloads.some((u) => u.includes('evil.example.com')), 'nothing is ever downloaded from a non-Discord host');
 
 // evidence follows its report on split, follows the issue on merge, and is deleted (files too) with the report
+const { reports: Rp } = await import('./db.js');
+// a lone report can't be "separated": that would delete the issue (and developers' work on it) and recreate it
+const loneDev = fileReport({ guildId: 'g4', userId: 'p8', text: 'Hands vanish when the headset wakes from standby in the lobby' });
+issues.setStatus(loneDev.issue.id, 'in_progress', 'dev');
+assert.equal(splitReport(loneDev.reportId).alone, true, 'splitting the only report is refused');
+assert.ok(issues.get(loneDev.issue.id) && issues.get(loneDev.issue.id).status === 'in_progress', 'the issue developers work on is untouched');
+Rp.add(ev1.issue.id, 'p9', 'another player with the same trouble', null, null);
 const sp = splitReport(ev1.reportId);
 assert.equal(evidence.forIssue(sp.fresh.id).length, 4, 'evidence moves with a split report');
 const evTarget = fileReport({ guildId: 'g4', userId: 'p3', text: 'Completely different: scoreboard shows wrong team colours' });

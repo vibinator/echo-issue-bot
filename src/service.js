@@ -69,6 +69,10 @@ export function splitReport(reportId) {
   const r = reports.get(reportId);
   if (!r) return null;
   const old = issues.get(r.issue_id);
+  if (!old) return null;
+  // Already the only report on its issue: splitting would just recreate the issue and delete the original together with
+  // everything developers did on it (status, owner, note, history). Nothing to separate, so do nothing.
+  if (reports.stats(old.id).total <= 1) return { alone: true, old };
   const category = categoryFor(r.text, old.kind);
   const id = issues.create(old.guild_id, makeTitle(r.text), category, priorityFor(category), old.kind);
   reports.move(r.id, id);
