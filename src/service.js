@@ -461,7 +461,6 @@ export async function autoMergeDuplicates(client, guildId, channelId) {
     const a = issues.get(p.a); const b = issues.get(p.b);
     if (!untouched(a) || !untouched(b) || a.kind !== b.kind) continue;
     const [keep, drop] = a.id < b.id ? [a, b] : [b, a];
-    await carryTalkOnMerge(client, drop, keep);
     await retireMessage(client, drop, keep.id);
     mergeIssues(drop.id, keep.id);
     events.add(keep.id, 'merged', null, `automatic: #${drop.id} was ${Math.round(p.score * 100)}% alike`);
