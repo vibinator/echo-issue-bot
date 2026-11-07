@@ -52,7 +52,11 @@ export class FakeChannel {
 }
 
 export class FakeThread extends FakeChannel {
-  constructor(id, name, parent) { super(id, name); this.parent = parent; this.archived = false; this.locked = false; }
+  constructor(id, name, parent) {
+    super(id, name); this.parent = parent; this.archived = false; this.locked = false; this.memberIds = new Set();
+    const th = this;
+    this.members = { async add(u) { tick(); if (sim.cannotAdd?.has(u)) throw unknown(50001, 'Missing Access'); th.memberIds.add(u); } };
+  }
   async setArchived(v) { tick(); this.archived = v; return this; }
   async setLocked(v) { tick(); this.locked = v; return this; }
   async send(payload) { if (this.archived) { this.archived = false; } return super.send(payload); } // sending reopens a thread
@@ -102,7 +106,7 @@ export function interaction({ kind, customId, who, values, fields = {}, files = 
       getUploadedFiles: (k) => (files.length ? new Map(files.map((f, n) => [String(n), f])) : null),
     },
     isChatInputCommand: () => kind === 'command', isButton: () => kind === 'button', isModalSubmit: () => kind === 'modal',
-    isStringSelectMenu: () => kind === 'select', isChannelSelectMenu: () => kind === 'channelselect',
+    isStringSelectMenu: () => kind === 'select', isChannelSelectMenu: () => kind === 'channelselect', isUserSelectMenu: () => kind === 'userselect',
     isFromMessage: () => kind === 'modal' && !!screen,
     replied: false, deferred: false, responses: [], lateAck: false, ackAfterMs: null, calls: 0, startedAt,
   };

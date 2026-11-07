@@ -1,12 +1,12 @@
-import { EmbedBuilder } from 'discord.js';
-import { articles, db, decisions, events, evidence, issues, prefs, reports, seen, watchers } from './db.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder } from 'discord.js';
+import { articles, db, decisions, events, evidence, issues, prefs, reports, seen, settings, watchers } from './db.js';
 import { refreshBoard } from './board.js';
 import { kindOfFile, kindOfLink, linkName } from './evidence.js';
 import { readStored, removeReportFiles, saveFromUrl } from './evidenceStore.js';
 import { readImageText } from './ocr.js';
 import { rankSimilar, similarPairs } from './similarity.js';
 import { detectCategory, INSTALL_CATEGORY } from './categories.js';
-import { renderIssue } from './render.js';
+import { renderIssue, STATUSES } from './render.js';
 import { trunc } from './text.js';
 
 /** Default score at/above which a new report is attached to an existing issue (configurable per server). */
@@ -233,6 +233,7 @@ async function syncMessageNow(client, issue, channelId) {
 
 export async function threadSay(client, issue, text) {
   const fresh = issues.get(issue.id);
+  if (fresh?.talk_thread_id) await talkSay(client, fresh, text); // developers see every event here too
   if (!fresh?.thread_id) return;
   try { await (await client.channels.fetch(fresh.thread_id)).send(text); } catch { /* thread gone */ }
 }
@@ -297,10 +298,106 @@ export async function purgeEvidence(client, reportId) {
   evidence.deleteForReport(reportId);
 }
 
+// ---------- developer discussion threads (one per open issue, in the developer hub channel; players are NOT in them) ----------
+
+const OPEN_STATUSES = ['new', 'seen', 'in_progress'];
+const talkLocks = new Map();
+
+/** Open (or find and un-archive) the issue's developer thread in the hub channel. */
+export async function openTalkThread(client, issue) {
+  const fresh = issues.get(issue.id);
+  const hubId = settings.get(fresh.guild_id)?.board_channel_id;
+  if (fresh.talk_thread_id) {
+    try {
+      const t = await client.channels.fetch(fresh.talk_thread_id);
+      if (t.archived) await t.setArchived(false).catch(() => {});
+      return { thread: t, existing: true };
+    } catch { /* gone: make a new one */ }
+  }
+  if (!hubId) throw new Error('no-hub');
+  const hub = await client.channels.fetch(hubId);
+  const thread = await hub.threads.create({
+    name: trunc(`#${fresh.id} ${fresh.title.replace(/\s+/g, ' ')}`, 100), type: ChannelType.PublicThread,
+    autoArchiveDuration: 1440, reason: `Developer thread for issue #${fresh.id}`,
+  });
+  issues.setTalkThread(fresh.id, thread.id);
+  await thread.send({ content: `🧵 **#${fresh.id} – ${trunc(fresh.title, 150)}**\nDeveloper notes and updates for this issue. Developer notes, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it. Status: ${STATUSES[fresh.status]?.label ?? fresh.status}.`,
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`note:${fresh.id}`).setLabel('Send a note to the requesters').setEmoji('💬').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`merge:${fresh.id}`).setLabel('Same problem as another issue…').setEmoji('🔀').setStyle(ButtonStyle.Secondary))] }).catch(() => {});
+  await thread.setLocked(true, 'Only developers write here').catch(() => {}); // a locked thread can only be written in by people with Manage Threads (and the bot)
+  return { thread, existing: false };
+}
+
+/**
+ * Keep the thread in step with the issue: New / Seen / Being fixed issues each have one (created automatically once a hub
+ * channel is set); a closed issue's thread is archived unless another open issue still uses it. Serialised per issue so two
+ * reports at once never make two threads. Never throws.
+ */
+export function syncTalkThread(client, issue) {
+  const turn = (talkLocks.get(issue.id) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    try {
+      const fresh = issues.get(issue.id);
+      if (!fresh || !settings.get(fresh.guild_id)?.board_channel_id) return;
+      if (OPEN_STATUSES.includes(fresh.status)) await openTalkThread(client, fresh);
+      else if (fresh.talk_thread_id && !issues.byTalkThread(fresh.talk_thread_id).some((x) => OPEN_STATUSES.includes(x.status))) {
+        const t = await client.channels.fetch(fresh.talk_thread_id);
+        if (!t.archived) await t.setArchived(true, `Issue ${fresh.status}`);
+      }
+    } catch (e) { console.error('Developer thread sync failed:', e.message); }
+  });
+  talkLocks.set(issue.id, turn);
+  turn.finally(() => { if (talkLocks.get(issue.id) === turn) talkLocks.delete(issue.id); });
+  return turn;
+}
+
+/**
+ * A developer merged `from` into `into`: the merged-away issue's thread gets a pointer and is archived (or, if the surviving
+ * issue had none, it takes that thread over). Call BEFORE mergeIssues. Never throws.
+ */
+export async function carryTalkOnMerge(client, from, into) {
+  try {
+    const src = issues.get(from.id);
+    const dst = issues.get(into.id);
+    if (!src?.talk_thread_id || !dst || src.talk_thread_id === dst.talk_thread_id) return;
+    const old = src.talk_thread_id;
+    const o = await client.channels.fetch(old);
+    if (o.archived) await o.setArchived(false).catch(() => {});
+    if (dst.talk_thread_id) {
+      issues.setTalkThread(src.id, null);
+      await o.send(`🔀 Merged into #${dst.id}; the discussion continues in <#${dst.talk_thread_id}>.`).catch(() => {});
+      try { const t = await client.channels.fetch(dst.talk_thread_id); await t.send(`🔀 Issue **#${src.id} – ${trunc(src.title, 120)}** was merged into this one (earlier discussion: <#${old}>).`).catch(() => {}); } catch { /* gone */ }
+      if (!issues.byTalkThread(old).length) await o.setArchived(true, 'Issue merged');
+    } else {
+      issues.setTalkThread(dst.id, old); // the surviving issue takes the thread over
+      await o.send(`🔀 Issue **#${src.id}** was merged into **#${dst.id} – ${trunc(dst.title, 120)}**; this thread now covers it.`).catch(() => {});
+    }
+  } catch (e) { console.error('Thread merge failed:', e.message); }
+}
+
+/** Give every New / Seen / Being fixed issue that has no thread one (nobody is notified). Returns how many were created. */
+export async function backfillTalkThreads(client, guildId) {
+  let made = 0;
+  for (const x of issues.list(guildId)) {
+    if (!OPEN_STATUSES.includes(x.status) || x.talk_thread_id) continue;
+    await syncTalkThread(client, x);
+    if (issues.get(x.id)?.talk_thread_id) made++;
+  }
+  return made;
+}
+
+/** Post a line in the issue's developer thread (notes, status changes, player activity). Never throws. */
+export async function talkSay(client, issue, text) {
+  const fresh = issues.get(issue.id);
+  if (!fresh?.talk_thread_id) return;
+  try { await (await client.channels.fetch(fresh.talk_thread_id)).send(text); } catch { /* thread gone */ }
+}
+
 /** Delete an issue's tracker message and thread (used when an issue is removed outright). */
 export async function removeMessage(client, issue) {
   if (!issue) return;
-  for (const [ch, msg] of [[issue.thread_id, null], [issue.channel_id, issue.message_id]]) {
+  const sharedTalk = issue.talk_thread_id && issues.byTalkThread(issue.talk_thread_id).some((x) => x.id !== issue.id);
+  for (const [ch, msg] of [[issue.thread_id, null], [sharedTalk ? null : issue.talk_thread_id, null], [issue.channel_id, issue.message_id]]) {
     if (!ch) continue;
     try {
       const c = await client.channels.fetch(ch);
@@ -316,8 +413,9 @@ export async function retireMessage(client, issue, intoId) {
     const ch = await client.channels.fetch(issue.channel_id);
     await ch.messages.edit(issue.message_id, { content: `🔀 This issue was merged into **#${intoId}** – please continue the discussion there.`, embeds: [], components: [] });
   } catch { /* gone */ }
-  if (issue.thread_id) {
-    try { const t = await client.channels.fetch(issue.thread_id); await t.setLocked(true); await t.setArchived(true); } catch { /* gone */ }
+  const sharedTalk = issue.talk_thread_id && issues.byTalkThread(issue.talk_thread_id).some((x) => x.id !== issue.id);
+  for (const th of [issue.thread_id, sharedTalk ? null : issue.talk_thread_id]) {
+    if (th) try { const t = await client.channels.fetch(th); await t.setLocked(true); await t.setArchived(true); } catch { /* gone */ }
   }
 }
 

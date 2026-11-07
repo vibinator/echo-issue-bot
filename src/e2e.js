@@ -334,7 +334,7 @@ console.log('8. developer workflow');
   const settingsScreen = (await press(dev, panelScreen, 'dev:settings')).screen;
   r = await choose(dev, settingsScreen, 'set_devch', ['digest'], 'channelselect');
 
-  // developer hub: a live board message
+  // developer hub: a live board message plus one developer-only thread per open issue
   const hubCh = digestCh;
   check(db.settings.get('G').board_channel_id === 'digest' && hubCh.sent.filter((m) => m.payload.embeds?.length === 2).length === 1, 'choosing a hub channel posts the live board there');
   const boardMsg = hubCh.sent.find((m) => m.payload.embeds?.length === 2);
@@ -343,6 +343,46 @@ console.log('8. developer workflow');
   check(r.i.responses[0].type === 'reply', 'opening a card from the live board answers privately and leaves the board message alone');
   r = await choose(alice, liveBoard, 'bfb', [String(aliceIssueId)]);
   check(has(r.out.payload, /developers only/), 'a player cannot use the live board');
+  r = await press(alice, cardScreen(), `talk:${aliceIssueId}`);
+  check(has(r.out.payload, /developers only/), 'a player cannot open the developer thread');
+  const openIssues = db.issues.list('G').filter((x) => ['new', 'seen', 'in_progress'].includes(x.status));
+  check(openIssues.length > 0 && openIssues.every((x) => x.talk_thread_id), 'choosing the hub gives every New / Seen / Being fixed issue its own thread');
+  r = await press(dev, panelScreen, 'dev:threads');
+  check(has(r.out.payload, /already has its developer thread/), 'the one-time backfill button has nothing left to do');
+  const talkId = db.issues.get(aliceIssueId).talk_thread_id;
+  const talk = hubCh.threadsList.find((t) => t.id === talkId);
+  check(talk && talk.memberIds.size === 0, 'players are not added to the developer thread');
+  r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
+  check(has(r.out.payload, new RegExp(talkId)), 'the Developer thread button shows the thread');
+  check(talk.locked && /Players are not in this thread|Locked/.test(JSON.stringify(plain(talk.sent[0].payload))), 'the thread is locked so only people with Manage Threads can write');
+  check(JSON.stringify(plain(talk.sent[0].payload)).includes(`note:${aliceIssueId}`) && JSON.stringify(plain(talk.sent[0].payload)).includes(`merge:${aliceIssueId}`), 'the thread has buttons to send a note to the requesters and to merge');
+  const threadCount = hubCh.threadsList.length;
+  r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
+  check(hubCh.threadsList.length === threadCount && has(r.out.payload, new RegExp(talkId)), 'pressing it again opens the same thread instead of making another');
+  {
+    const sv = await import('./service.js');
+    const n = sv.fileReport({ guildId: 'G', userId: 'zed', threshold: 0.99, text: 'Totally unrelated: fireworks never stop playing in the lobby' });
+    await sv.syncTalkThread(client, n.issue, 'zed');
+    const nt = hubCh.threadsList.find((t) => t.id === db.issues.get(n.issue.id).talk_thread_id);
+    check(nt && nt.memberIds.size === 0, 'a new issue gets its own developer thread automatically, with no players in it');
+    await sv.syncTalkThread(client, n.issue, 'zed');
+    check(hubCh.threadsList.filter((t) => t.id === nt.id).length === 1 && db.issues.get(n.issue.id).talk_thread_id === nt.id, 'syncing again does not make a second thread');
+    db.issues.setStatus(n.issue.id, 'fixed', 'dev', '1.0');
+    await sv.syncTalkThread(client, n.issue);
+    check(nt.archived, 'a closed issue has its thread archived');
+    db.issues.setStatus(n.issue.id, 'new', null);
+    await sv.syncTalkThread(client, n.issue);
+    check(!nt.archived, 'a reopened issue has its thread opened again');
+    const beforeSay = nt.sent.length;
+    await sv.threadSay(client, n.issue, 'A player edited their report');
+    check(nt.sent.length === beforeSay + 1, 'player activity is posted in the developer thread');
+    // merging joins the threads; a developer can add any person
+    const aliceThread = db.issues.get(aliceIssueId).talk_thread_id;
+    await sv.carryTalkOnMerge(client, n.issue, db.issues.get(aliceIssueId));
+    const joined = hubCh.threadsList.find((t) => t.id === aliceThread);
+    check(db.issues.get(n.issue.id).talk_thread_id === null || nt.archived, 'merging archives the merged-away issue thread');
+    check(joined.sent.some((m) => /merged into this one/.test(JSON.stringify(plain(m.payload)))), 'the surviving thread notes the merge');
+  }
   r = await choose(dev, settingsScreen, 'set_thr', ['0.35']);
   check(db.settings.get('G').threshold === 0.35, 'matching strictness can be changed'); await choose(dev, settingsScreen, 'set_thr', ['0.25']);
 
