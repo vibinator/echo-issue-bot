@@ -109,7 +109,7 @@ ${trunc(linked.body, 500)}${linked.link ? `
   const rows = [
     ...(may('dev') ? [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu)] : []),
     [
-      may('report') && btn('plus', 'I have this too', '🙋'),
+      may('report') && !reported && btn('plus', 'I have this too', '🙋'), // not for people whose report is already on it
       may('dev') && btn('assign', 'Assign to me', '🙌'),
       may('dev') && btn('note', 'Note to reporters', '💬'),
       may('dev') && btn('merge', 'Merge into…', '🔀'),

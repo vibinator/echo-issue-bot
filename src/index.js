@@ -214,7 +214,10 @@ async function alertDevs(issue, why) {
     if (role && Date.now() - (lastPing.get(issue.guild_id) ?? 0) < PING_GAP_MS) role = null;
     if (role) lastPing.set(issue.guild_id, Date.now());
     const pr = PRIORITIES[issue.priority] ?? PRIORITIES.normal;
-    await (await client.channels.fetch(chId)).send({
+    // With a developer thread, the alert goes inside it – the hub then shows one thread notice instead of a notice plus a message. A role ping still reaches the role.
+    const threadId = issues.get(issue.id)?.talk_thread_id ?? issue.talk_thread_id; // re-read: the thread is usually created just before this call
+    const thread = threadId ? await client.channels.fetch(threadId).catch(() => null) : null;
+    await (thread ?? await client.channels.fetch(chId)).send({
       content: `${role ? `<@&${role}> ` : ''}${why === 'reopened' ? '⚠️ **Reopened**' : '🆕 **New issue**'} #${issue.id} · ${pr.emoji} ${pr.label} · ${trunc(issue.title.replace(/\s+/g, ' '), 150)}`,
       components: [row(btn(`alert:open:${issue.id}`, 'Open card', '📋', ButtonStyle.Primary))],
       allowedMentions: role ? { roles: [role] } : { parse: [] },
@@ -600,7 +603,7 @@ function settingsPayload(guildId) {
   const pick = (id, placeholder, opts, current) => row(new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder)
     .addOptions(opts.map(([label, value, description]) => ({ label, value: String(value), description, default: Math.abs(Number(value) - current) < 0.001 }))));
   const chanMenu = (id, placeholder, current) => {
-    const m = new ChannelSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder).setChannelTypes(ChannelType.GuildText);
+    const m = new ChannelSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder).setChannelTypes(ChannelType.GuildText).setMinValues(0).setMaxValues(1); // clearing it removes the hub
     if (current) m.setDefaultChannels(current);
     return row(m);
   };
@@ -613,13 +616,15 @@ function settingsPayload(guildId) {
       `• Who can send reports: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} _(change with \`/setup\`)_ · developers can change an issue's status`,
       `• Who can edit knowledge articles: developers${articleRole(guildId) ? ` and <@&${articleRole(guildId)}>` : ''} _(editor role: \`/setup article_role:\`)_`,
       `• Closed issues are ${c.retention_days ? `deleted after **${c.retention_days} days** without activity` : '**kept** until deleted by hand'} _(change with \`/setup retention_days:\`)_`,
-      `• Developer hub (live board, alerts, weekly digest and one thread per open issue – keep it developers-only): ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'}`,
+      `• Automatic merging: ${c.auto_merge ? '**on** – New issues that are 80%+ alike and nobody has started on are merged every hour (the older one is kept)' : '**off** – duplicates are only merged by hand (Review duplicates)'}`,
+      `• Developer hub (live board, alerts, weekly digest and one thread per open issue – keep it developers-only): ${c.dev_channel_id ? `<#${c.dev_channel_id}> _(clear the menu below to remove it)_` : '_not set_'}`,
     ].join('\n'),
     embeds: [],
     components: [
       pick('set_thr', 'How alike must reports be to group together?', [['Strict – fewer groups', 0.35, 'Keeps more reports as separate issues'], ['Balanced', 0.25, 'Recommended'], ['Loose – more groups', 0.18, 'Groups similar reports more eagerly']], c.threshold),
       pick('set_stale', 'Flag issues that go quiet after…', [['3 days', 3], ['7 days', 7], ['14 days', 14], ['30 days', 30]], c.stale_days),
       pick('set_cd', 'Pause between one player\'s reports', [['No pause', 0], ['30 seconds', 30], ['1 minute', 60], ['5 minutes', 300]], c.cooldown_sec),
+      pick('set_auto', 'Merge near-identical new issues automatically?', [['Off – merge duplicates by hand', 0, 'Use Review duplicates in the Developer menu'], ['On – merge 80%+ alike New issues every hour', 1, 'Only issues nobody has started on; the older one is kept']], c.auto_merge ?? 0),
       chanMenu('set_devch', 'Developer hub: live board, alerts, digest, issue threads (developers only)', c.dev_channel_id),
     ],
   };
@@ -762,10 +767,10 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
     );
   if (fresh.dev_note) embed.addFields({ name: '💬 Note from the developers', value: trunc(fresh.dev_note, 1000) });
   return {
-    content: `🔗 **We found a similar issue, so your report was added to it.**\nIf that's not the same problem, press **Make it a separate issue**.${res.reopened ? '\n⚠️ That issue had been marked fixed, so it has been reopened for the developers to look at again.' : ''}${where}${evidenceLine}${next}`,
+    content: `🔗 **We found a similar issue, so your report was added to it.**\nNothing more to do – you'll be messaged when it moves. If that's not the same problem, press **Make it a separate issue**.${res.reopened ? '\n⚠️ That issue had been marked fixed, so it has been reopened for the developers to look at again.' : ''}${where}${evidenceLine}${next}`,
     embeds: [embed, ...hints],
     components: [row(
-      btn(`keep:${res.reportId}`, 'Yes, same problem', '👍', ButtonStyle.Success),
+      btn(`trk:${fresh.id}`, 'See how it\'s going', '📌'),
       btn(`split:${res.reportId}`, 'Make it a separate issue', '↩️', ButtonStyle.Danger),
     )],
   };
@@ -1949,6 +1954,8 @@ async function handleInteraction(i) {
     // ----- developer board -----
     if (i.isButton() && (id === 'board:refresh' || id === 'board:mine')) {
       if (!isDev(i)) return devOnly(i, 'use the board');
+      // Refresh pressed on the live board in the hub: redraw that message itself instead of opening a private copy
+      if (id === 'board:refresh' && !hidden(i) && i.message?.id && i.message.id === settings.get(i.guildId)?.board_message_id) return i.update(boardPayload(i.guildId));
       return show(i, id === 'board:refresh' ? boardPayload(i.guildId) : boardPayload(i.guildId, { owner: i.user.id, title: '🙌 Your cards' }));
     }
 
@@ -2013,6 +2020,13 @@ async function handleInteraction(i) {
       const v = i.values[0];
       if (id === 'set_devch') { // the hub: alerts + digest go here, and the live board is posted here (replacing the previous one)
         await i.deferUpdate();
+        if (!v) { // the menu was cleared: remove the hub (existing threads stay where they are)
+          const cfg = settings.get(i.guildId);
+          if (cfg?.board_channel_id && cfg.board_message_id) try { await (await (await client.channels.fetch(cfg.board_channel_id)).messages.fetch(cfg.board_message_id)).delete(); } catch { /* gone */ }
+          settings.update(i.guildId, { dev_channel_id: null, board_channel_id: null, board_message_id: null });
+          await i.followUp({ content: '🧹 Developer hub removed: no more alerts, digests, live board or new threads. Existing threads stay where they are. You can pick a channel again at any time.', flags: EPH });
+          return i.editReply(settingsPayload(i.guildId));
+        }
         try { await applyHub(i.guildId, await client.channels.fetch(v)); } catch (e) {
           await i.followUp({ content: `⚠️ I couldn't post in <#${v}>: ${errorMessage(e)}. **Nothing was changed** – the previous hub setting is kept. Give the bot View Channel, Send Messages, Embed Links, Create Public Threads, Send Messages in Threads and Manage Threads there, then choose it again.`, flags: EPH });
         }
@@ -2022,6 +2036,7 @@ async function handleInteraction(i) {
         set_thr: { threshold: Number(v) },
         set_stale: { stale_days: Number(v) },
         set_cd: { cooldown_sec: Number(v) },
+        set_auto: { auto_merge: Number(v) ? 1 : 0 },
       }[id];
       if (patch) settings.update(i.guildId, patch);
       return i.update(settingsPayload(i.guildId));

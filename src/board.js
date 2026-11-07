@@ -1,7 +1,7 @@
 // A Trello-style board for developers: one embed of columns (inline fields) per workflow stage.
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder } from 'discord.js';
 import { issues, settings } from './db.js';
-import { PRIORITIES, STATUSES } from './render.js';
+import { PRIORITIES, STATUSES, person } from './render.js';
 import { trunc } from './text.js';
 
 const DAY = 864e5;
@@ -11,7 +11,7 @@ const DONE = ['fixed', 'cannot_reproduce', 'wont_fix'];
 
 function card(it, staleBefore) {
   const stale = ACTIVE.includes(it.status) && it.updated_at < staleBefore ? ' ⏳' : '';
-  return `${(PRIORITIES[it.priority] ?? PRIORITIES.normal).emoji}${it.kind === 'install' ? '🔧' : '🐞'} **#${it.id}** ${trunc(it.title.replace(/\s+/g, ' '), 70)} ·${it.reporters}👥${stale}${it.owner_id ? ` 🙌<@${it.owner_id}>` : ''}`;
+  return `${(PRIORITIES[it.priority] ?? PRIORITIES.normal).emoji}${it.kind === 'install' ? '🔧' : '🐞'} **#${it.id}** ${trunc(it.title.replace(/\s+/g, ' '), 70)} ·${it.reporters}👥${stale}${it.owner_id ? ` 🙌${person(it.owner_id, it.guild_id)}` : ''}`; // the remembered name, like the cards (a raw mention shows as a number to anyone who hasn't met them)
 }
 
 /** Is this issue shown on the board? (Fixed issues drop off after 14 days.) */

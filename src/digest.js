@@ -1,7 +1,7 @@
 import { EmbedBuilder } from 'discord.js';
 import { issues, prefs, settings } from './db.js';
 import { weakAnswers } from './health.js';
-import { PRIORITIES, STATUSES } from './render.js';
+import { PRIORITIES, STATUSES, person } from './render.js';
 import { trunc } from './text.js';
 
 const DAY = 864e5;
@@ -10,7 +10,7 @@ const lines = (arr, fmt, max = 8) => {
   const shown = arr.slice(0, max).map(fmt).join('\n');
   return trunc(arr.length > max ? `${shown}\n…and ${arr.length - max} more` : shown, 1024);
 };
-const fmt = (i) => `${(PRIORITIES[i.priority] ?? PRIORITIES.normal).emoji} **#${i.id}** ${trunc(i.title, 55)} · ${i.reporters} 👥${i.owner_id ? ` · <@${i.owner_id}>` : ''}`;
+const fmt = (i) => `${(PRIORITIES[i.priority] ?? PRIORITIES.normal).emoji} **#${i.id}** ${trunc(i.title, 55)} · ${i.reporters} 👥${i.owner_id ? ` · ${person(i.owner_id, i.guild_id)}` : ''}`;
 
 export function buildDigest(guildId, staleDays = 7) {
   const now = Date.now();
