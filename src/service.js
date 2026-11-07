@@ -359,29 +359,35 @@ export function syncTalkThread(client, issue, userId = null) {
 }
 
 /**
- * Combine: put `issue` (its players) into the private thread of `target`. The issue's own thread, if it had a different one,
- * gets a pointer and is archived once no other issue uses it. Returns { thread, added, failed }.
+ * An issue is being merged into another: its private thread joins the other's. The merged-away issue's players are added to the
+ * surviving thread (or, if the surviving issue had none, it takes over the old one). Call BEFORE mergeIssues. Never throws.
  */
-export async function combineTalkThreads(client, issue, target) {
-  const fresh = issues.get(issue.id);
-  const tgt = issues.get(target.id);
-  if (!tgt?.talk_thread_id) throw new Error('target-has-no-thread');
-  const thread = await client.channels.fetch(tgt.talk_thread_id);
-  if (thread.archived) await thread.setArchived(false).catch(() => {});
-  const old = fresh.talk_thread_id;
-  let added = 0;
-  const failed = [];
-  for (const u of realUsers(fresh.id)) { try { await thread.members.add(u); added++; } catch { failed.push(u); } }
-  issues.setTalkThread(fresh.id, thread.id);
-  await thread.send(`🔗 Issue **#${fresh.id} – ${trunc(fresh.title, 120)}** and its ${added} player${added === 1 ? '' : 's'} joined this thread. Everyone here can see each other's names and messages.`).catch(() => {});
-  if (old && old !== thread.id) {
-    try {
-      const o = await client.channels.fetch(old);
-      await o.send(`➡️ This discussion continues in <#${thread.id}>.`).catch(() => {});
-      if (!issues.byTalkThread(old).length) await o.setArchived(true, 'Combined into another thread');
-    } catch { /* gone */ }
-  }
-  return { thread, added, failed };
+export async function carryTalkOnMerge(client, from, into) {
+  try {
+    const src = issues.get(from.id);
+    const dst = issues.get(into.id);
+    if (!src?.talk_thread_id || !dst || src.talk_thread_id === dst.talk_thread_id) return;
+    const old = src.talk_thread_id;
+    let thread;
+    if (dst.talk_thread_id) {
+      thread = await client.channels.fetch(dst.talk_thread_id);
+      if (thread.archived) await thread.setArchived(false).catch(() => {});
+      for (const u of realUsers(src.id)) await thread.members.add(u).catch(() => {});
+      await thread.send(`🔀 Issue **#${src.id} – ${trunc(src.title, 120)}** was merged into this one; its players joined this thread. Everyone here can see each other's names and messages.`).catch(() => {});
+      issues.setTalkThread(src.id, null); // so the old thread is no longer in use
+      try {
+        const o = await client.channels.fetch(old);
+        await o.send(`➡️ Merged into #${dst.id}; the discussion continues in <#${thread.id}>.`).catch(() => {});
+        if (!issues.byTalkThread(old).length) await o.setArchived(true, 'Issue merged');
+      } catch { /* gone */ }
+    } else {
+      thread = await client.channels.fetch(old); // the surviving issue takes over the thread
+      if (thread.archived) await thread.setArchived(false).catch(() => {});
+      issues.setTalkThread(dst.id, old);
+      for (const u of realUsers(dst.id)) await thread.members.add(u).catch(() => {});
+      await thread.send(`🔀 Issue **#${src.id}** was merged into **#${dst.id} – ${trunc(dst.title, 120)}**; its players joined this thread.`).catch(() => {});
+    }
+  } catch (e) { console.error('Thread merge failed:', e.message); }
 }
 
 /** Add any server members to an issue's private thread. */
@@ -455,6 +461,7 @@ export async function autoMergeDuplicates(client, guildId, channelId) {
     const a = issues.get(p.a); const b = issues.get(p.b);
     if (!untouched(a) || !untouched(b) || a.kind !== b.kind) continue;
     const [keep, drop] = a.id < b.id ? [a, b] : [b, a];
+    await carryTalkOnMerge(client, drop, keep);
     await retireMessage(client, drop, keep.id);
     mergeIssues(drop.id, keep.id);
     events.add(keep.id, 'merged', null, `automatic: #${drop.id} was ${Math.round(p.score * 100)}% alike`);

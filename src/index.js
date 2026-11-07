@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored, storedSize } from './evidenceStore.js';
 import {
   attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
-  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkSay, combineTalkThreads, addPeopleToTalk,
+  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkSay, carryTalkOnMerge, addPeopleToTalk,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
 import { boardPayload, confirmMovePayload, movePayload, postBoard, sectionPayload } from './board.js';
@@ -549,21 +549,13 @@ function browsePayload(i, f) {
 function talkPayload(issue, note = '') {
   const fresh = issues.get(issue.id);
   const sharing = issues.byTalkThread(fresh.talk_thread_id).filter((x) => x.id !== fresh.id);
-  const others = [];
-  for (const x of issues.list(fresh.guild_id)) {
-    if (x.talk_thread_id && x.talk_thread_id !== fresh.talk_thread_id && !others.some((o) => o.talk_thread_id === x.talk_thread_id)) others.push(x);
-  }
   const components = [];
-  if (others.length) {
-    components.push(row(new StringSelectMenuBuilder().setCustomId(`tjoin:${fresh.id}`).setPlaceholder("Combine with another issue's thread…")
-      .addOptions(others.slice(0, 25).map((x) => ({ label: trunc(`#${x.id} ${x.title}`, 100), value: String(x.id), description: trunc(`${issues.byTalkThread(x.talk_thread_id).length} issue(s) in that thread`, 100) })))));
-  }
   components.push(row(new UserSelectMenuBuilder().setCustomId(`tadd:${fresh.id}`).setPlaceholder('Add people to this thread…').setMinValues(1).setMaxValues(10)));
   return {
     content: `${note ? `${note}
 ` : ''}🧵 **Private thread for #${fresh.id}:** <#${fresh.talk_thread_id}>${sharing.length ? `
 Shared with ${sharing.map((x) => `#${x.id}`).join(', ')}` : ''}
-Combining moves this issue's players into the other thread (they get a notification); everyone in a thread sees each other.`,
+Everyone in a thread sees each other's names and messages. Merging two issues joins their threads.`,
     embeds: [], components,
   };
 }
@@ -1352,57 +1344,19 @@ async function handleInteraction(i) {
     }
 
     // ----- private thread with the players of an issue (developer hub) -----
-    if (i.isButton() && (id.startsWith('talk:') || id.startsWith('talkok:'))) {
-      if (!isDev(i)) return devOnly(i, 'start a private thread');
+    if (i.isButton() && id.startsWith('talk:')) { // open the issue's private thread (it is created automatically) and manage who is in it
+      if (!isDev(i)) return devOnly(i, 'open a private thread');
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
-      const hubId = cfgOf(i.guildId).board_channel_id;
-      if (!hubId) return i.reply({ content: 'Pick a **Developer hub** channel first: Developer → ⚙️ Settings.', flags: EPH });
-      const people = new Set(reports.forIssue(issue.id).map((r) => r.user_id).filter((u) => u && u !== '0'));
-      if (id.startsWith('talk:') && !issue.talk_thread_id) {
-        return i.reply({
-          content: `🧵 **Talk to the players of #${issue.id}?**
-This creates a private thread in <#${hubId}> and **adds ${people.size} player${people.size === 1 ? '' : 's'}** who reported it (they get a notification). Everyone in the thread sees each other's names and messages. Players who report it later are added automatically.`,
-          components: [row(btn(`talkok:${issue.id}`, 'Yes, create the thread', '🧵', ButtonStyle.Success))], flags: EPH,
-        });
-      }
+      if (!issue.talk_thread_id) return i.reply({ content: 'This issue has no private thread (threads are made for New / Seen / Being fixed issues once a **Developer hub** is set in ⚙️ Settings).', flags: EPH });
       await i.deferReply({ flags: EPH });
       try {
-        const r = await openTalkThread(client, issue, i.user.id);
-        events.add(issue.id, 'thread', i.user.id, r.existing ? 'opened the private thread' : `started a private thread with ${r.invited} player${r.invited === 1 ? '' : 's'}`);
-        await syncMessage(client, issues.get(issue.id), trackerChannel(i));
-        return i.editReply(talkPayload(issues.get(issue.id), `${r.existing ? '' : `✅ Created the thread with **${r.invited}** player${r.invited === 1 ? '' : 's'}.`}${r.failed.length ? ` ⚠️ Couldn't add ${r.failed.length} (they may have left the server or can't see the channel).` : ''}`.trim()));
-      } catch (e) {
-        return i.editReply({ content: `⚠️ I couldn't create the thread: ${e.message === 'no-hub' ? 'no Developer hub channel is set' : errorMessage(e)}. The bot needs Create Private Threads, Send Messages in Threads and Manage Threads in <#${hubId}>.` });
-      }
+        await openTalkThread(client, issue, i.user.id); // adds you and reopens it if archived
+        return i.editReply(talkPayload(issues.get(issue.id)));
+      } catch (e) { return i.editReply({ content: `⚠️ I couldn't open the thread: ${errorMessage(e)}` }); }
     }
 
-    // combine this issue's thread with another's / add people
-    if (i.isStringSelectMenu() && id.startsWith('tjoin:')) {
-      if (!isDev(i)) return devOnly(i, 'combine threads');
-      const issue = await loadIssue(i, idOf(i));
-      const target = issues.get(Number(i.values[0]));
-      if (!issue || !target?.talk_thread_id || target.guild_id !== i.guildId) return issue && i.update({ content: 'That thread is gone.', components: [] });
-      const n = new Set(reports.forIssue(issue.id).map((r) => r.user_id).filter((u) => u && u !== '0')).size;
-      return i.update({
-        content: `🔗 **Move #${issue.id}'s ${n} player${n === 1 ? '' : 's'} into the thread of #${target.id}** (<#${target.talk_thread_id}>)?
-They get a notification and will see everyone already there (names and messages). From now on #${issue.id} uses that thread.`,
-        embeds: [], components: [row(btn(`tjoinok:${issue.id}:${target.id}`, 'Yes, combine them', '🔗', ButtonStyle.Success), btn(`talk:${issue.id}`, 'Cancel', '✖️'))],
-      });
-    }
-    if (i.isButton() && id.startsWith('tjoinok:')) {
-      if (!isDev(i)) return devOnly(i, 'combine threads');
-      const [, a, b] = id.split(':');
-      const issue = await loadIssue(i, Number(a));
-      const target = issues.get(Number(b));
-      if (!issue || !target) return;
-      await i.deferUpdate();
-      try {
-        const r = await combineTalkThreads(client, issue, target);
-        events.add(issue.id, 'thread', i.user.id, `combined its private thread with #${target.id}`);
-        return i.editReply(talkPayload(issues.get(issue.id), `✅ Added **${r.added}** player${r.added === 1 ? '' : 's'} to the thread.${r.failed.length ? ` ⚠️ Couldn't add ${r.failed.length}.` : ''}`));
-      } catch (e) { return i.editReply({ content: `⚠️ I couldn't combine them: ${errorMessage(e)}`, embeds: [], components: [] }); }
-    }
+    // add people to an issue's private thread
     if (i.isUserSelectMenu() && id.startsWith('tadd:')) {
       if (!isDev(i)) return devOnly(i, 'add people to a thread');
       const issue = await loadIssue(i, idOf(i));
@@ -1677,7 +1631,7 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
           embeds: [], components: [row(btn(`trk:${res.to.id}`, 'See how it\'s going', '📌'))],
         });
       }
-      if (res.fromDeleted) await retireMessage(client, res.from, res.to.id);
+      if (res.fromDeleted) { await carryTalkOnMerge(client, res.from, res.to); await retireMessage(client, res.from, res.to.id); }
       else await syncMessage(client, issues.get(res.from.id), trackerChannel(i));
       await syncMessage(client, res.to, trackerChannel(i));
       await threadSay(client, res.to, res.action === 'moved'
