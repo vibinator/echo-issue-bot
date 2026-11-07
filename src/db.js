@@ -394,9 +394,22 @@ export const articles = {
     return id;
   },
   get: (id) => db.prepare('SELECT * FROM articles WHERE id = ?').get(id),
-  list: (guild, { enabledOnly = false } = {}) => db.prepare(
-    `SELECT * FROM articles WHERE guild_id = ? ${enabledOnly ? 'AND enabled = 1' : ''} ORDER BY title COLLATE NOCASE`
-  ).all(guild),
+  /** `linked_text` on each row: titles and report text of the issues developers linked to it, so the fuzzy matcher learns how players really word the problem. */
+  list: (guild, { enabledOnly = false } = {}) => {
+    const rows = db.prepare(
+      `SELECT * FROM articles WHERE guild_id = ? ${enabledOnly ? 'AND enabled = 1' : ''} ORDER BY title COLLATE NOCASE`
+    ).all(guild);
+    const linked = db.prepare(
+      `SELECT i.article_id AS aid, i.title || ' ' || COALESCE(GROUP_CONCAT(substr(r.text, 1, 300), ' '), '') AS text
+       FROM issues i LEFT JOIN reports r ON r.issue_id = i.id WHERE i.guild_id = ? AND i.article_id IS NOT NULL GROUP BY i.id`
+    ).all(guild);
+    if (linked.length) {
+      const by = new Map();
+      for (const l of linked) by.set(l.aid, `${by.get(l.aid) ?? ''} ${l.text}`.slice(0, 2000));
+      for (const a of rows) a.linked_text = by.get(a.id) ?? '';
+    }
+    return rows;
+  },
   update: (id, a) => {
     db.prepare('UPDATE articles SET title = ?, symptoms = ?, phrases = ?, body = ?, link = ?, updated_at = ? WHERE id = ?')
       .run(a.title, a.symptoms, a.phrases || null, a.body, a.link || null, now(), id);

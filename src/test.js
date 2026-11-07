@@ -546,6 +546,13 @@ assert.ok(['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'lkart
   const other = file('u50', 'Totally unrelated gamma ray flicker on the settings screen');
   mergeIssues(T.issue.id, other.issue.id);
   assert.equal(issues.get(other.issue.id).article_id, art.id, 'a merge keeps the linked article');
+  const learned = A.get(A.add({ guild_id: g, title: 'Zorblax fix', symptoms: 'zorblax', body: 'Restart.', created_by: 'd' }));
+  const { suggest: sg } = await import('./kb.js');
+  const probe = 'Totally unrelated gamma ray flicker on the settings screen again';
+  assert.ok(!sg(probe, A.list(g, { enabledOnly: true }), 5).some((x) => x.id === `a:${learned.id}`), 'no match before linking');
+  issues.setArticle(other.issue.id, learned.id);
+  assert.ok(sg(probe, A.list(g, { enabledOnly: true }), 5).some((x) => x.id === `a:${learned.id}`), 'a linked issue teaches the article how players word the problem');
+  issues.setArticle(other.issue.id, art.id);
   A.delete(art.id);
   assert.equal(issues.get(other.issue.id).article_id, null, 'deleting an article unlinks it');
 }

@@ -411,7 +411,7 @@ export function suggest(text, custom = [], max = 3, kind = null, boost = new Map
     })),
     ...custom.map((a) => ({
       id: `a:${a.id}`, title: a.title, fix: a.link ? `${a.body}\n\n🔗 ${a.link}` : a.body, source: 'Server knowledge base',
-      custom: true, threshold: ARTICLE_THRESHOLD, text: `${a.title} ${a.symptoms}`,
+      custom: true, threshold: ARTICLE_THRESHOLD, text: `${a.title} ${a.symptoms} ${a.linked_text ?? ''}`,
       exact: (a.phrases ?? '').split('\n').map((p) => p.trim().toLowerCase()).some((p) => p.length >= 4 && lower.includes(p)),
     })),
   ];
