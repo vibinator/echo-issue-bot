@@ -1297,6 +1297,16 @@ async function handleInteraction(i) {
       const done = await applyStatus(i, issue, status);
       return i.editReply(i.channelId === issue.talk_thread_id ? talkIntro(done) : card(i, done)); // in the developer thread the intro message stays the control
     }
+    if (i.isButton() && id.startsWith('stbtn:')) { // status buttons in an issue's developer thread
+      if (!isDev(i)) return devOnly(i, "change an issue's status");
+      const issue = await loadIssue(i, Number(id.split(':')[1]));
+      if (!issue) return;
+      const status = id.split(':')[2];
+      if (!STATUSES[status] || status === issue.status) return i.deferUpdate();
+      if (status === 'fixed') return i.showModal(fixedModal(issue));
+      await i.deferUpdate();
+      return i.editReply(talkIntro(await applyStatus(i, issue, status)));
+    }
     if (i.isModalSubmit() && id.startsWith('fixed:')) {
       if (!isDev(i)) return devOnly(i, "change an issue's status");
       const issue = await loadIssue(i, idOf(i));

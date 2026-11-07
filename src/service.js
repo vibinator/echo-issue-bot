@@ -1,4 +1,4 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, StringSelectMenuBuilder } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder } from 'discord.js';
 import { articles, db, decisions, events, evidence, issues, prefs, reports, seen, settings, watchers } from './db.js';
 import { refreshBoard } from './board.js';
 import { kindOfFile, kindOfLink, linkName } from './evidence.js';
@@ -304,14 +304,33 @@ const OPEN_STATUSES = ['new', 'seen', 'in_progress'];
 const talkLocks = new Map();
 const threadWarned = new Map();
 
+/** Thread title: the status first, so the thread list reads like the board ("Seen · #10 title"). */
+export const talkName = (issue) => trunc(`${STATUSES[issue.status]?.label ?? issue.status} · #${issue.id} ${issue.title.replace(/\s+/g, ' ')}`, 100);
+
+/** Rename the thread to match the issue's status (Discord limits renames, so a refusal is ignored). */
+async function renameTalk(t, issue) {
+  const name = talkName(issue);
+  if (t.name === name) return;
+  const wasArchived = t.archived;
+  if (wasArchived) await t.setArchived(false).catch(() => {}); // an archived thread cannot be renamed
+  await t.setName(name, 'Issue status changed').catch(() => {});
+  if (wasArchived) await t.setArchived(true).catch(() => {});
+}
+
+/** A Fixed / Can't reproduce / Won't fix issue's thread stays archived (hidden from the channel's active list) even after the bot posts in it. */
+async function keepHidden(t, issue) {
+  if (!OPEN_STATUSES.includes(issue.status) && !issues.byTalkThread(t.id).some((x) => OPEN_STATUSES.includes(x.status))) await t.setArchived(true).catch(() => {});
+}
+
 /** The first message of an issue's developer thread: what it is, a status menu for developers, and the note / merge buttons. */
 export function talkIntro(issue) {
-  const menu = new StringSelectMenuBuilder().setCustomId(`status:${issue.id}`).setPlaceholder('Move to another status (developers only)')
-    .addOptions(Object.entries(STATUSES).map(([value, s]) => ({ label: s.label, value, emoji: s.emoji, default: value === issue.status })));
+  // one button per other status: a click moves the issue there
+  const moves = Object.entries(STATUSES).filter(([value]) => value !== issue.status).map(([value, st]) =>
+    new ButtonBuilder().setCustomId(`stbtn:${issue.id}:${value}`).setLabel(st.label).setEmoji(st.emoji).setStyle(['fixed', 'cannot_reproduce', 'wont_fix'].includes(value) ? ButtonStyle.Secondary : ButtonStyle.Success));
   return {
     content: `🧵 **#${issue.id} – ${trunc(issue.title, 150)}**
-Status: **${STATUSES[issue.status]?.emoji ?? ''} ${STATUSES[issue.status]?.label ?? issue.status}**. Use the menu to move the issue to another status. Notes to requesters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it.`,
-    components: [new ActionRowBuilder().addComponents(menu), new ActionRowBuilder().addComponents(
+Status: **${STATUSES[issue.status]?.emoji ?? ''} ${STATUSES[issue.status]?.label ?? issue.status}**. Use the buttons to move it to another status. Notes to requesters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it.`,
+    components: [new ActionRowBuilder().addComponents(...moves), new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`note:${issue.id}`).setLabel('Note to requesters').setEmoji('💬').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`merge:${issue.id}`).setLabel('Same problem as another issue…').setEmoji('🔀').setStyle(ButtonStyle.Secondary))],
   };
@@ -325,13 +344,14 @@ export async function openTalkThread(client, issue) {
     try {
       const t = await client.channels.fetch(fresh.talk_thread_id);
       if (t.archived) await t.setArchived(false).catch(() => {});
+      await renameTalk(t, fresh);
       return { thread: t, existing: true };
     } catch { /* gone: make a new one */ }
   }
   if (!hubId) throw new Error('no-hub');
   const hub = await client.channels.fetch(hubId);
   const thread = await hub.threads.create({
-    name: trunc(`#${fresh.id} ${fresh.title.replace(/\s+/g, ' ')}`, 100), type: ChannelType.PublicThread,
+    name: talkName(fresh), type: ChannelType.PublicThread,
     autoArchiveDuration: 1440, reason: `Developer thread for issue #${fresh.id}`,
   });
   issues.setTalkThread(fresh.id, thread.id);
@@ -354,6 +374,7 @@ export function syncTalkThread(client, issue) {
       if (OPEN_STATUSES.includes(fresh.status)) await openTalkThread(client, fresh);
       else if (fresh.talk_thread_id && !issues.byTalkThread(fresh.talk_thread_id).some((x) => OPEN_STATUSES.includes(x.status))) {
         const t = await client.channels.fetch(fresh.talk_thread_id);
+        await renameTalk(t, fresh);
         if (!t.archived) await t.setArchived(true, `Issue ${fresh.status}`);
       }
     } catch (e) {
@@ -447,7 +468,7 @@ export async function processPrevious(client, guildId) {
     if (had) try { // older threads: give the first (bot) message the status menu too
       const t = await client.channels.fetch(cur.talk_thread_id);
       const first = (await t.messages.fetch({ after: '0', limit: 1 })).first();
-      if (first?.author.id === client.user.id && !first.components.some((r) => r.components.some((c) => c.customId?.startsWith('status:')))) await first.edit(talkIntro(cur));
+      if (first?.author.id === client.user.id && !first.components.some((r) => r.components.some((c) => c.customId?.startsWith('stbtn:')))) await first.edit(talkIntro(cur));
     } catch { /* leave it */ }
     if (!cur.talk_history && await postTalkHistory(client, cur)) out.histories++;
   }
@@ -458,7 +479,7 @@ export async function processPrevious(client, guildId) {
 export async function talkSay(client, issue, text) {
   const fresh = issues.get(issue.id);
   if (!fresh?.talk_thread_id) return;
-  try { await (await client.channels.fetch(fresh.talk_thread_id)).send(text); } catch { /* thread gone */ }
+  try { const t = await client.channels.fetch(fresh.talk_thread_id); await t.send(text); await keepHidden(t, fresh); } catch { /* thread gone */ }
 }
 
 /**
@@ -471,10 +492,12 @@ export async function talkReport(client, issue, { label, userId, text, platform,
   const meta = [platform, version && `v${version}`].filter(Boolean).join(' · ');
   const body = String(text ?? '').trim();
   try {
-    await (await client.channels.fetch(fresh.talk_thread_id)).send({
+    const t = await client.channels.fetch(fresh.talk_thread_id);
+    await t.send({
       content: trunc(`${label} <@${userId}>${meta ? ` · ${meta}` : ''}${body ? `\n> ${body.replace(/\s+/g, ' ')}` : ''}`, 1900),
       allowedMentions: { parse: [] },
     });
+    await keepHidden(t, fresh);
   } catch { /* thread gone */ }
 }
 

@@ -59,6 +59,7 @@ export class FakeThread extends FakeChannel {
   }
   async setArchived(v) { tick(); this.archived = v; return this; }
   async setLocked(v) { tick(); this.locked = v; return this; }
+  async setName(n) { tick(); this.name = n; return this; }
   async send(payload) { if (this.archived) { this.archived = false; } return super.send(payload); } // sending reopens a thread
 }
 
