@@ -550,8 +550,8 @@ const pendingThreads = (guildId) => issues.list(guildId).filter((x) => ['new', '
 
 /** Make `channel` the developer hub: alerts + digest go there, the live board is posted there, and every open issue gets its thread. */
 async function applyHub(guildId, channel) {
+  await postBoard(client, guildId, channel); // first – if the bot can't post there, nothing below runs and the settings stay as they were
   settings.update(guildId, { dev_channel_id: channel.id, last_digest: Date.now() });
-  await postBoard(client, guildId, channel);
   return (await processPrevious(client, guildId)).threads;
 }
 
@@ -731,6 +731,73 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
   };
 }
 
+/** Step 1 of merging: pick which issue to merge `issue` into (likeliest duplicates first). null when there is nothing to merge into. */
+function mergeMenuPayload(issue) {
+  const scores = new Map(relatedIssues(issue, { limit: 100, min: 0 }).map((r) => [r.id, r.score]));
+  const others = issues.list(issue.guild_id).filter((x) => x.id !== issue.id)
+    .sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0)).slice(0, 25)
+    .map((x) => ({ ...x, likely: (scores.get(x.id) ?? 0) >= 0.12 }));
+  if (!others.length) return null;
+  return {
+    content: `Merge **#${issue.id} – ${trunc(issue.title, 80)}** into which issue? You'll be asked to confirm before anything changes. ⭐ marks issues that look alike.`,
+    embeds: [],
+    components: [row(new StringSelectMenuBuilder().setCustomId(`mergeto:${issue.id}`).setPlaceholder('Choose the issue to keep…').addOptions(others.map(issueOption)))],
+  };
+}
+
+/** Step 2 of merging: say exactly what will happen (an issue disappears, players may be messaged) and ask for a yes. */
+function confirmMergePayload(from, into) {
+  const gone = reports.stats(from.id);
+  const kept = reports.stats(into.id);
+  const st = STATUSES[into.status] ?? STATUSES.new;
+  const players = (n) => `${n} player${n === 1 ? '' : 's'}`;
+  const told = STATUS_DM[into.status] ? `\n• Everyone who reported #${from.id} is messaged that it is **${st.label}**${into.status === 'fixed' && into.fixed_version ? ` in \`${into.fixed_version}\`` : ''}` : '';
+  return {
+    content: [
+      `**Merge #${from.id} into #${into.id}?**`,
+      `🗑️ **#${from.id}** – ${trunc(from.title, 80)} _(${players(gone.users)}, ${STATUSES[from.status]?.label ?? from.status})_`,
+      `➜ ✅ **#${into.id}** – ${trunc(into.title, 80)} _(${players(kept.users)}, ${st.label})_`,
+      `• #${from.id}'s reports, attachments and followers move to #${into.id}; #${from.id} disappears from Known issues and its developer thread is archived${told}`,
+      '• This can\'t be undone (a single report can still be split out again later).',
+    ].join('\n'),
+    embeds: [],
+    components: [row(btn(`mergeok:${from.id}:${into.id}`, 'Yes, merge them', '🔀', ButtonStyle.Danger), btn(`mergeno:${from.id}`, 'Pick another issue', '↩️'), btn('mergecancel', 'Cancel', '✖️'))],
+  };
+}
+
+/** Step 1 of removing a report: pick it (newest first). Looks up names, so callers acknowledge first. */
+async function removePickerPayload(issue) {
+  const list = reports.forIssue(issue.id).slice(0, 25);
+  const names = await Promise.all(list.map((r) => client.users.fetch(r.user_id).then((u) => u.username).catch(() => r.user_id)));
+  return {
+    content: `Which report on **#${issue.id} – ${trunc(issue.title, 80)}** should be removed? (Newest first.) You'll be asked to confirm.`,
+    embeds: [],
+    components: [row(new StringSelectMenuBuilder().setCustomId(`rmsel:${issue.id}`).setPlaceholder('Choose a report to remove…')
+      .addOptions(list.map((r, n) => ({
+        label: trunc(`${names[n]}: ${r.text.replace(/\s+/g, ' ')}`, 100),
+        description: `Report #${r.id} · ${new Date(r.created_at).toISOString().slice(0, 16).replace('T', ' ')}`,
+        value: String(r.id),
+      }))))],
+  };
+}
+
+/** Step 2 of removing a report: show it in full, say whether the whole issue goes with it, and ask for a yes. */
+function confirmRemovePayload(issue, report) {
+  const others = reports.stats(issue.id).total - 1;
+  const ev = evidence.forReport(report.id).length;
+  return {
+    content: [
+      `**Remove this report from #${issue.id} – ${trunc(issue.title, 80)}?**`,
+      `> ${trunc(report.text.replace(/\s+/g, ' '), 300)}`,
+      `By ${report.user_id === '0' ? 'a removed user' : `<@${report.user_id}>`} · <t:${Math.floor(report.created_at / 1000)}:f>${ev ? ` · ${ev} attachment${ev === 1 ? '' : 's'} (deleted with it)` : ''}`,
+      others ? `The issue stays, with ${others} other report${others === 1 ? '' : 's'}.` : `⚠️ **It is the only report, so the whole issue #${issue.id} is deleted with it** – status, note and history included.`,
+      'The reporter is not messaged. This can\'t be undone.',
+    ].join('\n'),
+    embeds: [], allowedMentions: { parse: [] },
+    components: [row(btn(`rmok:${issue.id}:${report.id}`, others ? 'Yes, remove it' : 'Yes, delete the issue', '🗑️', ButtonStyle.Danger), btn(`rmpick:${issue.id}`, 'Pick another report', '↩️'), btn('rmcancel', 'Cancel', '✖️'))],
+  };
+}
+
 // ---------- tracking: my reports, editing, timeline ----------
 
 const EVENT_LABEL = {
@@ -802,7 +869,7 @@ function trackPayload(i, issue) {
   }
   const nav = [btn('mine:back', 'Back', '⬅️')];
   // Joined an issue with other players? You can always take your report out into its own issue.
-  if (mine && stats.total > 1) nav.push(btn(`split:${mine.id}`, 'Make it a separate issue', '↩️'));
+  if (mine && stats.total > 1) nav.push(btn(`splitask:${mine.id}`, 'Make it a separate issue', '↩️')); // asks first (see splitask:)
   if (!mine) nav.push(btn(`follow:${issue.id}`, watchers.has(issue.id, i.user.id) ? 'Unfollow' : 'Follow', watchers.has(issue.id, i.user.id) ? '🔕' : '🔔'));
   rows.push(row(...nav));
   return { content: '', embeds: [embed], components: rows };
@@ -1050,7 +1117,8 @@ async function handleInteraction(i) {
       const autoMerge = i.options.getBoolean('auto_merge');
       if (autoMerge !== null) settings.update(i.guildId, { auto_merge: autoMerge ? 1 : 0 });
       // Only ONE public message: post the new panel first (if that fails nothing is lost), then remove the previous one.
-      const target = i.channel; // the panel goes where /setup is run (see README)
+      // The panel goes in the channel given as issues_channel – what the option promises – not wherever the command was typed.
+      const target = typeof ch.send === 'function' ? ch : await client.channels.fetch(ch.id);
       const panelMsg = await target.send(panelPayload(i.guildId));
       if (prev?.panel_message_id && prev.panel_channel_id) {
         try { await (await (await client.channels.fetch(prev.panel_channel_id)).messages.fetch(prev.panel_message_id)).delete(); } catch { /* gone */ }
@@ -1077,7 +1145,7 @@ async function handleInteraction(i) {
       return i.editReply({
         content: [
           `✅ **All set!** The control panel is posted in <#${target.id}>.`,
-          `• Issues are not posted in <#${ch.id}> – everything is opened from **Known issues** on the control panel`,
+          '• Nothing else is ever posted there: issues are opened from **Known issues**, and everything players open from the panel is private to them',
           `• Developers: <@&${role.id}> (and anyone with Manage Server) – they can change an issue's status and use the Developer menu`,
           `• Who can send reports: ${rr ? `<@&${rr}>` : 'everyone'}`,
           `• Who can edit knowledge articles: developers${articleRole(i.guildId) ? ` and <@&${articleRole(i.guildId)}>` : ' (add a separate editor role with `/setup article_role:`)'}`,
@@ -1192,6 +1260,24 @@ async function handleInteraction(i) {
       return i.update({
         content: `👍 Great – your report stays with **#${issue.id} – ${trunc(issue.title, 80)}**. You'll get a message when its status changes. (Changed your mind? Open **My issues** and choose **Make it a separate issue**.)`,
         embeds: [], components: [],
+      });
+    }
+    // From My issues: explain what separating does before doing it (right after filing, the join screen already explains it).
+    if (i.isButton() && id.startsWith('splitask:')) {
+      const report = reports.get(idOf(i));
+      if (!report || report.user_id !== i.user.id) return i.reply({ content: 'You can only change your own reports.', flags: EPH });
+      const issue = issues.get(report.issue_id);
+      if (!issue) return i.reply({ content: 'That issue is no longer available.', flags: EPH });
+      const others = Math.max(1, reports.stats(issue.id).users - 1);
+      return i.update({
+        content: [
+          `**Take your report out of #${issue.id} – ${trunc(issue.title, 80)} and make it its own issue?**`,
+          `Only do this if your problem is really different from what the other ${others === 1 ? 'player' : `${others} players`} reported.`,
+          `• Your report (with its attachments) becomes a new issue; #${issue.id} stays for the others`,
+          '• The two count as different problems from then on – the developers won\'t be asked to merge them again',
+          `• You stop getting progress messages for #${issue.id} (you can still **Follow** it)`,
+        ].join('\n'),
+        embeds: [], components: [row(btn(`split:${report.id}`, 'Yes, separate it', '↩️', ButtonStyle.Danger), btn(`trk:${issue.id}`, 'No, keep it together', '👍'))],
       });
     }
     if (i.isButton() && id.startsWith('split:')) {
@@ -1420,66 +1506,71 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
         : noteText ? `Note on #${issue.id} is unchanged, so nobody was messaged.` : `Note removed from #${issue.id}. Nobody was messaged.` });
     }
 
-    // ----- issue message: merge into… -----
-    if (i.isButton() && id.startsWith('merge:')) {
+    // ----- issue message: merge into… (pick the issue to keep, then confirm – a merge removes an issue and can message players) -----
+    if (i.isButton() && (id.startsWith('merge:') || id.startsWith('mergeno:'))) {
       if (!isDev(i)) return devOnly(i, 'merge issues');
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
-      const scores = new Map(relatedIssues(issue, { limit: 100, min: 0 }).map((r) => [r.id, r.score]));
-      const others = issues.list(i.guildId).filter((x) => x.id !== issue.id)
-        .sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0)).slice(0, 25)
-        .map((x) => ({ ...x, likely: (scores.get(x.id) ?? 0) >= 0.12 }));
-      if (!others.length) return i.reply({ content: 'There are no other issues to merge this one into yet.', flags: EPH });
-      return i.reply({
-        content: `Merge **#${issue.id} – ${trunc(issue.title, 80)}** into which issue? Its reports move over and it is removed from the list. ⭐ marks issues that look alike.`,
-        components: [row(new StringSelectMenuBuilder().setCustomId(`mergeto:${issue.id}`).setPlaceholder('Choose the issue to keep…').addOptions(others.map(issueOption)))],
-        flags: EPH,
-      });
+      const menu = mergeMenuPayload(issue);
+      if (!menu) return i.reply({ content: 'There are no other issues to merge this one into yet.', flags: EPH });
+      return id.startsWith('mergeno:') ? i.update(menu) : i.reply({ ...menu, flags: EPH }); // from a card: a separate private message, so the card stays
     }
     if (i.isStringSelectMenu() && id.startsWith('mergeto:')) {
       if (!isDev(i)) return devOnly(i, 'merge issues');
       const from = issues.get(idOf(i));
       const into = issues.get(Number(i.values[0]));
       if (!from || !into || from.guild_id !== i.guildId || into.guild_id !== i.guildId) {
-        return i.update({ content: 'One of those issues no longer exists.', components: [] });
+        return i.update({ content: 'One of those issues no longer exists – nothing was merged.', components: [] });
       }
-      await i.deferUpdate();
-      await doMerge(i, from, into);
-      return i.editReply({ content: `🔀 Merged #${from.id} into #${into.id}.`, components: [] });
+      return i.update(confirmMergePayload(from, into));
     }
+    if (i.isButton() && id.startsWith('mergeok:')) {
+      if (!isDev(i)) return devOnly(i, 'merge issues');
+      const [, a, b] = id.split(':');
+      const from = issues.get(Number(a));
+      const into = issues.get(Number(b));
+      if (!from || !into || from.guild_id !== i.guildId || into.guild_id !== i.guildId) {
+        return i.update({ content: 'One of those issues no longer exists – nothing was merged.', embeds: [], components: [] });
+      }
+      await i.deferUpdate(); // merging talks to Discord several times
+      await doMerge(i, from, into);
+      return i.editReply({ content: `🔀 Merged #${from.id} into #${into.id}. Its reports and followers moved over, and #${from.id} is gone from Known issues.`, embeds: [], components: [] });
+    }
+    if (i.isButton() && id === 'mergecancel') return i.update({ content: 'Nothing was merged.', embeds: [], components: [] });
 
-    // ----- issue message: remove a (spam) report -----
-    if (i.isButton() && id.startsWith('rmrep:')) {
+    // ----- issue message: remove a (spam) report – pick it, then confirm -----
+    if (i.isButton() && (id.startsWith('rmrep:') || id.startsWith('rmpick:'))) {
       if (!isDev(i)) return devOnly(i, 'remove reports');
       const issue = await loadIssue(i, idOf(i));
       if (!issue) return;
-      await i.deferReply({ flags: EPH }); // looking up up to 25 usernames talks to Discord – acknowledge first
-      const list = reports.forIssue(issue.id).slice(0, 25);
-      const names = await Promise.all(list.map((r) => client.users.fetch(r.user_id).then((u) => u.username).catch(() => r.user_id)));
-      return i.editReply({
-        content: `Which report on **#${issue.id}** should be removed? (Newest first.)`,
-        components: [row(new StringSelectMenuBuilder().setCustomId(`rmsel:${issue.id}`).setPlaceholder('Choose a report to remove…')
-          .addOptions(list.map((r, n) => ({
-            label: trunc(`${names[n]}: ${r.text.replace(/\s+/g, ' ')}`, 100),
-            description: `Report #${r.id} · ${new Date(r.created_at).toISOString().slice(0, 16).replace('T', ' ')}`,
-            value: String(r.id),
-          }))))],
-      });
+      if (id.startsWith('rmpick:')) await i.deferUpdate(); else await i.deferReply({ flags: EPH }); // looking up up to 25 usernames talks to Discord – acknowledge first
+      return i.editReply(await removePickerPayload(issue));
     }
     if (i.isStringSelectMenu() && id.startsWith('rmsel:')) {
       if (!isDev(i)) return devOnly(i, 'remove reports');
       const issue = issues.get(idOf(i));
       const report = reports.get(Number(i.values[0]));
       if (!issue || !report || report.issue_id !== issue.id || issue.guild_id !== i.guildId) {
-        return i.update({ content: 'That report no longer exists.', components: [] });
+        return i.update({ content: 'That report no longer exists – nothing was removed.', components: [] });
+      }
+      return i.update(confirmRemovePayload(issue, report));
+    }
+    if (i.isButton() && id.startsWith('rmok:')) {
+      if (!isDev(i)) return devOnly(i, 'remove reports');
+      const [, a, b] = id.split(':');
+      const issue = issues.get(Number(a));
+      const report = reports.get(Number(b));
+      if (!issue || !report || report.issue_id !== issue.id || issue.guild_id !== i.guildId) {
+        return i.update({ content: 'That report no longer exists – nothing was removed.', embeds: [], components: [] });
       }
       await i.deferUpdate();
       const { issueDeleted } = await dropReport(i, issue, report);
       return i.editReply({
         content: issueDeleted ? `🗑️ Removed the report. #${issue.id} had no reports left, so the issue was deleted too.` : `🗑️ Removed report #${report.id} from #${issue.id}.`,
-        components: [],
+        embeds: [], components: [],
       });
     }
+    if (i.isButton() && id === 'rmcancel') return i.update({ content: 'Nothing was removed.', embeds: [], components: [] });
 
     // ----- data & privacy, terms, DM preference -----
     if (i.isButton() && (id === 'legal:privacy' || id === 'legal:terms')) {
@@ -1849,7 +1940,7 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
       if (id === 'set_devch') { // the hub: alerts + digest go here, and the live board is posted here (replacing the previous one)
         await i.deferUpdate();
         try { await applyHub(i.guildId, await client.channels.fetch(v)); } catch (e) {
-          await i.followUp({ content: `⚠️ I couldn't post the board in <#${v}>: ${errorMessage(e)}. Give the bot View Channel, Send Messages, Embed Links, Create Public Threads and Send Messages in Threads there.`, flags: EPH });
+          await i.followUp({ content: `⚠️ I couldn't post in <#${v}>: ${errorMessage(e)}. **Nothing was changed** – the previous hub setting is kept. Give the bot View Channel, Send Messages, Embed Links, Create Public Threads, Send Messages in Threads and Manage Threads there, then choose it again.`, flags: EPH });
         }
         return i.editReply(settingsPayload(i.guildId));
       }
@@ -1857,7 +1948,6 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
         set_thr: { threshold: Number(v) },
         set_stale: { stale_days: Number(v) },
         set_cd: { cooldown_sec: Number(v) },
-        set_devch: { dev_channel_id: v, last_digest: Date.now() },
       }[id];
       if (patch) settings.update(i.guildId, patch);
       return i.update(settingsPayload(i.guildId));

@@ -139,10 +139,10 @@ export async function dropBoard(client, guildId) {
 /** (Legacy) Post the live board in `channel` (replacing the previous one) and remember it so it auto-updates. */
 export async function postBoard(client, guildId, channel) {
   const cfg = settings.get(guildId);
-  if (cfg?.board_message_id && cfg.board_channel_id) {
+  const msg = await channel.send(boardPayload(guildId)); // post first: if this fails, the previous board and settings are untouched
+  if (cfg?.board_message_id && cfg.board_channel_id && cfg.board_message_id !== msg.id) {
     try { await (await (await client.channels.fetch(cfg.board_channel_id)).messages.fetch(cfg.board_message_id)).delete(); } catch { /* gone */ }
   }
-  const msg = await channel.send(boardPayload(guildId));
   settings.update(guildId, { board_channel_id: channel.id, board_message_id: msg.id });
   return msg;
 }

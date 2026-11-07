@@ -102,7 +102,8 @@ const cardOf = (iid, viewer) => ({ payload: plain(renderIssue(db.issues.get(iid)
 console.log('1. /setup');
 let panelScreen;
 {
-  const setup = (channel = issuesCh) => interaction({ kind: 'command', commandName: 'setup', who: admin, channel: panelCh,
+  // typed in #digest, naming #panel: the panel must land in the named channel, not where the command was typed
+  const setup = (channel = panelCh) => interaction({ kind: 'command', commandName: 'setup', who: admin, channel: digestCh,
     options: { issues_channel: channel, dev_role: { id: ROLE.dev }, reporter_role: { id: ROLE.users }, article_role: { id: ROLE.editor } } });
   let i = setup();
   let out = await run(i, '/setup');
@@ -110,6 +111,7 @@ let panelScreen;
   check(has(out.payload, new RegExp(`<@&${ROLE.editor}>`)), 'setup names the article editor role');
   const panelMsg = panelCh.sent.at(-1);
   check(panelMsg && labelsOf(plain(panelMsg.payload)).includes('Report a problem'), 'the control panel was posted');
+  check(digestCh.sent.length === 0 && issuesCh.sent.length === 0, 'the panel is posted in the channel given as issues_channel, not where the command was typed');
   panelScreen = { payload: plain(panelMsg.payload), ephemeral: false, id: panelMsg.id };
   check(panelCh.messages.map.size === 1, 'exactly one panel message exists');
 
@@ -122,9 +124,9 @@ let panelScreen;
   sim.registry.set('nothreads', noThreads);
   out = await run(setup(noThreads), '/setup with missing permissions');
   check(has(out.payload, /missing permissions.*Embed Links/s), 'setup names the missing permissions');
-  out = await run(setup(issuesCh), '/setup restored');
+  out = await run(setup(), '/setup restored');
   const p3 = panelCh.sent.at(-1); panelScreen = { payload: plain(p3.payload), ephemeral: false, id: p3.id };
-  check(db.settings.get('G').channel_id === 'issues', 'issues channel saved');
+  check(db.settings.get('G').channel_id === 'panel' && db.settings.get('G').panel_channel_id === 'panel', 'the panel channel is saved');
 }
 const cfgSet = (patch) => db.settings.update('G', patch);
 cfgSet({ cooldown_sec: 60 });
@@ -214,6 +216,16 @@ let bobReportId; let bobR;
 
   let r = await press(bob, bobR.screen, `keep:${bobReportId}`);
   check(has(r.out.payload, /stays with/), '"Yes, same problem" confirms');
+  // from My issues, separating asks first
+  r = await press(bob, panelScreen, 'mine');
+  r = await choose(bob, r.screen, 'mine_view', [String(aliceIssueId)]);
+  check(buttonsOf(r.out.payload).some((c) => c.custom_id === `splitask:${bobReportId}`), 'My issues offers "Make it a separate issue"');
+  r = await press(bob, r.screen, `splitask:${bobReportId}`);
+  check(has(r.out.payload, /make it its own issue\?/) && labelsOf(r.out.payload).includes('Yes, separate it') && db.issues.list('G').length === 1, '…which asks to confirm before anything changes');
+  r = await press(bob, r.screen, `trk:${aliceIssueId}`);
+  check(db.issues.list('G').length === 1 && buttonsOf(r.out.payload).some((c) => c.custom_id === `splitask:${bobReportId}`), '"No, keep it together" returns to the card with nothing changed');
+  r = await press(carol, panelScreen, `splitask:${bobReportId}`);
+  check(has(r.out.payload, /only change your own reports/), 'someone else cannot open that confirmation either');
   r = await press(carol, bobR.screen, `split:${bobReportId}`);
   check(has(r.out.payload, /only change your own reports/), 'someone else cannot separate bob\'s report');
   r = await press(bob, bobR.screen, `split:${bobReportId}`);
@@ -332,6 +344,14 @@ console.log('8. developer workflow');
 
   // set channels through the settings menus, then fix with a version
   const settingsScreen = (await press(dev, panelScreen, 'dev:settings')).screen;
+  // a hub the bot cannot post in: refused, and nothing is saved (no half-configured hub)
+  const noPost = new FakeChannel('nopost', 'nopost'); sim.registry.set('nopost', noPost);
+  noPost.send = async () => { S.tick(); throw Object.assign(new Error('Missing Permissions'), { code: 50013 }); };
+  r = await choose(dev, settingsScreen, 'set_devch', ['nopost'], 'channelselect');
+  check(!db.settings.get('G').dev_channel_id && !db.settings.get('G').board_channel_id, 'a hub the bot cannot post in is not saved at all');
+  check(r.i.responses.some((x) => x.type === 'followUp' && /Nothing was changed/.test(JSON.stringify(x.payload))) && has(r.out.payload, /not set/), '…the developer is told nothing changed, and Settings agrees');
+  r = await press(dev, panelScreen, 'dev:threads');
+  check(has(r.out.payload, /Pick a \*\*Developer hub\*\*/), '…and Process previous requests agrees too');
   r = await choose(dev, settingsScreen, 'set_devch', ['digest'], 'channelselect');
 
   // developer hub: a live board message plus one developer-only thread per open issue
@@ -567,12 +587,41 @@ console.log('10. dev tools');
   db.issues.setStatus(i1.id, 'fixed', null, '9.9.9'); db.issues.setNote(i1.id, 'Reinstall the launcher', null);
   sim.dms.length = 0;
   r = await press(dev, c2, `merge:${i2.id}`);
+  check(has(r.out.payload, /asked to confirm/), 'the merge menu says a confirmation follows');
   r = await choose(dev, r.screen, `mergeto:${i2.id}`, [String(i1.id)]);
+  check(has(r.out.payload, /Merge #\d+ into #\d+\?/) && labelsOf(r.out.payload).includes('Yes, merge them') && db.issues.get(i2.id), 'picking the issue to keep asks to confirm – nothing is merged yet');
+  check(has(r.out.payload, /is messaged that it is \*\*Fixed\*\* in/), '…and says the merged players will be told the fix');
+  const back = await press(dev, r.screen, `mergeno:${i2.id}`);
+  check(buttonsOf(back.out.payload).some((c) => c.custom_id === `mergeto:${i2.id}`) && db.issues.get(i2.id), '"Pick another issue" returns to the menu, still nothing merged');
+  const cancel = await press(dev, r.screen, 'mergecancel');
+  check(has(cancel.out.payload, /Nothing was merged/) && db.issues.get(i2.id), 'Cancel merges nothing');
+  r = await press(dev, r.screen, `mergeok:${i2.id}:${i1.id}`);
   await new Promise((res) => setTimeout(res, 50));
   check(mergedUsers.length > 0 && mergedUsers.every((u) => sim.dms.some((d) => d.to === u && /merged into/.test(d.content) && /now fixed/.test(d.content) && /9\.9\.9/.test(d.content) && /Reinstall the launcher/.test(d.content))), 'people merged into an already fixed issue are told the fix, version and developer note');
   db.issues.setStatus(i1.id, 'new', null);
   check(db.issues.get(i2.id) === undefined && r.i.responses[0].type === 'deferUpdate', 'merge works (answering first)');
   check(issuesCh.threadsList.length === 0 && issuesCh.sent.length === 0, 'merging posts nothing in the channel');
+
+  // remove a report: pick it, then confirm (the confirmation says when the whole issue would go)
+  db.settings.update('G', { cooldown_sec: 0 });
+  const spamR = await submit(carol, panelScreen, 'report:bug', { text: 'buy cheap cosmetics at totally-legit-site dot com, best prices for echo skins', platform: '', version: '', links: '' });
+  const spamRep = db.reports.forGuild('G').find((x) => /totally-legit-site/.test(x.text));
+  const spam = spamRep && db.issues.get(spamRep.issue_id);
+  check(spam && has(spamR.out.payload, /report has been sent/) && db.reports.stats(spam.id).total === 1, `a spam report made its own issue (${textOf(spamR.out.payload).slice(0, 60)})`);
+  db.settings.update('G', { cooldown_sec: 60 });
+  r = await press(dev, cardOf(spam.id), `rmrep:${spam.id}`);
+  check(r.i.responses[0].type === 'deferReply' && buttonsOf(r.out.payload).some((c) => c.custom_id === `rmsel:${spam.id}`), 'Remove a report opens the picker (answering first)');
+  const spamReport = db.reports.forIssue(spam.id)[0];
+  r = await choose(dev, r.screen, `rmsel:${spam.id}`, [String(spamReport.id)]);
+  check(has(r.out.payload, /Remove this report/) && has(r.out.payload, /whole issue #\d+ is deleted/) && db.reports.get(spamReport.id), 'picking a report asks to confirm and warns the issue goes with it – nothing removed yet');
+  const kept = await press(dev, r.screen, 'rmcancel');
+  check(has(kept.out.payload, /Nothing was removed/) && db.reports.get(spamReport.id), 'Cancel removes nothing');
+  const again = await press(dev, r.screen, `rmpick:${spam.id}`);
+  check(again.i.responses[0].type === 'deferUpdate' && buttonsOf(again.out.payload).some((c) => c.custom_id === `rmsel:${spam.id}`), '"Pick another report" returns to the picker');
+  r = await press(alice, r.screen, `rmok:${spam.id}:${spamReport.id}`);
+  check(has(r.out.payload, /developers only/) && db.reports.get(spamReport.id), 'a player cannot press the final remove button');
+  r = await press(dev, r.screen, `rmok:${spam.id}:${spamReport.id}`);
+  check(has(r.out.payload, /issue was deleted too/) && !db.reports.get(spamReport.id) && !db.issues.get(spam.id), 'confirming removes the report and the now-empty issue');
 }
 
 // ================================================================= 11. withdraw & erase my data
@@ -666,7 +715,7 @@ console.log('12b. security and unusual input');
 
 // ================================================================= 13. crawler: press every reachable control
 console.log('13. crawling every button, menu option and form');
-const SKIP = [/^legal:eraseok/, /^wdok:/, /^art:delok:/, /^dupm:/, /^mergeto:/, /^rmsel:/, /^dev:backup/, /^dev:export/, /^dev:digest/, /^board:/, /^set_/];
+const SKIP = [/^legal:eraseok/, /^wdok:/, /^art:delok:/, /^dupm:/, /^mergeok:/, /^rmok:/, /^split:/, /^dev:backup/, /^dev:export/, /^dev:digest/, /^board:/, /^set_/];
 const FIELD = (c) => {
   if (c.type === 19) return null;
   const min = c.min_length ?? 0;
