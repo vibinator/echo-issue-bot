@@ -284,7 +284,7 @@ const newCol = board.embeds[0].toJSON().fields[0].value;
 assert.ok(newCol.includes(`#${mic.issue.id}`), 'open issues appear as cards in their column');
 assert.ok(board.components.length === 3, 'card picker + move picker + buttons');
 const mineBoard = boardPayload(G, { owner: 'nobody', title: 'Mine' });
-assert.ok(mineBoard.embeds[0].toJSON().fields.every((f) => f.value === '_empty_'), 'personal board only shows your cards');
+assert.ok(mineBoard.embeds[0].toJSON().fields.every((f) => f.value.startsWith('_empty_')), 'personal board only shows your cards');
 
 // Worst case for Discord's limits (6000 characters across all embeds, 1024 per field, 25 menu options)
 {

@@ -30,12 +30,13 @@ export function movePayload(issue) {
   };
 }
 
-function column(list, status, staleBefore) {
+const LINE = '─'.repeat(30); // divider drawn under a section
+function column(list, status, staleBefore, last = false) {
   const st = STATUSES[status];
   const items = list.filter((i) => i.status === status && onBoard(i));
   const shown = items.slice(0, MAX_CARDS).map((i) => card(i, staleBefore));
   if (items.length > MAX_CARDS) shown.push(`_…and ${items.length - MAX_CARDS} more_`);
-  return { name: `${st.emoji} ${st.label} (${items.length})`, value: shown.join('\n') || '_empty_', inline: false };
+  return { name: `${st.emoji} ${st.label} (${items.length})`, value: (shown.join('\n') || '_empty_') + (last ? '' : `\n${LINE}`), inline: false };
 }
 
 /** owner: restrict to one developer's cards. title: heading override. */
@@ -45,9 +46,9 @@ export function boardPayload(guildId, { owner, title } = {}) {
   const list = issues.list(guildId, { owner });
   const active = new EmbedBuilder().setColor(0x3498db).setTitle(title ?? '📌 Developer board')
     .setDescription(`Updated <t:${Math.floor(Date.now() / 1000)}:R> · most important first · ⏳ = quiet for ${cfg.stale_days}+ days · 🙌 = who's on it`)
-    .addFields(ACTIVE.map((s) => column(list, s, staleBefore)));
+    .addFields(ACTIVE.map((s, n) => column(list, s, staleBefore, n === ACTIVE.length - 1)));
   const done = new EmbedBuilder().setColor(0x2ecc71).setTitle('✔️ Finished (fixed issues stay here for 14 days)')
-    .addFields(DONE.map((s) => column(list, s, staleBefore)));
+    .addFields(DONE.map((s, n) => column(list, s, staleBefore, n === DONE.length - 1)));
 
   const open = list.filter((i) => ACTIVE.includes(i.status)).slice(0, 25);
   const components = [];
