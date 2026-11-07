@@ -357,7 +357,7 @@ export const KB = [
   },
   {
     id: 'waiting_period_7day', title: '7-Day Waiting Period (new Discord account can\'t start Echo VR)',
-    symptoms: 'seven day waiting period 7 day waiting new discord account cannot start echo vr blocked from starting game new account less than a week old discord account too new login wait account age',
+    symptoms: 'seven day waiting period 7 day waiting new discord account cannot start echo vr blocked from starting game new account less than a week old discord account too new login wait account age made yesterday just created fresh account days old',
     pattern: /(7|seven)[- ]day waiting period|waiting period/i,
     fix: '- For security, a **7-day waiting period** applies to **new Discord accounts**. If your Discord account is less than a week old, this is why Echo VR won\'t start.\n- **Workaround:** if you have an older Discord account you can still use, switch to that one to skip the waiting period.\n- Otherwise just wait until the account is a week old – sorry for the inconvenience, and thanks for your patience!',
     source: 'Echo VR community support (PC)',
@@ -369,25 +369,17 @@ export const KB = [
     fix: '- Use these commands in <#1227795372244729926>:\n  `/whoami`\n  `/set-lobby`\n- Once the commands have been run, **restart the game**.',
     source: 'Echo VR community support (PC)',
   },
-  {
-    id: 'cosmetics_not_saving', title: 'Cosmetics not saving',
-    symptoms: 'cosmetics not saving cosmetics wont save equipped cosmetics reset loadout not saved changes lost after restart equip cosmetic disappears customization not saving',
-    fix: '- This is a **known bug** that stops some players from **saving their cosmetics** after equipping them.\n- Equip your cosmetics, exit the game and restart to see if the changes saved – but this doesn\'t always work. [Worth a try](https://discord.com/channels/779349159852769310/1094663636947054754/1558505195921604751)!\n- A fix [was deployed](https://discord.com/channels/779349159852769310/779349159852769313/1536839914371682344), but unfortunately it doesn\'t appear to have worked. **There is no ETA yet** for a fix.',
-    source: 'Echo VR community support (PC)',
-  },
-  {
-    id: 'pc_wont_open_meta_207', title: 'Echo VR on PC won\'t open (Meta Horizon app v207+)',
-    symptoms: 'echo vr pc wont open will not launch stopped working meta horizon app v207 207 update oculus app echovr.exe closes immediately LibOVRPlatformImpl64_1 dll',
-    pattern: /LibOVRPlatformImpl64/i,
-    fix: '- If Echo VR **used to work** on your PC and now won\'t open, it may be caused by **version 207 (or newer) of the Meta Horizon app**.\n- Check your Meta Horizon version. If it\'s **207 or higher**, try this fix:\n  1. Download the **`LibOVRPlatformImpl64_1.dll`** file.\n  2. Move it into the same folder as `echovr.exe`, for example `ready-at-dawn-echo-arena\\bin\\win10\\`.\n  3. Run Echo VR – it should now launch.',
-    source: 'Echo VR community support (PC)',
-  },
 ];
 
 // Tuned on a set of realistic player sentences (typos, loose wording, and look-alike non-matches). A match only
 // re-orders the "is it one of these?" menu and never blocks anyone, so a slightly generous cut-off is safe.
-export const KB_THRESHOLD = 0.2;      // built-in answers
-export const ARTICLE_THRESHOLD = 0.2; // developer-written articles
+export const KB_THRESHOLD = 0.15;      // built-in answers
+export const ARTICLE_THRESHOLD = 0.15; // developer-written articles
+// ...but a suggestion must always share at least this many real words with what the player wrote (typos and synonyms
+// count; "broken", "issue", "weird" don't), so the cut-off can be generous without suggesting something unrelated.
+export const MIN_SHARED_WORDS = 1;
+// A single shared word is the weakest kind of match (could be a coincidence like "discord" or "account"), so it has to score higher.
+export const ONE_WORD_THRESHOLD = 0.22;
 
 /**
  * Suggested answers for a report, best first (at most `max`).
@@ -423,7 +415,9 @@ export function suggest(text, custom = [], max = 3, kind = null, boost = new Map
       exact: (a.phrases ?? '').split('\n').map((p) => p.trim().toLowerCase()).some((p) => p.length >= 4 && lower.includes(p)),
     })),
   ];
-  const scores = new Map(rankSimilar(text, pool.map((p) => ({ id: p.id, text: p.text }))).map((r) => [r.id, r.score]));
+  const ranked = rankSimilar(text, pool.map((p) => ({ id: p.id, text: p.text })));
+  const scores = new Map(ranked.map((r) => [r.id, r.score]));
+  const shared = new Map(ranked.map((r) => [r.id, r.shared]));
   const adjust = (p, score) => {
     if (p.exact) return 1;
     let s = score * (boost.get(p.id) ?? 1);
@@ -435,7 +429,11 @@ export function suggest(text, custom = [], max = 3, kind = null, boost = new Map
   };
   return pool
     .map((p) => ({ p, score: adjust(p, scores.get(p.id) ?? 0) }))
-    .filter(({ p, score }) => score >= p.threshold)
+    .filter(({ p, score }) => {
+      if (p.exact) return true;
+      const n = shared.get(p.id) ?? 0;
+      return n >= MIN_SHARED_WORDS && score >= (n === 1 ? Math.max(p.threshold, ONE_WORD_THRESHOLD) : p.threshold);
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, max)
     .map(({ p, score }) => ({ id: p.id, title: p.title, fix: p.fix, source: p.source, score, custom: p.custom }));

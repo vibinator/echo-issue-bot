@@ -24,9 +24,9 @@ Players report problems from a button panel. Known problems get an instant sugge
 
 ## Developer menu (roles below)
 The panel's **🛠️ Developer** button opens a hidden menu: Board, Review duplicates, Knowledge articles, Settings, Digest, Export CSV, Back up now.
-- **📌 Board** – a Trello-style board (columns New | Seen | Being fixed, then Fixed | Can't reproduce | Won't fix); ⏳ marks cards with no activity, 🙌 shows the owner, **My cards** filters to yours, the picker opens a card (with a Back button), **Refresh** redraws it. It is a private view, not a public message.
+- **📌 Board** – a Trello-style board (sections New, Seen, Being fixed, then Fixed, Can't reproduce, Won't fix – each full width, separated by a line); ⏳ marks cards with no activity, 🙌 shows the owner, **My cards** filters to yours, the picker opens a card (with a Back button), **See everything in a section…** pages through every card in one section (the board shows the first 6 of each); **Move a card…** moves a card to another section (pick the card, pick the section, then confirm – reporters are messaged when the status changes); **Refresh** redraws it. It is a private view, not a public message.
 - On each issue: status (Fixed asks for the fixed-in version), priority, 🙌 assign to me, 💬 note, 🔀 merge, 🗑️ remove a spam report, 📜 history, 📚 **Make article** (turn a solved issue into a knowledge article).
-- **📚 Knowledge articles** – add/edit/disable articles (how players describe it, optional exact error text, the answer, a link). **Results** shows how often each suggestion was shown, helped, denied, or still led to a report; **Test matching** previews what a sample report would get.
+- **📚 Knowledge articles** – add/edit/disable articles (how players describe it, optional exact error text, the answer, a link). **Results** shows how often each suggestion was shown, helped, denied, or still led to a report, and flags answers that mostly don't help (also listed in the weekly digest); **Test matching** previews what a sample report would get.
 - 🔍 Review duplicates · 📊 Digest (posts to the digest channel) · 📤 Export CSV · 💾 Back up now · ⚙️ Settings.
 
 ## Roles
@@ -84,3 +84,8 @@ Used for the "is it one of these?" menu, for grouping similar reports, and for t
 `src/kb.js` (built-in, typo tolerant; vocabulary in `src/lexicon.js`) – edit them as the community tooling changes, or add per-server articles from the panel.
 
 `npm test` first runs the offline unit tests and then an **end-to-end test** (`npm run e2e`): the real bot code is driven through a simulated Discord (`src/sim.js`) that enforces Discord's own rules (answer within 3 seconds on a slow network, one first reply, edit only after acknowledging). It walks through every journey – admin setup, reporting, similar-report joining and separating, private attachments, My issues, developer workflow, knowledge articles, merging, erasing, odd input and security – and then presses every button and menu option it can reach as an outsider, a player, an article editor and a developer. The unit tests cover: (grouping, typos, known-problem matching, ticket types, priority/owner/version, duplicates, digest, CSV, evidence, recalculation, articles, board, privacy/erase/retention).
+
+
+**Weekly reminders.** Once a week each developer who owns issues that have gone quiet (nothing for the *stale days* in Settings, default 7) gets a private message listing them. Anyone who turned off the bot's messages under **My issues** is left alone. The first week after an update only starts the clock.
+
+**Starter articles.** A few fast-changing answers (for example a known bug with no ETA) are added to each server's own knowledge articles once, so you can edit, switch off or delete them from the panel; a deleted one is never re-added. They live in `src/seed.js`.

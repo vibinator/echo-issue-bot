@@ -14,7 +14,7 @@ export const TERMS = [
   // hardware / platforms
   'quest', 'oculus', 'airlink', 'headset', 'controller', 'haptics', 'rumble', 'standalone', 'virtual',
   // game
-  'lobby', 'arena', 'combat', 'matchmaking', 'spectate', 'scoreboard', 'private', 'region', 'server', 'cosmetic', 'emote',
+  'lobby', 'arena', 'combat', 'waiting', 'period', 'account', 'matchmaking', 'spectate', 'scoreboard', 'private', 'region', 'server', 'cosmetic', 'emote',
   // install / files
   'install', 'uninstall', 'reinstall', 'update', 'download', 'permissions', 'microphone', 'storage', 'profile', 'package',
   'manifest', 'repack', 'revert', 'texture', 'emissive', 'decal', 'banner', 'mesh', 'blender', 'deadzone',
@@ -47,4 +47,7 @@ export const EXTRA_SYN = {
   lag: ['lagg', 'slow', 'choppy', 'sluggish', 'jittery', 'delay', 'delayed', 'laggy'],
   headset: ['headphones', 'headphone', 'earphone', 'earphones', 'earbuds', 'earbud', 'hmd'],
   texture: ['textures', 'skin', 'skins'],
+  account: ['acc', 'accounts'],
+  new: ['fresh', 'newly', 'brand'],
+  save: ['saves', 'saved', 'saving', 'persist', 'remember', 'remembers', 'revert', 'reverts', 'reverting', 'reset', 'resets', 'resetting'],
 };

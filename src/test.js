@@ -282,21 +282,19 @@ const names = board.embeds.flatMap((e) => e.toJSON().fields.map((f) => f.name));
 assert.deepEqual(names.map((n) => n.replace(/^\S+\s/, '').replace(/ \(\d+\)/, '')), ['New', 'Seen', 'Being fixed', 'Fixed', "Can't reproduce", "Won't fix"]);
 const newCol = board.embeds[0].toJSON().fields[0].value;
 assert.ok(newCol.includes(`#${mic.issue.id}`), 'open issues appear as cards in their column');
-assert.ok(board.components.length === 3, 'card picker + move picker + buttons');
+assert.ok(board.components.length === 4, 'card picker + move picker + section picker + buttons');
 const mineBoard = boardPayload(G, { owner: 'nobody', title: 'Mine' });
 assert.ok(mineBoard.embeds[0].toJSON().fields.every((f) => f.value.startsWith('_empty_')), 'personal board only shows your cards');
 
 // Worst case for Discord's limits (6000 characters across all embeds, 1024 per field, 25 menu options)
 {
   const W = 'gworst';
-  const words = ['crash', 'lag', 'mic', 'avatar', 'quest', 'spark', 'menu', 'audio', 'login', 'sync', 'input', 'map'];
   let n = 0;
   for (const st of ['new', 'seen', 'in_progress', 'fixed', 'cannot_reproduce', 'wont_fix']) {
-    for (let k = 0; k < 10; k++) {
-      const t = `${words[n % 12]} ${words[(n * 5 + 3) % 12]} ${'wxyzqv'.repeat(14)} unique${n} ${'ab'.repeat(30)}`;
-      const r = fileReport({ guildId: W, userId: `w${n}`, text: t });
-      issues.setStatus(r.issue.id, st, 'dev', st === 'fixed' ? '1.0' : undefined);
-      issues.setOwner(r.issue.id, '123456789012345678');
+    for (let k = 0; k < 10; k++) { // distinct, long-titled, owned, critical cards (reports with similar text would be grouped into one issue)
+      const id = issues.create(W, `Issue number ${n} ${'wxyzqv'.repeat(14)} ${'ab'.repeat(30)}`, 'Other', 'critical');
+      issues.setStatus(id, st, 'dev', st === 'fixed' ? '1.0' : undefined);
+      issues.setOwner(id, '123456789012345678');
       n++;
     }
   }
@@ -308,6 +306,61 @@ assert.ok(mineBoard.embeds[0].toJSON().fields.every((f) => f.value.startsWith('_
   assert.ok(fields.every((f) => f.value.length <= 1024), 'every section fits a field');
   assert.ok(wp.components.every((r) => r.components.every((c) => !c.options || c.options.length <= 25)), 'menus have at most 25 options');
   console.log(`board worst case: ${total} / 6000 characters`);
+}
+
+// ---- board: whole-section view, move confirmation, weekly nudges, answer health, starter articles ----
+{
+  const W = 'gworst'; // 10 cards in every section from the block above
+  const { sectionPayload, confirmMovePayload } = await import('./board.js');
+  const { weakAnswers, isWeak } = await import('./health.js');
+  const { nudgeOwners } = await import('./digest.js');
+  const { seedArticles } = await import('./seed.js');
+  const { db, kbStats, prefs, settings, articles } = await import('./db.js');
+
+  for (let k = 0; k < 3; k++) issues.create(W, `Extra issue ${k}`, 'Other');
+  const p0 = sectionPayload(W, 'new', 0);
+  assert.equal(p0.embeds[0].toJSON().title, '🆕 New (13)', 'section view counts every card');
+  assert.equal(p0.components[0].components[0].options.length, 10, 'ten cards per page');
+  const nav = (p) => p.components.at(-1).components;
+  assert.ok(!nav(p0)[0].data.disabled === false && nav(p0)[1].data.disabled !== true, 'first page: Previous off, Next on');
+  const p1 = sectionPayload(W, 'new', 1);
+  assert.equal(p1.components[0].components[0].options.length, 3, 'second page holds the rest');
+  assert.equal(nav(p1)[1].data.disabled, true, 'last page: Next off');
+  assert.equal(sectionPayload(W, 'new', 99).components[0].components[0].options.length, 3, 'a too-high page is clamped');
+  assert.ok(sectionPayload(W, 'new', 0).embeds[0].toJSON().description.length < 4096, 'page fits an embed description');
+
+  const anyNew = issues.list(W).find((x) => x.status === 'new');
+  const conf = confirmMovePayload(anyNew, 'in_progress', true);
+  assert.ok(conf.content.includes('get a message'), 'the confirmation says players will be messaged');
+  assert.ok(conf.components[0].components[0].data.custom_id === `bmv:${anyNew.id}:in_progress`, 'the Yes button carries the issue and target');
+  assert.ok(!confirmMovePayload(anyNew, 'seen', false).content.includes('get a message'), 'no message warning when nobody is told');
+
+  // answer health: shown often, mostly not helping -> flagged; too few views -> not
+  kbStats.bump(W, 'kb:gpu_hang', 'helped');
+  for (let k = 0; k < 6; k++) kbStats.bump(W, 'kb:gpu_hang', 'shown');
+  for (let k = 0; k < 4; k++) kbStats.bump(W, 'kb:gpu_hang', 'denied');
+  assert.deepEqual(weakAnswers(W).map((w) => w.article_id), ['kb:gpu_hang'], 'a weak answer is flagged');
+  assert.equal(isWeak({ shown: 2, helped: 0, denied: 2, filed: 1 }), false, 'too few views to judge');
+  assert.equal(isWeak({ shown: 10, helped: 8, denied: 3, filed: 0 }), false, 'an answer that mostly helps is fine');
+
+  // weekly nudge: owners are DMed their quiet issues; people who opted out are left alone
+  db.prepare('UPDATE issues SET updated_at = ? WHERE guild_id = ?').run(Date.now() - 30 * 864e5, W);
+  const sent = [];
+  const fakeClient = { guilds: { cache: new Map() }, users: { fetch: async (id) => ({ send: async (m) => { sent.push({ id, text: m.content }); } }) } };
+  assert.equal(await nudgeOwners(fakeClient, W), 1, 'one owner is nudged');
+  assert.ok(sent[0].text.includes('quiet for 30 days') && sent[0].text.includes('and '), 'the nudge lists the quiet issues');
+  prefs.setDmOff('123456789012345678', true);
+  assert.equal(await nudgeOwners(fakeClient, W), 0, 'someone who turned off messages is not nudged');
+  prefs.setDmOff('123456789012345678', false);
+
+  // starter articles are added once, and a deleted one stays deleted
+  assert.equal(seedArticles('gseed'), 0, 'nothing happens before a server is set up');
+  settings.set('gseed', 'c1', 'r1');
+  assert.equal(seedArticles('gseed'), 1, 'the starter article is added');
+  assert.equal(seedArticles('gseed'), 0, 'and only once');
+  articles.delete(articles.list('gseed')[0].id);
+  assert.equal(seedArticles('gseed'), 0, 'a deleted starter never comes back');
+  assert.equal(articles.list('gseed').length, 0);
 }
 
 // ---- ticket type: Install issue vs Bug in game ----
@@ -619,6 +672,35 @@ assert.deepEqual(missed, [], 'realistic sentences find the right known-problem a
 for (const t of ['goal sound plays twice', 'my avatar is stuck in a t pose', 'vote kick is abused', 'the shop prices are too high', 'emote wheel opens slowly',
   'players clip through walls', 'the intro video cannot be skipped', 'spectator camera is jittery', 'hit detection is off on goalie saves', 'i love this game so much']) {
   assert.equal(top(t, 'bug'), null, `no answer is suggested for "${t}"`);
+}
+// generous but grounded: loose wording, typos and rewordings still find the answer, and a suggestion always shares a real word
+{
+  const { STARTERS } = await import('./seed.js');
+  const starter = STARTERS.map((s, k) => ({ id: 900 + k, title: s.title, symptoms: s.symptoms, body: s.body, link: null, phrases: null, enabled: 1 }));
+  const first = (t, kind = 'bug') => { const r = sg(t, starter, 3, kind)[0]; return r ? (r.custom ? 'cosmetics' : r.id.replace('kb:', '')) : null; };
+  const LOOSE = [
+    ['i just made a discord account and echo wont start', 'waiting_period_7day'], ['new discord acc cant launch the game', 'waiting_period_7day'],
+    ['it says i have to wait 7 days before i can play', 'waiting_period_7day'], ['wating period error on my fresh discord', 'waiting_period_7day'],
+    ['my discord was made yesterday and the game wont open', 'waiting_period_7day'], ['got a new discord, game just closes', 'waiting_period_7day'],
+    ['i get an intrnal eror loading into the lobby', 'internal_error_lobby'], ['internal error', 'internal_error_lobby'],
+    ['when i join a game it throws an internal error', 'internal_error_lobby'], ['error loading into game', 'internal_error_lobby'],
+    ['my cosmetics dont save', 'cosmetics'], ['skins reset every time i restart', 'cosmetics'], ['cosmetcs wont stay equipped', 'cosmetics'],
+    ['my equipped cosmetic resets when i restart the game', 'cosmetics'], ['customization doesnt stick', 'cosmetics'],
+    ['my headset wont vibrate in game', 'haptics'], ['launcher is using 100% of my gpu while idle', 'idle_cpu'],
+  ];
+  const loose = LOOSE.filter(([t, want]) => first(t) !== want).map(([t, want]) => `${t} → ${first(t)} (wanted ${want})`);
+  assert.deepEqual(loose, [], 'loosely worded reports still find the right answer');
+  assert.equal(first('how do i get echo on my quest 3', 'install'), 'quest_install_howto');
+  // nothing in common = no suggestion; so does sharing only vague "it's broken" words
+  for (const t of ['xyzzy qwerty plugh', 'it is broken and weird', 'something is wrong', 'bug', 'i love this game so much', 'the shop prices are too high',
+    'please add more maps', 'my teammate keeps trolling', 'hello', 'great update thanks', 'how much does the game cost', 'i want a refund']) {
+    assert.equal(first(t), null, `nothing is suggested for "${t}"`);
+  }
+  // every suggestion shares at least one real word with the text it was matched on (and a single shared word must score higher)
+  const { rankSimilar: rs } = await import('./similarity.js');
+  const probe = rs('my quest battery dies fast', [{ id: 1, text: 'Quest refused the APK newer install failed' }, { id: 2, text: 'texture editor wont open' }]);
+  assert.equal(probe.find((x) => x.id === 2).shared, 0, 'no words in common means shared is 0');
+  assert.ok(probe.find((x) => x.id === 1).shared >= 1, 'a common word is counted');
 }
 // platform awareness: asking about Quest must not rank the PC guide first, and the other way round
 assert.equal(top('how to install echo on quest step by step', 'install'), 'quest_install_howto');

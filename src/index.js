@@ -17,8 +17,10 @@ import {
   eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
-import { boardPayload, dropBoard, movePayload } from './board.js';
-import { buildDigest, postDigest, runDigests } from './digest.js';
+import { boardPayload, confirmMovePayload, dropBoard, movePayload, sectionPayload } from './board.js';
+import { buildDigest, postDigest, runDigests, runNudges } from './digest.js';
+import { answerTitle, isWeak, weakAnswers } from './health.js';
+import { seedArticles } from './seed.js';
 import { exportCsv } from './export.js';
 import { backupNow, maybeBackup } from './backup.js';
 import { trunc } from './text.js';
@@ -911,16 +913,19 @@ async function proposeArticle(issue, byUserId) {
 }
 
 function articleStats(guildId) {
-  const title = (id) => (id.startsWith('kb:') ? KB.find((e) => `kb:${e.id}` === id)?.title : articles.get(Number(id.slice(2)))?.title) ?? '(deleted)';
   const rows = kbStats.forGuild(guildId).filter((s) => s.shown > 0).slice(0, 15);
   const lines = rows.map((s) => {
-    const flag = s.denied >= 3 && s.denied > s.helped ? ' ⚠️ often denied' : '';
-    return `**${trunc(title(s.article_id), 60)}** — viewed ${s.shown}× · ✅ ${s.helped} · 🙅 ${s.denied} · 📝 ${s.filed}${flag}`;
+    const flag = isWeak(s) ? ' ⚠️ not helping' : '';
+    return `**${trunc(answerTitle(s.article_id), 60)}** — viewed ${s.shown}× · ✅ ${s.helped} · 🙅 ${s.denied} · 📝 ${s.filed}${flag}`;
   });
+  const weak = weakAnswers(guildId);
+  const advice = weak.length
+    ? `⚠️ **${weak.length} answer${weak.length === 1 ? '' : 's'} may need a rewrite** – most people who see ${weak.length === 1 ? 'it' : 'them'} say it's not their problem or still send a report. Make the "how players describe it" text more specific, or switch ${weak.length === 1 ? 'it' : 'them'} off.\n\n`
+    : '';
   return {
     content: '', components: [row(btn('art:back', 'Back', '⬅️'))],
     embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('📊 How suggestions are doing')
-      .setDescription(lines.join('\n') || '_No answers have been viewed yet._')
+      .setDescription(trunc(advice + (lines.join('\n') || '_No answers have been viewed yet._'), 4000))
       .setFooter({ text: '✅ = "That fixed it" · 🙅 = "That\'s not my problem" · 📝 = "Didn\'t help – send a report"' })],
   };
 }
@@ -1002,6 +1007,7 @@ async function handleInteraction(i) {
         }
       } catch { /* couldn't check – not critical */ }
       const readded = restoreArticles(); // bring back any saved knowledge articles the database is missing
+      seedArticles(i.guildId);
       const have = summary(i.guildId);
       const kept = have.issues || have.articles
         ? `\n♻️ Existing data found and kept: **${have.issues}** issue${have.issues === 1 ? '' : 's'}, **${have.reports}** report${have.reports === 1 ? '' : 's'}, **${have.articles}** knowledge article${have.articles === 1 ? '' : 's'}${restoredFrom ? ` (restored from backup \`${restoredFrom}\`)` : ''}${readded ? ` – **${readded}** re-added from the saved articles file` : ''}.`
@@ -1177,10 +1183,32 @@ async function handleInteraction(i) {
       if (!issue) return;
       const status = i.values[0];
       if (status === issue.status) return i.update(boardPayload(i.guildId));
-      if (status === 'fixed') return i.showModal(fixedModal(issue));
-      await i.deferUpdate();
+      if (status === 'fixed') return i.showModal(fixedModal(issue)); // the form asks for the version, so it doubles as the confirmation
+      return i.update(confirmMovePayload(issue, status, !!STATUS_DM[status]));
+    }
+    if (i.isButton() && id.startsWith('bmv:')) { // step 3, confirmed
+      if (!isDev(i)) return devOnly(i, 'move cards');
+      const [, issueId, status] = id.split(':');
+      const issue = await loadIssue(i, Number(issueId));
+      if (!issue) return;
+      if (!STATUSES[status] || status === 'fixed' || status === issue.status) return i.update(boardPayload(i.guildId));
+      await i.deferUpdate(); // moving a card edits its message and sends DMs
       await applyStatus(i, issue, status);
       return i.editReply(boardPayload(i.guildId));
+    }
+    if (i.isButton() && id.startsWith('bmvback:')) {
+      if (!isDev(i)) return devOnly(i, 'move cards');
+      const issue = await loadIssue(i, idOf(i));
+      return issue && i.update(movePayload(issue));
+    }
+    if (i.isStringSelectMenu() && id === 'bsec') { // "See everything in a section"
+      if (!isDev(i)) return devOnly(i, 'use the board');
+      return i.update(sectionPayload(i.guildId, STATUSES[i.values[0]] ? i.values[0] : 'new'));
+    }
+    if (i.isButton() && id.startsWith('bsp:')) {
+      if (!isDev(i)) return devOnly(i, 'use the board');
+      const [, status, page] = id.split(':');
+      return i.update(sectionPayload(i.guildId, STATUSES[status] ? status : 'new', Number(page) || 0));
     }
 
     // ----- issue message: status / priority / owner -----
@@ -1701,6 +1729,7 @@ client.once('clientReady', async () => {
   // Hourly housekeeping: weekly digests, hourly DB backup, expire stashed reports.
   const tick = () => {
     runDigests(client).catch((e) => console.error('Digest error:', e.message));
+    runNudges(client).catch((e) => console.error('Nudge error:', e.message));
     for (const cfg of settings.all()) {
       archiveFixedThreads(client, cfg.guild_id).catch((e) => console.error('Archive error:', e.message));
       if (cfg.auto_merge) autoMergeDuplicates(client, cfg.guild_id, cfg.channel_id).catch((e) => console.error('Auto-merge error:', e.message));
@@ -1713,6 +1742,8 @@ client.once('clientReady', async () => {
   };
   setTimeout(tick, 30_000);
   setInterval(tick, 3_600_000);
+
+  for (const cfg of settings.all()) seedArticles(cfg.guild_id); // starter articles for fast-changing answers, added once per server
 
   // Redraw each server's control panel so new buttons appear after an update without running /setup again.
   for (const cfg of settings.all()) {

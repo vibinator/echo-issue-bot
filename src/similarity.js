@@ -55,7 +55,9 @@ const PHRASES = [
   [/\b(?:went|goes|go|gone|going)\s+away\b|\bdisappear\w*\b|\bvanish\w*\b/g, ' vanish '],
   [/\bpop ?ups?\b|\bdialog\b|\bprompt\b|\bmessage box\b|\bbox\b/g, ' popup '],
   [/\b(?:what ?s|whats)\s+the\s+(?:way|best way|easiest way)\s+to\b|\bways? to\b/g, ' howto '],
+  [/\b(?:made|created|started|opened|registered|signed up)\s+(?:it\s+)?(?:yesterday|today|recently|just now|last night|this week|a few days ago)\b|\bjust\s+(?:made|created|registered)\b/g, ' new '],
   [/\bget\b[^.]{0,25}\bonto\b/g, ' install '],
+  [/\bget\b(?:\s+\w+){0,3}\s+on\s+(?:my|the|a|an)\s+(?=quest|headset|pc|computer|oculus)/g, ' install '],
   [/\b(?:eats?|hogs?|hogging|uses?|using|drains?|draining|maxes?|maxing)\b(?=[^.]{0,20}\b(?:cpu|gpu|memory|ram|battery|resources?)\b)/g, ' usage '],
   [/\bnot\s+(?:playing|doing anything|in use|using it)\b|\bwhen\s+(?:i\s*m\s+)?(?:idle|doing nothing)\b|\beven when\b[^.]{0,20}\bnot\b/g, ' idle '],
   [/\b(?:cuts?|drops?|dropping|cutting|goes?)\s+out\b/g, ' dropout '],
@@ -281,7 +283,13 @@ export function rankSimilar(query, docs) {
   const N = docs.length + 1;
   const idf = new Map([...df].map(([t, c]) => [t, Math.log(1 + N / c)]));
   const q = vectorize(qTokens, idf);
+  const qWords = new Set(qUni.filter((t) => !isGeneric(t)));
   return docs
-    .map((d, i) => ({ id: d.id, score: cosine(q, vectorize(docTokens[i], idf)) }))
+    .map((d, i) => ({
+      id: d.id,
+      score: cosine(q, vectorize(docTokens[i], idf)),
+      // how many meaningful words (not "broken", "issue", "weird"…) the two texts really share, typos and synonyms allowed for
+      shared: new Set(docUniFixed[i].filter((t) => qWords.has(t))).size,
+    }))
     .sort((a, b) => b.score - a.score);
 }

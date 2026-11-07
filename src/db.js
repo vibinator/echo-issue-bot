@@ -133,6 +133,8 @@ addColumn('settings', 'article_role_id', 'TEXT');    // can manage knowledge art
 addColumn('settings', 'panel_channel_id', 'TEXT');   // the one public control-panel message
 addColumn('settings', 'panel_message_id', 'TEXT');
 addColumn('settings', 'auto_merge', 'INTEGER NOT NULL DEFAULT 0'); // 1 = merge near-identical open issues automatically
+addColumn('settings', 'last_nudge', 'INTEGER');          // when owners were last sent their weekly "gone quiet" reminder
+addColumn('settings', 'seeded_articles', 'TEXT');      // JSON list of starter articles already added to this server (so a deleted one never comes back)
 addColumn('articles', 'draft', 'INTEGER NOT NULL DEFAULT 0');       // 1 = proposed from a resolved issue, waiting for a person to publish it
 addColumn('articles', 'source_issue_id', 'INTEGER');                 // the issue a draft was proposed from (one draft per issue)
 addColumn('evidence', 'ocr_text', 'TEXT');                           // text read from a screenshot ('' = looked, nothing found; NULL = not looked at yet)
@@ -140,7 +142,7 @@ addColumn('issues', 'thread_archived', 'INTEGER NOT NULL DEFAULT 0'); // 1 = the
 addColumn('settings', 'retention_days', 'INTEGER NOT NULL DEFAULT 0'); // 0 = keep closed issues until deleted by hand
 
 const now = () => Date.now();
-const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'article_role_id', 'panel_channel_id', 'panel_message_id', 'auto_merge'];
+const SETTING_KEYS = ['dev_channel_id', 'changelog_channel_id', 'threshold', 'stale_days', 'cooldown_sec', 'last_digest', 'reporter_role_id', 'status_role_id', 'board_channel_id', 'board_message_id', 'retention_days', 'article_role_id', 'panel_channel_id', 'panel_message_id', 'auto_merge', 'last_nudge', 'seeded_articles'];
 
 /** What is stored for a server – shown after /setup so you can see nothing was lost. */
 export const summary = (guild) => ({

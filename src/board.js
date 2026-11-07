@@ -30,6 +30,52 @@ export function movePayload(issue) {
   };
 }
 
+/** Step 3 of moving a card: say exactly what will happen and ask for a yes (a stray click can message real players). */
+export function confirmMovePayload(issue, status, notifies) {
+  const to = STATUSES[status];
+  const from = STATUSES[issue.status];
+  return {
+    content: `**Move #${issue.id} – ${trunc(issue.title.replace(/\s+/g, ' '), 80)}?**\n${from?.emoji ?? ''} **${from?.label ?? issue.status}**  ➜  ${to.emoji} **${to.label}**${notifies ? '\n📨 Everyone who reported or follows this issue will get a message about it.' : ''}`,
+    embeds: [],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`bmv:${issue.id}:${status}`).setLabel('Yes, move it').setEmoji('✅').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`bmvback:${issue.id}`).setLabel('Pick another section').setEmoji('↩️').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('dev:board').setLabel('Cancel').setEmoji('✖️').setStyle(ButtonStyle.Secondary),
+    )],
+  };
+}
+
+const SECTION_PAGE = 10;
+/** Every card in one section, paged (the board itself only shows the first few of each). */
+export function sectionPayload(guildId, status, page = 0) {
+  const cfg = { stale_days: 7, ...settings.get(guildId) };
+  const staleBefore = Date.now() - cfg.stale_days * DAY;
+  const st = STATUSES[status];
+  const items = issues.list(guildId).filter((i) => i.status === status && onBoard(i));
+  const pages = Math.max(1, Math.ceil(items.length / SECTION_PAGE));
+  page = Math.min(Math.max(0, page), pages - 1);
+  const shown = items.slice(page * SECTION_PAGE, (page + 1) * SECTION_PAGE);
+  const embed = new EmbedBuilder().setColor(0x3498db).setTitle(`${st.emoji} ${st.label} (${items.length})`)
+    .setDescription(shown.map((i) => card(i, staleBefore)).join('\n\n') || '_empty_')
+    .setFooter({ text: pages > 1 ? `Page ${page + 1} of ${pages} · most important first` : 'most important first' });
+  const b = (id, label, emoji) => new ButtonBuilder().setCustomId(id).setLabel(label).setEmoji(emoji).setStyle(ButtonStyle.Secondary);
+  const components = [];
+  if (shown.length) {
+    components.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('bfb').setPlaceholder('Open a card…').addOptions(shown.map((it) => ({
+      label: trunc(`#${it.id} ${it.title}`, 100),
+      description: trunc(`${(PRIORITIES[it.priority] ?? PRIORITIES.normal).label} · ${it.category} · ${it.reporters} players${it.owner_id ? ' · assigned' : ''}`, 100),
+      emoji: st.emoji,
+      value: String(it.id),
+    })))));
+  }
+  components.push(new ActionRowBuilder().addComponents(
+    b(`bsp:${status}:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0),
+    b(`bsp:${status}:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1),
+    b('dev:board', 'Back to board', '⬅️'),
+  ));
+  return { content: '', embeds: [embed], components };
+}
+
 const LINE = '─'.repeat(30); // divider drawn under a section
 function column(list, status, staleBefore, last = false) {
   const st = STATUSES[status];
@@ -71,6 +117,9 @@ export function boardPayload(guildId, { owner, title } = {}) {
         value: String(it.id),
       })))));
   }
+  components.push(new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder().setCustomId('bsec').setPlaceholder('See everything in a section…').addOptions(
+      [...ACTIVE, ...DONE].map((v) => ({ label: STATUSES[v].label, emoji: STATUSES[v].emoji, value: v, description: `${list.filter((i) => i.status === v && onBoard(i)).length} cards` })))));
   const b = (id, label, emoji) => new ButtonBuilder().setCustomId(id).setLabel(label).setEmoji(emoji).setStyle(ButtonStyle.Secondary);
   // On a personal ("My cards") view, Refresh keeps showing the personal view.
   components.push(new ActionRowBuilder().addComponents(...(owner
