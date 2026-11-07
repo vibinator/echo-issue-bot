@@ -112,6 +112,7 @@ addColumn('issues', 'owner_id', 'TEXT');
 addColumn('issues', 'fixed_version', 'TEXT');
 addColumn('issues', 'fixed_at', 'INTEGER');
 addColumn('issues', 'thread_id', 'TEXT');
+addColumn('issues', 'talk_thread_id', 'TEXT'); // private developer<->players thread in the developer hub channel
 addColumn('issues', 'kind', "TEXT NOT NULL DEFAULT 'bug'"); // 'install' (install issue) | 'bug' (bug in game)
 addColumn('reports', 'version', 'TEXT');
 addColumn('settings', 'dev_channel_id', 'TEXT');
@@ -228,6 +229,7 @@ export const issues = {
   /** Fixed issues quiet since `ts` whose thread the bot has not archived yet. */
   fixedToArchive: (guild, ts) => db.prepare("SELECT * FROM issues WHERE guild_id = ? AND status = 'fixed' AND thread_id IS NOT NULL AND thread_archived = 0 AND updated_at < ?").all(guild, ts),
   setThreadArchived: (id, v) => db.prepare('UPDATE issues SET thread_archived = ? WHERE id = ?').run(v ? 1 : 0, id),
+  setTalkThread: (id, thread) => db.prepare('UPDATE issues SET talk_thread_id = ? WHERE id = ?').run(thread, id),
   setThread: (id, thread) => db.prepare('UPDATE issues SET thread_id = ? WHERE id = ?').run(thread, id),
   touch: (id) => db.prepare('UPDATE issues SET updated_at = ? WHERE id = ?').run(now(), id),
   delete: (id) => {

@@ -15,10 +15,10 @@ import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored, storedSize } from './evidenceStore.js';
 import {
   attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, postChangelog, removeMessage, retireMessage,
-  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay,
+  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, joinTalkThread, talkSay,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
-import { boardPayload, confirmMovePayload, dropBoard, movePayload, sectionPayload } from './board.js';
+import { boardPayload, confirmMovePayload, movePayload, postBoard, sectionPayload } from './board.js';
 import { buildDigest, postDigest, runDigests, runNudges } from './digest.js';
 import { answerTitle, isWeak, weakAnswers } from './health.js';
 import { seedArticles } from './seed.js';
@@ -563,14 +563,14 @@ function settingsPayload(guildId) {
       `• Who can send reports: ${reporterRole(guildId) ? `<@&${reporterRole(guildId)}>` : '_everyone_'} _(change with \`/setup\`)_ · developers can change an issue's status`,
       `• Who can edit knowledge articles: developers${articleRole(guildId) ? ` and <@&${articleRole(guildId)}>` : ''} _(editor role: \`/setup article_role:\`)_`,
       `• Closed issues are ${c.retention_days ? `deleted after **${c.retention_days} days** without activity` : '**kept** until deleted by hand'} _(change with \`/setup retention_days:\`)_`,
-      `• Weekly digest and new-issue alerts go to: ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'} · fixed-issue announcements go to: ${c.changelog_channel_id ? `<#${c.changelog_channel_id}>` : '_not set_'}`,
+      `• Developer hub (live board, alerts, weekly digest, private threads with players – keep it developers-only): ${c.dev_channel_id ? `<#${c.dev_channel_id}>` : '_not set_'} · fixed-issue announcements go to: ${c.changelog_channel_id ? `<#${c.changelog_channel_id}>` : '_not set_'}`,
     ].join('\n'),
     embeds: [],
     components: [
       pick('set_thr', 'How alike must reports be to group together?', [['Strict – fewer groups', 0.35, 'Keeps more reports as separate issues'], ['Balanced', 0.25, 'Recommended'], ['Loose – more groups', 0.18, 'Groups similar reports more eagerly']], c.threshold),
       pick('set_stale', 'Flag issues that go quiet after…', [['3 days', 3], ['7 days', 7], ['14 days', 14], ['30 days', 30]], c.stale_days),
       pick('set_cd', 'Pause between one player\'s reports', [['No pause', 0], ['30 seconds', 30], ['1 minute', 60], ['5 minutes', 300]], c.cooldown_sec),
-      chanMenu('set_devch', 'Where should the weekly digest and new-issue alerts go? (developers)', c.dev_channel_id),
+      chanMenu('set_devch', 'Developer hub: live board, alerts, digest, private threads (developers only)', c.dev_channel_id),
       chanMenu('set_logch', 'Where should "fixed" announcements go? (public)', c.changelog_channel_id),
     ],
   };
@@ -640,6 +640,7 @@ async function applyStatus(i, issue, status,{ version, note } = {}) {
     const ver = status === 'fixed' && fresh.fixed_version ? ` (fixed in \`${fresh.fixed_version}\`)` : '';
     events.add(issue.id, 'status', i.user.id, `${STATUSES[old]?.label} → ${s.label}${ver}`);
     await threadSay(client, fresh, `${s.emoji} <@${i.user.id}> set the status to **${s.label}**${ver}.`);
+    await talkSay(client, fresh, `${s.emoji} Status is now **${s.label}**${ver}.`);
     if (STATUS_DM[status]) {
       const update = status === 'fixed' && fresh.fixed_version ? `\nUpdate to version \`${fresh.fixed_version}\` (or newer) to get the fix.` : '';
       const devNote = fresh.dev_note ? `\n> ${fresh.dev_note}` : '';
@@ -684,6 +685,7 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
     await threadSay(client, res.issue, `⚠️ Reopened by a new report${res.fixedVersion ? ` (it was fixed in \`${res.fixedVersion}\`${version ? `; reporter is on \`${version}\`` : ''})` : ''}.`);
   }
   const fresh = issues.get(res.issue.id);
+  if (!res.created) joinTalkThread(client, fresh, i.user.id).catch(() => {});
   if (res.created) alertDevs(fresh, 'new'); else if (res.reopened) alertDevs(fresh, 'reopened');
   refreshPanel(i.guildId);
   const where = fresh.channel_id ? ` You can follow the discussion in <#${fresh.channel_id}>.` : '';
@@ -1044,7 +1046,6 @@ async function handleInteraction(i) {
       if (prev?.panel_message_id && prev.panel_channel_id) {
         try { await (await (await client.channels.fetch(prev.panel_channel_id)).messages.fetch(prev.panel_message_id)).delete(); } catch { /* gone */ }
       }
-      await dropBoard(client, i.guildId);
       settings.update(i.guildId, { panel_channel_id: target.id, panel_message_id: panelMsg.id });
       const rr = reporterRole(i.guildId);
       // Check up front what the bot can't do in the issues channel and say why it matters, instead of failing later.
@@ -1232,14 +1233,15 @@ async function handleInteraction(i) {
       return issue && i.reply({ ...renderIssue(issue, { viewer: viewerOf(i) }), flags: EPH });
     }
     if (i.isStringSelectMenu() && id === 'bfb') { // a card picked on the developer board
+      if (!isDev(i)) return devOnly(i, 'use the board');
       const issue = await loadIssue(i, Number(i.values[0]));
-      return issue && i.update(renderIssue(issue, { back: 'dev:board', viewer: viewerOf(i) }));
+      return issue && show(i, renderIssue(issue, { back: 'dev:board', viewer: viewerOf(i) }));
     }
 
     if (i.isStringSelectMenu() && id === 'bfm') { // "Move a card": step 1, a card was picked
       if (!isDev(i)) return devOnly(i, 'move cards');
       const issue = await loadIssue(i, Number(i.values[0]));
-      return issue && i.update(movePayload(issue));
+      return issue && show(i, movePayload(issue));
     }
     if (i.isStringSelectMenu() && id.startsWith('bfd:')) { // step 2, a destination section was picked
       if (!isDev(i)) return devOnly(i, 'move cards');
@@ -1267,7 +1269,7 @@ async function handleInteraction(i) {
     }
     if (i.isStringSelectMenu() && id === 'bsec') { // "See everything in a section"
       if (!isDev(i)) return devOnly(i, 'use the board');
-      return i.update(sectionPayload(i.guildId, STATUSES[i.values[0]] ? i.values[0] : 'new'));
+      return show(i, sectionPayload(i.guildId, STATUSES[i.values[0]] ? i.values[0] : 'new'));
     }
     if (i.isButton() && id.startsWith('bsp:')) {
       if (!isDev(i)) return devOnly(i, 'use the board');
@@ -1320,6 +1322,33 @@ async function handleInteraction(i) {
       await syncMessage(client, issues.get(issue.id), trackerChannel(i));
       if (!mine) await threadSay(client, issue, `🙌 <@${i.user.id}> took this issue${issue.owner_id ? ` (from <@${issue.owner_id}>)` : ''}.`);
       return i.editReply(card(i, issues.get(issue.id)));
+    }
+
+    // ----- private thread with the players of an issue (developer hub) -----
+    if (i.isButton() && (id.startsWith('talk:') || id.startsWith('talkok:'))) {
+      if (!isDev(i)) return devOnly(i, 'start a private thread');
+      const issue = await loadIssue(i, idOf(i));
+      if (!issue) return;
+      const hubId = cfgOf(i.guildId).board_channel_id;
+      if (!hubId) return i.reply({ content: 'Pick a **Developer hub** channel first: Developer → ⚙️ Settings.', flags: EPH });
+      const people = new Set(reports.forIssue(issue.id).map((r) => r.user_id).filter((u) => u && u !== '0'));
+      if (id.startsWith('talk:') && !issue.talk_thread_id) {
+        return i.reply({
+          content: `🧵 **Talk to the players of #${issue.id}?**
+This creates a private thread in <#${hubId}> and **adds ${people.size} player${people.size === 1 ? '' : 's'}** who reported it (they get a notification). Everyone in the thread sees each other's names and messages. Players who report it later are added automatically.`,
+          components: [row(btn(`talkok:${issue.id}`, 'Yes, create the thread', '🧵', ButtonStyle.Success))], flags: EPH,
+        });
+      }
+      await i.deferReply({ flags: EPH });
+      try {
+        const r = await openTalkThread(client, issue, i.user.id);
+        events.add(issue.id, 'thread', i.user.id, r.existing ? 'opened the private thread' : `started a private thread with ${r.invited} player${r.invited === 1 ? '' : 's'}`);
+        await syncMessage(client, issues.get(issue.id), trackerChannel(i));
+        return i.editReply({ content: `🧵 ${r.existing ? 'Here is the thread' : `Created the thread with **${r.invited}** player${r.invited === 1 ? '' : 's'}`}: <#${r.thread.id}>${r.failed.length ? `
+⚠️ Couldn't add ${r.failed.length} (they may have left the server or can't see the channel).` : ''}` });
+      } catch (e) {
+        return i.editReply({ content: `⚠️ I couldn't create the thread: ${e.message === 'no-hub' ? 'no Developer hub channel is set' : errorMessage(e)}. The bot needs Create Private Threads, Send Messages in Threads and Manage Threads in <#${hubId}>.` });
+      }
     }
 
     // ----- issue message: I have this too -----
@@ -1794,6 +1823,14 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
     if ((i.isStringSelectMenu() || i.isChannelSelectMenu()) && id.startsWith('set_')) {
       if (!isDev(i)) return devOnly(i, 'change settings');
       const v = i.values[0];
+      if (id === 'set_devch') { // the hub: alerts + digest go here, and the live board is posted here (replacing the previous one)
+        await i.deferUpdate();
+        settings.update(i.guildId, { dev_channel_id: v, last_digest: Date.now() });
+        try { await postBoard(client, i.guildId, await client.channels.fetch(v)); } catch (e) {
+          await i.followUp({ content: `⚠️ I couldn't post the board in <#${v}>: ${errorMessage(e)}. Give the bot View Channel, Send Messages, Embed Links, Create Private Threads and Send Messages in Threads there.`, flags: EPH });
+        }
+        return i.editReply(settingsPayload(i.guildId));
+      }
       const patch = {
         set_thr: { threshold: Number(v) },
         set_stale: { stale_days: Number(v) },

@@ -510,8 +510,8 @@ assert.deepEqual(unarchived, [false], 'an archived thread is reopened so the car
 const withBack = renderIssue(issues.get(T.issue.id), { back: 'browse' });
 assert.equal(withBack.components.length, 5);
 const lastRowIds = (p) => p.components[4].toJSON().components.map((c) => c.custom_id);
-assert.deepEqual(lastRowIds(withBack), [`lkart:${T.issue.id}`, `evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
-assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`lkart:${T.issue.id}`, `evall:${T.issue.id}`], 'no Back button on the public card');
+assert.deepEqual(lastRowIds(withBack), [`lkart:${T.issue.id}`, `talk:${T.issue.id}`, `evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
+assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`lkart:${T.issue.id}`, `talk:${T.issue.id}`, `evall:${T.issue.id}`], 'no Back button on the public card');
 // controls the viewer can't use are left out
 const idsOf = (p) => p.components.flatMap((r) => r.toJSON().components.map((c) => c.custom_id.split(':')[0]));
 const asPlayer = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'someone' } }));

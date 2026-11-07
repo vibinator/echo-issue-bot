@@ -336,6 +336,27 @@ console.log('8. developer workflow');
   r = await choose(dev, settingsScreen, 'set_logch', ['changelog'], 'channelselect');
   check(db.settings.get('G').changelog_channel_id === 'changelog', 'the changelog channel can be chosen from the settings menu');
   r = await choose(dev, settingsScreen, 'set_devch', ['digest'], 'channelselect');
+
+  // developer hub: a live board message plus private threads with the players of an issue
+  const hubCh = digestCh;
+  check(db.settings.get('G').board_channel_id === 'digest' && hubCh.sent.filter((m) => m.payload.embeds?.length === 2).length === 1, 'choosing a hub channel posts the live board there');
+  const boardMsg = hubCh.sent.find((m) => m.payload.embeds?.length === 2);
+  const liveBoard = { payload: plain(boardMsg.payload), ephemeral: false, id: boardMsg.id };
+  r = await choose(dev, liveBoard, 'bfb', [String(aliceIssueId)]);
+  check(r.i.responses[0].type === 'reply', 'opening a card from the live board answers privately and leaves the board message alone');
+  r = await choose(alice, liveBoard, 'bfb', [String(aliceIssueId)]);
+  check(has(r.out.payload, /developers only/), 'a player cannot use the live board');
+  r = await press(alice, cardScreen(), `talk:${aliceIssueId}`);
+  check(has(r.out.payload, /developers only/) && !db.issues.get(aliceIssueId).talk_thread_id, 'a player cannot start a private thread');
+  r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
+  check(has(r.out.payload, /adds \d+ player/) && !db.issues.get(aliceIssueId).talk_thread_id, 'starting a private thread first asks for confirmation');
+  r = await press(dev, cardScreen(), `talkok:${aliceIssueId}`);
+  const talkId = db.issues.get(aliceIssueId).talk_thread_id;
+  const talk = hubCh.threadsList.find((t) => t.id === talkId);
+  check(talk && talk.memberIds.has('alice') && talk.memberIds.has('dev') && has(r.out.payload, new RegExp(talkId)), 'the private thread is created in the hub with the reporter and the developer');
+  check(/see each other/.test(JSON.stringify(plain(talk.sent[0].payload))), 'the thread warns that members see each other');
+  r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
+  check(hubCh.threadsList.length === 1 && has(r.out.payload, new RegExp(talkId)), 'pressing it again opens the same thread instead of making another');
   r = await choose(dev, settingsScreen, 'set_thr', ['0.35']);
   check(db.settings.get('G').threshold === 0.35, 'matching strictness can be changed'); await choose(dev, settingsScreen, 'set_thr', ['0.25']);
 
@@ -495,7 +516,7 @@ console.log('10. dev tools');
   r = await press(dev, r.screen, 'board:mine');
   check(has(r.out.payload, /Your cards/), '"Only mine" filters the board');
   r = await press(dev, panelScreen, 'dev:digest');
-  check(has(r.out.payload, /digest was posted/) && digestCh.sent.filter((m) => !/proposed|New issue|Reopened/.test(JSON.stringify(plain(m.payload)))).length === 1, 'the digest is posted to the digest channel');
+  check(has(r.out.payload, /digest was posted/) && digestCh.sent.filter((m) => !/proposed|New issue|Reopened|Developer board/.test(JSON.stringify(plain(m.payload)))).length === 1, 'the digest is posted to the digest channel');
   r = await press(dev, panelScreen, 'dev:export');
   check(r.i.responses.some((x) => x.type === 'reply') && has(r.out.payload, /user IDs/), 'the export warns it contains user IDs');
   r = await press(dev, panelScreen, 'dev:backup');
