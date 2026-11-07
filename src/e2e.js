@@ -1,5 +1,6 @@
 // End-to-end test: drives the bot's REAL handlers through a simulated Discord (see sim.js) – journeys for each kind of
 // user, then a crawler that presses every button and menu option it can reach. Run with: npm run e2e
+process.env.EMBEDDINGS = 'off'; // the e2e run never downloads or runs the meaning model
 process.env.DB_PATH = ':memory:';
 const { mkdtempSync, existsSync } = await import('node:fs');
 const { tmpdir } = await import('node:os');

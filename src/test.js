@@ -1,4 +1,5 @@
 // Offline sanity test for grouping logic (no Discord needed): npm test
+process.env.EMBEDDINGS = 'off'; // tests never download or run the meaning model
 process.env.DB_PATH = ':memory:';
 const { mkdtempSync } = await import('node:fs');
 const { tmpdir } = await import('node:os');
@@ -555,6 +556,25 @@ assert.ok(['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'lkart
   issues.setArticle(other.issue.id, art.id);
   A.delete(art.id);
   assert.equal(issues.get(other.issue.id).article_id, null, 'deleting an article unlinks it');
+}
+
+// ---- meaning-based matching merges with word matching (fake embedder: no model needed) ----
+{
+  const { suggest: sg } = await import('./kb.js');
+  const { setEmbedder, semanticScores } = await import('./embed.js');
+  const arts = [{ id: 901, title: 'Controllers not tracking', symptoms: 'hands not moving', body: 'x' }, { id: 902, title: 'Mic broken', symptoms: 'nobody hears me', body: 'x' }];
+  const q = 'zzqx wibble flarp';
+  assert.equal(sg(q, arts, 3).length, 0, 'no shared words and no meaning scores: nothing suggested');
+  // a fake model: texts mentioning "wibble" or "hands" point one way, "hear" the other
+  setEmbedder(async (texts) => texts.map((t) => (/wibble|hands|tracking/i.test(t) ? [1, 0] : /hear|mic/i.test(t) ? [0, 1] : [0.7071, 0.7071])));
+  const sem = await semanticScores(q, arts);
+  assert.ok(sem.get('a:901') > 0.99 && sem.get('a:902') < 0.01, 'the fake model scores by meaning');
+  const hit = sg(q, arts, 3, null, new Map(), sem);
+  assert.deepEqual(hit.filter((x) => x.custom).map((x) => x.id), ['a:901'], 'an answer close in meaning is suggested even with no shared words');
+  assert.ok(hit[0].score <= 1, 'scores stay within 100%');
+  setEmbedder(async () => { throw new Error('boom'); });
+  assert.equal((await semanticScores(q, arts)).size, 0, 'a failing model quietly returns nothing');
+  setEmbedder(null);
 }
 
 // ---- recovery: re-run /setup keeps settings; a re-created bot reuses existing threads ----

@@ -380,6 +380,9 @@ export const ARTICLE_THRESHOLD = 0.15; // developer-written articles
 export const MIN_SHARED_WORDS = 1;
 // A single shared word is the weakest kind of match (could be a coincidence like "discord" or "account"), so it has to score higher.
 export const ONE_WORD_THRESHOLD = 0.22;
+// Meaning-match cut-offs (cosine similarity from embed.js).
+export const SEM_MIN = Number(process.env.EMBED_MIN) || 0.42;
+export const SEM_MIN_BUILTIN = SEM_MIN + 0.05; // built-in answers are keyword lists, not sentences: a little stricter
 
 /**
  * Suggested answers for a report, best first (at most `max`).
@@ -401,7 +404,9 @@ const platformsIn = (t) => new Set(Object.entries(PLATFORM_WORDS).filter(([, re]
  * `boost`: optional Map(id -> multiplier) learned from how players reacted (see index.js): answers that often fix the
  * problem rank a little higher, ones players keep calling "not my problem" a little lower.
  */
-export function suggest(text, custom = [], max = 3, kind = null, boost = new Map()) {
+// `semantic`: optional Map(id -> cosine) from embed.js. An answer close in MEANING counts as a match even when it shares
+// no words with the text; word matching still decides everything else, and the two scores are merged.
+export function suggest(text, custom = [], max = 3, kind = null, boost = new Map(), semantic = new Map()) {
   const lower = text.toLowerCase();
   const asked = platformsIn(text);
   const pool = [
@@ -427,13 +432,21 @@ export function suggest(text, custom = [], max = 3, kind = null, boost = new Map
     }
     return Math.min(1, s);
   };
+  const meaning = (p) => {
+    const cos = semantic.get(p.id);
+    const min = p.custom ? SEM_MIN : SEM_MIN_BUILTIN;
+    return cos !== undefined && cos >= min ? 0.55 + 0.45 * Math.min(1, (cos - min) / 0.35) + (p.custom ? 0.04 : 0) : 0; // 0 = no meaning match; the server's own articles get a small edge over built-in answers
+  };
   return pool
-    .map((p) => ({ p, score: adjust(p, scores.get(p.id) ?? 0) }))
-    .filter(({ p, score }) => {
-      if (p.exact) return true;
+    .map((p) => {
+      const word = adjust(p, scores.get(p.id) ?? 0);
       const n = shared.get(p.id) ?? 0;
-      return n >= MIN_SHARED_WORDS && score >= (n === 1 ? Math.max(p.threshold, ONE_WORD_THRESHOLD) : p.threshold);
+      const wordOk = p.exact || (n >= MIN_SHARED_WORDS && word >= (n === 1 ? Math.max(p.threshold, ONE_WORD_THRESHOLD) : p.threshold));
+      const sem = meaning(p);
+      const score = Math.min(1, wordOk && sem ? Math.max(word, sem) + 0.1 : Math.max(wordOk ? word : 0, sem)); // both agree: more sure
+      return { p, score, ok: wordOk || sem > 0 };
     })
+    .filter(({ ok }) => ok)
     .sort((a, b) => b.score - a.score)
     .slice(0, max)
     .map(({ p, score }) => ({ id: p.id, title: p.title, fix: p.fix, source: p.source, score, custom: p.custom }));

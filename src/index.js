@@ -3,6 +3,7 @@ import {
   EmbedBuilder, FileUploadBuilder, GatewayIntentBits, LabelBuilder, MessageFlags, ModalBuilder, PermissionFlagsBits, SlashCommandBuilder,
   StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
 } from 'discord.js';
+import { semanticScores, warmEmbeddings } from './embed.js';
 import { articles, restoreArticles, db, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, seen, settings, summary, watchers } from './db.js';
 import { erasePayload, privacyPayload, termsPayload } from './legal.js';
 import { CATEGORIES } from './categories.js';
@@ -376,9 +377,10 @@ function kbBoosts(guildId) {
 }
 
 /** The list for this player, ranked by what they described (if anything). */
-const faqFor = (i, kind, page = 0) => {
+const faqFor = async (i, kind, page = 0) => {
   const text = getDraft(i.user.id);
-  const matches = text ? suggest(text, articles.list(i.guildId, { enabledOnly: true }), 25, kind, kbBoosts(i.guildId)) : [];
+  const list = articles.list(i.guildId, { enabledOnly: true });
+  const matches = text ? suggest(text, list, 25, kind, kbBoosts(i.guildId), await semanticScores(text, list)) : [];
   return faqPayload(i.guildId, kind, matches, page);
 };
 
@@ -455,7 +457,9 @@ async function scanScreenshots(i, { reportId, text, kind }) {
   try {
     const found = await readScreenshots(reportId);
     if (!found) return;
-    const matches = suggest(`${text}\n${found.slice(0, 800)}`, articles.list(i.guildId, { enabledOnly: true }), 3, kind, kbBoosts(i.guildId));
+    const list = articles.list(i.guildId, { enabledOnly: true });
+    const both = `${text}\n${found.slice(0, 800)}`;
+    const matches = suggest(both, list, 3, kind, kbBoosts(i.guildId), await semanticScores(both, list));
     if (!matches.length) return;
     for (const m of matches) bumpStat(i, m.id, 'shown');
     await i.followUp({
@@ -654,14 +658,14 @@ async function applyStatus(i, issue, status,{ version, note } = {}) {
  * After a report is filed: the knowledge article a developer linked to its issue, plus the closest fuzzy matches of what
  * the player wrote, as embeds to show right under the confirmation. Returns [] when nothing fits.
  */
-function articleHints(i, issue, text, kind) {
+async function articleHints(i, issue, text, kind) {
   const pool = articles.list(i.guildId, { enabledOnly: true }).filter((a) => !a.draft);
   const found = [];
   const linked = pool.find((a) => a.id === issue.article_id);
   if (linked) found.push({ id: `a:${linked.id}`, title: linked.title, fix: linked.link ? `${linked.body}
 
 🔗 ${linked.link}` : linked.body, source: 'Linked to this issue by the developers' });
-  for (const m of suggest(text, pool, 3, kind, kbBoosts(i.guildId))) if (m.custom && !found.some((f) => f.id === m.id)) found.push(m);
+  for (const m of suggest(text, pool, 3, kind, kbBoosts(i.guildId), await semanticScores(text, pool))) if (m.custom && !found.some((f) => f.id === m.id)) found.push(m);
   const top = found.slice(0, 2);
   for (const m of top) bumpStat(i, m.id, 'shown');
   return top.map((m) => new EmbedBuilder().setColor(0xfee75c).setTitle(`📚 Might help while you wait: ${trunc(m.title, 200)}`).setDescription(trunc(m.fix, 4000)).setFooter({ text: `Source: ${m.source}` }));
@@ -685,7 +689,7 @@ async function submitReport(i, { text, platform, version, evidence, kind = 'bug'
   const where = fresh.channel_id ? ` You can follow the discussion in <#${fresh.channel_id}>.` : '';
   const evidenceLine = (saved ? `\n📎 Saved ${countLine(saved)} with your report – only you and the developers can see them.` : '') + failNote(ev);
   const next = '\nYou\'ll get a message when its status changes. See everything under **My issues**.';
-  const hints = articleHints(i, fresh, text, kind);
+  const hints = await articleHints(i, fresh, text, kind);
 
   if (res.created) {
     return {
@@ -1093,18 +1097,18 @@ async function handleInteraction(i) {
     if (i.isModalSubmit() && (id === 'faqq:install' || id === 'faqq:bug')) {
       if (!canReport(i)) return noReportAccess(i);
       setDraft(i.user.id, i.fields.getTextInputValue('text').trim());
-      return show(i, faqFor(i, id.slice(5)));
+      return show(i, await faqFor(i, id.slice(5)));
     }
     if (i.isStringSelectMenu() && id.startsWith('faq:')) {
       const kind = id.slice(4);
       const entry = faqEntries(kind, articles.list(i.guildId, { enabledOnly: true })).find((e) => e.id === i.values[0]);
-      if (!entry) return i.update(faqFor(i, kind));
+      if (!entry) return i.update(await faqFor(i, kind));
       bumpStat(i, entry.id, 'shown');
       return i.update(faqAnswerPayload(entry, kind));
     }
     if (i.isButton() && id.startsWith('faqp:')) {
       const [, kind, page] = id.split(':');
-      return i.update(faqFor(i, kind === 'install' ? 'install' : 'bug', Number(page) || 0));
+      return i.update(await faqFor(i, kind === 'install' ? 'install' : 'bug', Number(page) || 0));
     }
     if (i.isButton() && id.startsWith('faqok:')) {
       const [, , ...rest] = id.split(':');
@@ -1114,7 +1118,7 @@ async function handleInteraction(i) {
     if (i.isButton() && id.startsWith('faqno:')) {
       const [, kind, ...rest] = id.split(':');
       bumpStat(i, rest.join(':'), 'denied');
-      return i.update(faqFor(i, kind));
+      return i.update(await faqFor(i, kind));
     }
     // "None of these" / "Still happening": open the form.
     if (i.isButton() && id.startsWith('rform:')) {
@@ -1625,7 +1629,7 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
         const pool = articles.list(i.guildId, { enabledOnly: true }).filter((a) => !a.draft);
         if (!pool.length) return i.reply({ content: 'There are no published knowledge articles yet. Use **Make knowledge article** to write one.', flags: EPH });
         const text = [issue.title, ...reports.forIssue(issue.id).slice(0, 3).map((r) => r.text)].join('\n');
-        const score = new Map(suggest(text, pool, 25).filter((s) => s.custom).map((s) => [s.id.replace('a:', ''), s.score]));
+        const score = new Map(suggest(text, pool, 25, null, new Map(), await semanticScores(text, pool)).filter((s) => s.custom).map((s) => [s.id.replace('a:', ''), s.score]));
         const ranked = [...pool].sort((a, b) => (score.get(`${b.id}`) ?? 0) - (score.get(`${a.id}`) ?? 0)).slice(0, 24);
         const options = ranked.map((a) => ({ label: trunc(a.title, 100), description: trunc(`${score.has(`${a.id}`) ? '⭐ Looks related · ' : ''}${a.body.replace(/\s+/g, ' ')}`, 100), value: String(a.id), default: a.id === issue.article_id }));
         if (issue.article_id) options.push({ label: 'Remove the linked article', value: 'none', emoji: '🚫' });
@@ -1678,7 +1682,9 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
         return own(a) ? i.update(articleView(a, canDeleteArticle(i, a))) : i.update({ content: 'That article no longer exists.', embeds: [], components: [] });
       }
       if (i.isModalSubmit() && id === 'art:testm') {
-        const found = suggest(i.fields.getTextInputValue('sample'), articles.list(i.guildId, { enabledOnly: true }), 3, null, kbBoosts(i.guildId));
+        const sample = i.fields.getTextInputValue('sample');
+        const list = articles.list(i.guildId, { enabledOnly: true });
+        const found = suggest(sample, list, 3, null, kbBoosts(i.guildId), await semanticScores(sample, list));
         return show(i, {
           content: found.length
             ? `**A player who wrote that would see these first:**\n${found.map((s, n) => `${n + 1}. ${s.custom ? '📚' : '💡'} **${trunc(s.title, 80)}** — ${Math.round(s.score * 100)}% match`).join('\n')}`
@@ -1840,6 +1846,7 @@ client.once('clientReady', async () => {
   } catch (e) {
     console.error(`Logged in as ${client.user.tag}, but registering the slash commands failed: ${e.message}. The bot keeps running; fix GUILD_ID / permissions and restart to register /setup.`);
   }
+  warmEmbeddings(); // load the meaning model in the background (the bot answers by words until it's ready)
   suggest('warm up the word cache so the first player is not slower than the rest', [], 1); // fills the matcher's caches
   for (const cfg of settings.all()) try { for (const t of issues.withText(cfg.guild_id)) suggest(t.text, [], 1); } catch { /* not critical */ }
 
