@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored, storedSize } from './evidenceStore.js';
 import {
   attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, removeMessage, retireMessage,
-  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkIntro, talkSay, talkReport, carryTalkOnMerge, processPrevious,
+  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, tidyHub, talkIntro, talkSay, talkReport, carryTalkOnMerge, processPrevious,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
 import { boardPayload, confirmMovePayload, movePayload, postBoard, sectionPayload } from './board.js';
@@ -1806,6 +1806,7 @@ _You can turn these messages off under **My issues**._`).catch(() => {});
         case 'dev:threadsok': { // step 2: do it
           await deferHidden(i);
           const r = await processPrevious(client, i.guildId);
+          await tidyHub(client, cfgOf(i.guildId).board_channel_id);
           return i.editReply({ content: `🧵 Done: **${r.threads}** thread${r.threads === 1 ? '' : 's'} created, history posted for **${r.histories}** issue${r.histories === 1 ? '' : 's'}.${r.failed ? `\n⚠️ ${r.failed} could not get a thread – check the bot has Create Public Threads, Send Messages in Threads and Manage Threads in <#${cfgOf(i.guildId).board_channel_id}>, then press the button again.` : ''}`, embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
         }
         case 'dev:export': {
@@ -1919,6 +1920,7 @@ client.once('clientReady', async () => {
       }
     } catch { /* no access */ }
   }
+  for (const cfg of settings.all()) if (cfg.board_channel_id) await tidyHub(client, cfg.board_channel_id); // keep only the live board in the hub channel
   warmEmbeddings(); // load the meaning model in the background (the bot answers by words until it's ready)
   suggest('warm up the word cache so the first player is not slower than the rest', [], 1); // fills the matcher's caches
   for (const cfg of settings.all()) try { for (const t of issues.withText(cfg.guild_id)) suggest(t.text, [], 1); } catch { /* not critical */ }
