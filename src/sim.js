@@ -93,7 +93,7 @@ export function interaction({ kind, customId, who, values, fields = {}, files = 
     components: rows.map((r) => ({ components: (r.components ?? []).map((c) => ({ customId: c.custom_id, type: c.type })) })),
   };
   const i = {
-    guildId, user: { id: who.id, username: who.username }, customId, values, channel, message,
+    guildId, user: { id: who.id, username: who.username }, customId, values, channel, channelId: channel?.id ?? null, message, // channelId: where it was pressed (a thread's id inside a thread)
     guild: { members: { fetchMe: async () => { tick(); return { id: 'bot' }; } } },
     // Discord hands roles over as a manager, or as a plain list of ids when the server isn't cached – support both
     member: { roles: who.rolesAsList ? [...who.roles] : { cache: { has: (rid) => who.roles.includes(rid) } } },

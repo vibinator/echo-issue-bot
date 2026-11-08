@@ -78,13 +78,13 @@ function nextScreen(prev, i, out) {
 }
 const fresh = (payload, ephemeral = true) => ({ payload, ephemeral, id: `S${++screenSeq}` });
 
-async function press(who, screen, customId) {
-  const i = interaction({ kind: 'button', customId, who, screen, channel: panelCh });
+async function press(who, screen, customId, channel = panelCh) {
+  const i = interaction({ kind: 'button', customId, who, screen, channel });
   const out = await run(i);
   return { i, out, screen: nextScreen(screen, i, out) };
 }
-async function choose(who, screen, customId, values, kind = 'select') {
-  const i = interaction({ kind, customId, who, values, screen, channel: panelCh });
+async function choose(who, screen, customId, values, kind = 'select', channel = panelCh) {
+  const i = interaction({ kind, customId, who, values, screen, channel });
   const out = await run(i);
   return { i, out, screen: nextScreen(screen, i, out) };
 }
@@ -437,6 +437,20 @@ console.log('8. developer workflow');
   const threadCount = hubCh.threadsList.length;
   r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
   check(hubCh.threadsList.length === threadCount && has(r.out.payload, new RegExp(talkId)), 'pressing it again opens the same thread instead of making another');
+  { // a status changed from INSIDE the thread redraws the thread's first message (the thread control), not an issue card
+    const intro = { payload: plain(talk.sent[0].payload), ephemeral: false, id: talk.sent[0].id };
+    const before = db.issues.get(aliceIssueId).status;
+    const target = before === 'seen' ? 'in_progress' : 'seen';
+    const st = await press(dev, intro, `stbtn:${aliceIssueId}:${target}`, talk);
+    check(db.issues.get(aliceIssueId).status === target && st.i.responses[0].type === 'deferUpdate', 'a status button in the thread changes the status (answering first)');
+    check(st.out.type === 'editReply' && /^🧵 \*\*#/.test(st.out.payload.content ?? '') && !st.out.payload.embeds?.length && buttonsOf(st.out.payload).some((c) => c.custom_id === `stbtn:${aliceIssueId}:${before}`), 'the thread control is redrawn, now offering the previous status again');
+    const sel = await choose(dev, intro, `status:${aliceIssueId}`, [before], 'select', talk);
+    check(db.issues.get(aliceIssueId).status === before && /^🧵 \*\*#/.test(sel.out.payload.content ?? '') && !sel.out.payload.embeds?.length, 'the status menu used inside the thread also redraws the thread control, not a card');
+    const fromCard = await choose(dev, cardScreen(), `status:${aliceIssueId}`, [target]);
+    check(fromCard.out.payload.embeds?.length === 1, 'the same menu on a card redraws the card');
+    await choose(dev, cardScreen(), `status:${aliceIssueId}`, [before]);
+    check(db.issues.get(aliceIssueId).status === before, 'status restored for the tests that follow');
+  }
   {
     const sv = await import('./service.js');
     const n = sv.fileReport({ guildId: 'G', userId: 'zed', threshold: 0.99, text: 'Totally unrelated: fireworks never stop playing in the lobby' });
@@ -539,8 +553,8 @@ console.log('9. knowledge articles');
 }
 
 // ================================================================= 9b. screenshot text → known fixes
-console.log('9b. screenshot text');
-{
+console.log(ocr.OCR_ENABLED ? '9b. screenshot text' : '9b. screenshot text – skipped (OCR=off)');
+if (ocr.OCR_ENABLED) { // with OCR switched off there is nothing to read, so the fixes below can never be suggested
   ocr.setRecognizer(async () => 'There was a problem parsing the package\n@@ ## ..\nINSTALL_FAILED_UPDATE_INCOMPATIBLE');
   db.settings.update('G', { cooldown_sec: 0 });
   const png = [{ name: 'quest error.png', url: 'https://cdn.discordapp.com/a/quest-error.png', size: 12, contentType: 'image/png' }];
