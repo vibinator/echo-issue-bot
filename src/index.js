@@ -1440,7 +1440,9 @@ async function handleInteraction(i) {
       if (!STATUSES[status] || status === issue.status) return i.deferUpdate();
       if (status === 'fixed') return i.showModal(fixedModal(issue));
       await i.deferUpdate();
-      return i.editReply(talkIntro(await applyStatus(i, issue, status)));
+      const fresh = await applyStatus(i, issue, status);
+      await i.editReply(talkIntro(fresh));
+      return syncTalkThread(client, fresh); // editing a message in an archived thread reopens it: archive it again if the issue is closed
     }
     if (i.isModalSubmit() && id.startsWith('fixed:')) {
       if (!isDev(i)) return devOnly(i, "change an issue's status");
@@ -1453,7 +1455,8 @@ async function handleInteraction(i) {
         note: i.fields.getTextInputValue('text').trim(),
       });
       const fromMove = fromCard && i.message?.components?.some((r) => r.components?.some((c) => c.customId?.startsWith('bfd:')));
-      return i.editReply(fromMove ? boardPayload(i.guildId) : fromCard && i.channelId === issue.talk_thread_id ? talkIntro(fresh) : fromCard ? card(i, fresh) : { content: `Marked #${issue.id} fixed.` });
+      await i.editReply(fromMove ? boardPayload(i.guildId) : fromCard && i.channelId === issue.talk_thread_id ? talkIntro(fresh) : fromCard ? card(i, fresh) : { content: `Marked #${issue.id} fixed.` });
+      return syncTalkThread(client, fresh); // editing a message in an archived thread reopens it
     }
     if (i.isStringSelectMenu() && id.startsWith('prio:')) {
       if (!isDev(i)) return devOnly(i, 'change priority');
