@@ -334,7 +334,7 @@ export function talkIntro(issue) {
     new ButtonBuilder().setCustomId(`stbtn:${issue.id}:${value}`).setLabel(st.label).setEmoji(st.emoji).setStyle(['fixed', 'cannot_reproduce', 'wont_fix'].includes(value) ? ButtonStyle.Secondary : ButtonStyle.Success));
   return {
     content: `🧵 **#${issue.id} – ${trunc(issue.title, 150)}**
-Status: **${STATUSES[issue.status]?.emoji ?? ''} ${STATUSES[issue.status]?.label ?? issue.status}**. Use the buttons to move it to another status. Notes to reporters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Locked: only people with Manage Threads (and the bot) can write in it.`,
+Status: **${STATUSES[issue.status]?.emoji ?? ''} ${STATUSES[issue.status]?.label ?? issue.status}**. Use the buttons to move it to another status. Notes to reporters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Who can see and write here is set by the permissions of this channel.`,
     components: [new ActionRowBuilder().addComponents(...moves), new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`note:${issue.id}`).setLabel('Note to reporters').setEmoji('💬').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`merge:${issue.id}`).setLabel('Same problem as another issue…').setEmoji('🔀').setStyle(ButtonStyle.Secondary))],
@@ -348,6 +348,7 @@ export async function openTalkThread(client, issue) {
   if (fresh.talk_thread_id) {
     try {
       const t = await client.channels.fetch(fresh.talk_thread_id);
+      if (t.locked) await t.setLocked(false, 'Developers need to write here').catch(() => {}); // older threads were locked, which blocks developers without Manage Threads
       if (t.archived) await t.setArchived(false).catch(() => {});
       await renameTalk(t, fresh);
       return { thread: t, existing: true };
@@ -362,7 +363,6 @@ export async function openTalkThread(client, issue) {
   issues.setTalkThread(fresh.id, thread.id);
   await thread.send(talkIntro(fresh)).catch(() => {});
   await postTalkHistory(client, fresh, thread);
-  await thread.setLocked(true, 'Only developers write here').catch(() => {}); // a locked thread can only be written in by people with Manage Threads (and the bot)
   return { thread, existing: false };
 }
 

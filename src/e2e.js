@@ -432,7 +432,7 @@ console.log('8. developer workflow');
   check(talk && talk.memberIds.size === 0, 'players are not added to the developer thread');
   r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
   check(has(r.out.payload, new RegExp(talkId)), 'the Developer thread button shows the thread');
-  check(talk.locked && /Players are not in this thread|Locked/.test(JSON.stringify(plain(talk.sent[0].payload))), 'the thread is locked so only people with Manage Threads can write');
+  check(!talk.locked, 'the thread is not locked, so developers can write in it');
   check(JSON.stringify(plain(talk.sent[0].payload)).includes(`note:${aliceIssueId}`) && JSON.stringify(plain(talk.sent[0].payload)).includes(`merge:${aliceIssueId}`), 'the thread has buttons to send a note to the requesters and to merge');
   const threadCount = hubCh.threadsList.length;
   r = await press(dev, cardScreen(), `talk:${aliceIssueId}`);
