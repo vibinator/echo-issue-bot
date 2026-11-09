@@ -336,7 +336,7 @@ export function talkIntro(issue) {
     content: `🧵 **#${issue.id} – ${trunc(issue.title, 150)}**
 Status: **${STATUSES[issue.status]?.emoji ?? ''} ${STATUSES[issue.status]?.label ?? issue.status}**. Use the buttons to move it to another status. Notes to reporters, status changes and new activity from players are posted here by the bot. Merge it with another issue (and so its thread) only if it is the same problem. Who can see and write here is set by the permissions of this channel.`,
     components: [new ActionRowBuilder().addComponents(...moves), new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`note:${issue.id}`).setLabel('Note to reporters').setEmoji('💬').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`note:${issue.id}`).setLabel('Send Response to Requester').setEmoji('💬').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`merge:${issue.id}`).setLabel('Same problem as another issue…').setEmoji('🔀').setStyle(ButtonStyle.Secondary))],
   };
 }

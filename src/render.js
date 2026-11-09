@@ -111,7 +111,7 @@ ${trunc(linked.body, 500)}${linked.link ? `
     [
       may('report') && !reported && btn('plus', 'I have this too', '🙋'), // not for people whose report is already on it
       may('dev') && btn('assign', 'Assign to me', '🙌'),
-      may('dev') && btn('note', 'Note to reporters', '💬'),
+      may('dev') && btn('note', 'Send Response to Requester', '💬'),
       may('dev') && btn('merge', 'Merge into…', '🔀'),
       may('dev') && btn('rmrep', 'Remove a report', '🗑️'),
     ],

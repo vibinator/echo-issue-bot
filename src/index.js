@@ -522,8 +522,8 @@ function readEvidence(i) {
   return { links: extractLinks(i.fields.getTextInputValue('links')), files };
 }
 
-const noteModal = (issue) => new ModalBuilder().setCustomId(`note:${issue.id}`).setTitle(`Note to reporters · #${issue.id}`).addComponents(
-  input('text', 'Note to reporters (empty = remove note)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note, placeholder: 'Shown on the issue, and sent as a message to everyone who reported or follows it.' }));
+const noteModal = (issue) => new ModalBuilder().setCustomId(`note:${issue.id}`).setTitle(`Send Response to Requester · #${issue.id}`).addComponents(
+  input('text', 'Response to requester (empty = remove)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note, placeholder: 'Shown on the issue, and sent as a message to everyone who reported or follows it.' }));
 
 /** Developers: fix a bad title (the first sentence of a report isn't always the problem) and the detected category. */
 const retitleModal = (issue) => {
@@ -539,7 +539,7 @@ const retitleModal = (issue) => {
 
 const fixedModal = (issue) => new ModalBuilder().setCustomId(`fixed:${issue.id}`).setTitle(`Mark fixed · #${issue.id}`).addComponents(
   input('version', 'Fixed in version (optional)', { max: 40, placeholder: 'e.g. 0.13.15', value: issue.fixed_version }),
-  input('text', 'Note to reporters (optional)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note, placeholder: 'Shown on the issue and sent to everyone who reported or follows it.' }));
+  input('text', 'Response to requester (optional)', { style: TextInputStyle.Paragraph, max: 900, value: issue.dev_note, placeholder: 'Shown on the issue and sent to everyone who reported or follows it.' }));
 
 const issueOption = (it) => ({
   label: trunc(`#${it.id} ${it.title}`, 100),
