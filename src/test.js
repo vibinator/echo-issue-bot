@@ -290,7 +290,7 @@ const names = board.embeds.flatMap((e) => e.toJSON().fields.map((f) => f.name));
 assert.deepEqual(names.map((n) => n.replace(/^\S+\s/, '').replace(/ \(\d+\)/, '')), ['New', 'Seen', 'Being fixed', 'Fixed', "Can't reproduce", "Won't fix"]);
 const newCol = board.embeds[0].toJSON().fields[0].value;
 assert.ok(newCol.includes(`#${mic.issue.id}`), 'open issues appear as cards in their column');
-assert.ok(board.components.length === 4, 'card picker + move picker + section picker + buttons');
+assert.ok(board.components.length === 3, 'card picker + section picker + buttons (a card is moved from its own status menu)');
 const mineBoard = boardPayload(G, { owner: 'nobody', title: 'Mine' });
 assert.ok(mineBoard.embeds[0].toJSON().fields.every((f) => f.value.startsWith('_empty_')), 'personal board only shows your cards');
 
@@ -509,26 +509,41 @@ assert.deepEqual(unarchived, [false], 'an archived thread is reopened so the car
 // back button on cards opened from a hidden menu
 const withBack = renderIssue(issues.get(T.issue.id), { back: 'browse' });
 assert.equal(withBack.components.length, 5);
-const lastRowIds = (p) => p.components[4].toJSON().components.map((c) => c.custom_id);
-assert.deepEqual(lastRowIds(withBack), [`retitle:${T.issue.id}`, `lkart:${T.issue.id}`, `evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
-assert.deepEqual(lastRowIds(renderIssue(issues.get(T.issue.id))), [`retitle:${T.issue.id}`, `lkart:${T.issue.id}`, `evall:${T.issue.id}`], 'no Back button on the public card');
+const rowIds = (p, n) => p.components[n].toJSON().components.map((c) => c.custom_id);
+assert.deepEqual(rowIds(withBack, 3), [`assign:${T.issue.id}`, `note:${T.issue.id}`, `evall:${T.issue.id}`, 'browse'], 'a menu card gets Back next to View attachments');
+assert.deepEqual(rowIds(renderIssue(issues.get(T.issue.id)), 3), [`assign:${T.issue.id}`, `note:${T.issue.id}`, `evall:${T.issue.id}`], 'no Back button on the public card');
+{ // the redesigned card: few buttons, the rest in one "More…" menu
+  const optionsOf = (p) => p.components.at(-1).toJSON().components[0].options?.map((o) => o.value) ?? [];
+  const asDev = renderIssue(issues.get(T.issue.id), { back: 'dev:board', viewer: { dev: true, report: true, article: true, userId: 'nobody-yet' } });
+  assert.equal(asDev.components.length, 4, 'developer card: status, priority, one button row, More…');
+  assert.deepEqual(rowIds(asDev, 2), [`assign:${T.issue.id}`, `note:${T.issue.id}`, `evall:${T.issue.id}`, 'dev:board'], 'the developer button row holds only the everyday actions');
+  assert.equal(asDev.components.at(-1).toJSON().components[0].custom_id, `more:${T.issue.id}`, 'the last row is the More… menu');
+  for (const v of ['merge', 'rmrep', 'retitle', 'mkart', 'lkart', 'history', 'plus', 'follow']) assert.ok(optionsOf(asDev).includes(v), `More… offers ${v} to a developer`);
+  const asPlayer = renderIssue(issues.get(T.issue.id), { back: 'browse', viewer: { dev: false, report: true, article: false, userId: 'nobody-yet' } });
+  assert.equal(asPlayer.components.length, 1, 'player card: one row, no menus');
+  assert.deepEqual(rowIds(asPlayer, 0), [`plus:${T.issue.id}`, `follow:${T.issue.id}`, `history:${T.issue.id}`, 'browse'], 'a player sees I have this too, Follow, History and Back');
+  const asEditor = renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: true, userId: 'nobody-yet' } });
+  assert.deepEqual(optionsOf(asEditor), ['mkart', 'lkart'], 'an article editor gets only the article actions under More…');
+}
 // controls the viewer can't use are left out
-const idsOf = (p) => p.components.flatMap((r) => r.toJSON().components.map((c) => c.custom_id.split(':')[0]));
+const idsOf = (p) => p.components.flatMap((r) => r.toJSON().components.flatMap((c) => (c.custom_id.startsWith('more:') ? c.options.map((o) => o.value) : [c.custom_id.split(':')[0]]))); // buttons, plus the choices under More…
 const asPlayer = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'someone' } }));
 assert.ok(asPlayer.includes('plus') && asPlayer.includes('follow'));
 assert.ok(!asPlayer.includes('addev'), 'adding attachments is offered only on issues you reported');
 assert.ok(!['status', 'prio', 'assign', 'note', 'merge', 'rmrep', 'mkart', 'lkart', 'editmine'].some((x) => asPlayer.includes(x)), 'a player sees no developer controls (and no edit on a report that is not theirs)');
 const asOwner = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 't1' } }));
-assert.ok(asOwner.includes('editmine'), 'the reporter can edit their own report');
+assert.ok(!asOwner.includes('editmine') && !asOwner.includes('addev'), 'a reporter edits and adds files from My issues, so this card stays short');
+const moreOf = (uid, dev) => renderIssue(issues.get(T.issue.id), { viewer: { dev, report: true, article: false, userId: uid } }).components.at(-1).toJSON().components[0].options?.map((o) => o.value) ?? [];
+assert.ok(moreOf('t1', true).includes('editmine') && moreOf('t1', true).includes('addev'), 'a developer who reported it finds Edit my report and Add screenshots under More…');
+assert.ok(!moreOf('someone', true).includes('editmine') && !moreOf('someone', true).includes('addev'), '…and a developer with no report on it does not');
 assert.ok(!asOwner.includes('follow'), 'a reporter already gets updates, so no Follow button');
 assert.ok(!asPlayer.includes('retitle') && !asOwner.includes('retitle'), 'only developers can edit the title');
-assert.ok(asOwner.includes('addev'), 'and add attachments to it');
 watchers.add(T.issue.id, 'fol1');
 const asFollower = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: 'fol1' } }));
 const followBtn = (uid) => renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: true, article: false, userId: uid } }).components.flatMap((r) => r.toJSON().components).find((c) => c.custom_id.startsWith('follow:'));
 assert.equal(followBtn('fol1').label, 'Unfollow', 'someone who follows is offered Unfollow');
 assert.equal(followBtn('someone').label, 'Follow', 'someone who does not is offered Follow');
-assert.ok(asFollower.includes('addev') && !asFollower.includes('editmine'), 'a follower can attach files (but has no report to edit)');
+assert.ok(asFollower.includes('plus') && !asFollower.includes('editmine'), 'a follower adds their report and files with I have this too (and has no report to edit)');
 const asReadOnly = idsOf(renderIssue(issues.get(T.issue.id), { viewer: { dev: false, report: false, article: false, userId: 'x' } }));
 assert.ok(!['plus', 'addev', 'editmine'].some((x) => asReadOnly.includes(x)) && asReadOnly.includes('history'), 'someone who cannot report only reads');
 assert.ok(!asPlayer.includes('evall') && !asReadOnly.includes('evall'), 'someone with no attachments of their own is not offered View attachments');
@@ -657,11 +672,12 @@ const fi = { guildId: 'g5', user: { id: 'viewer' } };
   assert.equal(nav(p0)[0].disabled, true, 'no Previous on the first page');
   const p1 = ui.browsePayload(view, { s: 'open', c: '-', o: '-', p: 1 });
   assert.equal(pick(p1)[0].options.length, 5, 'the second page holds the rest');
-  assert.equal(nav(p1)[2].disabled, true, 'no Next on the last page');
+  assert.equal(nav(p1)[1].disabled, true, 'no Next on the last page');
+  assert.ok(nav(p1).length === 2 && /page 2 of 2/.test(p1.content), 'the page number is in the text, not on a button that does nothing');
   assert.ok(!pick(p0)[0].options.some((o) => o.value === String(closedId)) && !pick(p1)[0].options.some((o) => o.value === String(closedId)), 'the fixed issue is not in the open list');
   const all = ui.browsePayload(view, { s: '-', c: '-', o: '-', p: 0 });
   assert.ok(pick(all)[0].options.some((o) => o.value === String(closedId)), 'Any status includes closed issues');
-  assert.equal(ui.browsePayload(view, { s: 'open', c: '-', o: '-', p: 99 }).components.length, 5, 'an out-of-range page is clamped');
+  assert.equal(ui.browsePayload(view, { s: 'open', c: '-', o: '-', p: 99 }).components.length, 4, 'an out-of-range page is clamped (a player has two filters, the list and the page buttons)');
 }
 const sampleIssue = issues.list('g5')[0];
 const sampleReport = R.forIssue(sampleIssue.id)[0];

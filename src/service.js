@@ -389,7 +389,7 @@ export function syncTalkThread(client, issue) {
       const g = issue.guild_id, hub = settings.get(g)?.board_channel_id;
       if (hub && Date.now() - (threadWarned.get(g) ?? 0) > 3600e3) {
         threadWarned.set(g, Date.now());
-        try { await (await client.channels.fetch(hub)).send(`⚠️ I couldn't create the thread for issue #${issue.id}: ${e.message}\nCheck the bot has **Create Public Threads**, **Send Messages in Threads** and **Manage Threads** in this channel, then press **Developer → Process previous requests into threads**.`); } catch { /* no access at all */ }
+        try { await (await client.channels.fetch(hub)).send(`⚠️ I couldn't create the thread for issue #${issue.id}: ${e.message}\nCheck the bot has **Create Public Threads**, **Send Messages in Threads** and **Manage Threads** in this channel, then use **Developer → More tools… → Process previous issues into threads**.`); } catch { /* no access at all */ }
       }
     }
   });

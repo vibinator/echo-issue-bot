@@ -5,7 +5,7 @@ import {
 } from 'discord.js';
 import { semanticScores, warmEmbeddings } from './embed.js';
 import { articles, restoreArticles, db, decisions, events, evidence, issues, kbStats, prefs, reports, restoredFrom, seen, settings, summary, watchers } from './db.js';
-import { erasePayload, privacyPayload, termsPayload } from './legal.js';
+import { erasePayload, privacyPayload, termsPayload, PRIVACY_URL, TERMS_URL } from './legal.js';
 import { CATEGORIES, INSTALL_CATEGORY } from './categories.js';
 import { PRIORITIES, STATUSES, person, renderIssue } from './render.js';
 import { relatedIssues } from './related.js';
@@ -248,21 +248,36 @@ function panelPayload(guildId) {
       '',
       '📌 **My issues** – follow your reports, see what the developers changed (🔴 = changed since you last looked), add details, and turn update messages on or off.',
       '',
-      '📚 **Knowledge articles** – browse the quick fixes for common problems (they are also shown to you automatically before you send a report).',
+      '📚 **Quick fixes** – browse the answers to common problems (they are also shown to you automatically before you send a report).',
       `• **${KB.length}** built-in answers`,
       `• **${kbCount}** written by the team`,
       '',
       '_Everything you open from these buttons is private – only you can see it._',
+      `[🔒 Data & privacy](${PRIVACY_URL}) · [📜 Terms of use](${TERMS_URL}) · your data, and how to erase it, are also under **My issues**.`,
     ].join('\n'));
   return {
     embeds: [embed],
     components: [
-      row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Known issues', '📋'), btn('mine', 'My issues', '📌'),
-        btn('legal:privacy', 'Data & privacy', '🔒'), btn('legal:terms', 'Terms of use', '📜')),
-      row(btn('kb:browse', 'Knowledge articles', '📚'), todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️')),
+      row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), btn('browse', 'Known issues', '📋'), btn('mine', 'My issues', '📌'), btn('kb:browse', 'Quick fixes', '📚'),
+        todo ? btn('dev:menu', `Developer · ${todo} need attention`, '🔴', ButtonStyle.Danger) : btn('dev:menu', 'Developer', '🛠️')),
     ],
   };
 }
+
+/** Choices of the "More…" menus: [button id, label, emoji, description]. Picking one works like pressing that button. */
+const DEV_TOOLS = [
+  ['dev:digest', 'Preview the weekly digest', '📊', 'It is posted in the developer hub every week'],
+  ['dev:export', 'Export CSV', '📤', 'All issues and reports as spreadsheet files'],
+  ['dev:backup', 'Back up now', '💾', 'Save a copy of the database'],
+  ['dev:threads', 'Process previous issues into threads', '🧵', 'Make missing threads and refresh the existing ones'],
+];
+const ART_MORE = [
+  ['art:test', 'Test matching', '🧪', 'See what a player would be shown for a sentence'],
+  ['art:all:0', 'View all knowledge', '📖', 'Your articles and the built-in answers together'],
+];
+const CARD_MORE = ['merge', 'rmrep', 'retitle', 'mkart', 'lkart', 'history', 'plus', 'follow', 'editmine', 'addev'];
+const moreMenu = (id, placeholder, list) => row(new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder)
+  .addOptions(list.map(([value, label, emoji, description]) => ({ value, label, emoji, description }))));
 
 /** Everything developers need, one hidden menu behind a single button on the panel. */
 function devMenuPayload(guildId) {
@@ -272,9 +287,8 @@ function devMenuPayload(guildId) {
     content: `**🛠️ Developer menu** · bot ${versionLabel()} – only you can see this.\n${parts.length ? `⚠️ **Needs attention:** ${parts.join(' · ')}` : '✅ Nothing needs attention right now.'}`,
     embeds: [],
     components: [
-      row(btn('dev:board', a?.fresh ? `Board (${a.fresh} new)` : 'Board', '📌', a?.total ? ButtonStyle.Danger : ButtonStyle.Secondary), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:articles', 'Knowledge articles', '📚')),
-      row(btn('dev:settings', 'Settings', '⚙️'), btn('dev:digest', 'Digest', '📊'), btn('dev:threads', 'Process previous issues into threads', '🧵')),
-      row(btn('dev:export', 'Export CSV', '📤'), btn('dev:backup', 'Back up now', '💾')),
+      row(btn('dev:board', a?.fresh ? `Board (${a.fresh} new)` : 'Board', '📌', a?.total ? ButtonStyle.Danger : ButtonStyle.Secondary), btn('dev:dups', 'Review duplicates', '🔍'), btn('dev:articles', 'Knowledge articles', '📚'), btn('dev:settings', 'Settings', '⚙️')),
+      moreMenu('dev:tools', 'More tools…', DEV_TOOLS),
     ],
   };
 }
@@ -356,8 +370,7 @@ function faqPayload(guildId, kind, page = 0, deniedIds = new Set()) {
           description: deniedIds.has(e.id) ? 'You said this isn\'t it' : e.custom ? 'Written by this server\'s team' : 'Built-in answer',
         })))),
       row(btn(`rform:${kind}`, 'None of these – send a report', '📝', ButtonStyle.Primary)),
-      ...(pages > 1 ? [row(btn(`faqp:${kind}:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('faqp:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
-        btn(`faqp:${kind}:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1))] : []),
+      ...(pages > 1 ? [row(btn(`faqp:${kind}:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn(`faqp:${kind}:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1))] : []),
     ],
   };
 }
@@ -412,8 +425,7 @@ function kbBrowsePayload(i, page = 0) {
       .addOptions(shown.map((e) => ({ label: trunc(e.title, 100), value: e.id, emoji: e.custom ? '📚' : '💡', description: e.custom ? 'Written by this server\'s team' : 'Built-in answer' })))));
   }
   if (pages > 1) {
-    components.push(row(btn(`kbp:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('kbp:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
-      btn(`kbp:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
+    components.push(row(btn(`kbp:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn(`kbp:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
   }
   components.push(row(btn('report', 'Report a problem', '📝', ButtonStyle.Primary), ...(canManageArticles(i) ? [btn('dev:articles', 'Manage articles', '🛠️')] : [])));
   return {
@@ -567,8 +579,8 @@ function browsePayload(i, f) {
       Object.entries(STATUSES).map(([value, s]) => ({ label: s.label, emoji: s.emoji, value })), [{ label: 'Open issues', value: OPEN, emoji: '📂' }])),
     row(menu(`bfc:${f.s}|${f.o}`, 'Show: category', 'Any category', f.c,
       [...Object.keys(CATEGORIES), 'Other'].map((c) => ({ label: c, value: c })))),
-    row(menu(`bfo:${f.s}|${f.c}`, "Show: who's on it", 'Anyone', f.o,
-      [{ label: 'Nobody yet', value: 'unassigned', emoji: '🙈' }, ...(isDev(i) ? [{ label: 'Assigned to me', value: 'me', emoji: '🙌' }] : [])])), // only developers take issues
+    ...(isDev(i) ? [row(menu(`bfo:${f.s}|${f.c}`, "Show: who's on it", 'Anyone', f.o, // only developers take issues, so only they filter by it
+      [{ label: 'Nobody yet', value: 'unassigned', emoji: '🙈' }, { label: 'Assigned to me', value: 'me', emoji: '🙌' }]))] : []),
   ];
   if (shown.length) {
     components.push(row(new StringSelectMenuBuilder().setCustomId(`bfv:${f.s}|${f.c}|${f.o}|${page}`).setPlaceholder('Pick an issue to open…').addOptions(shown.map(issueOption)))); // carries the filters so Back returns here
@@ -577,13 +589,12 @@ function browsePayload(i, f) {
     const go = (p) => `bfp:${f.s}|${f.c}|${f.o}|${p}`;
     components.push(row(
       btn(go(page - 1), 'Previous', '⬅️').setDisabled(page === 0),
-      btn('bfn', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
       btn(go(page + 1), 'Next', '➡️').setDisabled(page >= pages - 1),
     ));
   }
   const what = f.s === OPEN ? 'open issue' : 'issue';
   const content = list.length
-    ? `**${list.length}** ${what}${list.length === 1 ? '' : 's'} found – the most important and most-reported are first${pages > 1 ? ` (showing ${page * BROWSE_PAGE + 1}–${page * BROWSE_PAGE + shown.length})` : ''}. Pick one to see the details.${f.s === OPEN ? ' Fixed and closed issues are hidden – change **Show: status** to see them.' : ''}`
+    ? `**${list.length}** ${what}${list.length === 1 ? '' : 's'} found – the most important and most-reported are first${pages > 1 ? ` (page ${page + 1} of ${pages}, showing ${page * BROWSE_PAGE + 1}–${page * BROWSE_PAGE + shown.length})` : ''}. Pick one to see the details.${f.s === OPEN ? ' Fixed and closed issues are hidden – change **Show: status** to see them.' : ''}`
     : 'No issues match those filters. Try choosing "Any" in one of the menus.';
   return { content, embeds: [], components };
 }
@@ -909,8 +920,7 @@ function trackPayload(i, issue) {
   const rows = [];
   if (mine) {
     rows.push(row(btn(`edit:${mine.id}`, 'Edit my report', '✏️'), btn(`addevr:${mine.id}`, 'Add screenshots / logs', '📎'),
-      btn(`rematch:${mine.id}`, 'Recalculate match', '🔄'), btn(`wd:${mine.id}`, 'Withdraw', '🗑️'),
-      ...(mineEv ? [btn(`evview:${mine.id}`, `My attachments (${mineEv})`, '🖼️')] : [])));
+      ...(mineEv ? [btn(`evview:${mine.id}`, `My attachments (${mineEv})`, '🖼️')] : []), btn(`wd:${mine.id}`, 'Withdraw', '🗑️')));
   }
   const nav = [btn('mine:back', 'Back', '⬅️')];
   // Joined an issue with other players? You can always take your report out into its own issue.
@@ -983,16 +993,15 @@ function articlesPayload(guildId, page = 0) {
       return { label: trunc(a.title, 100), description: trunc(`${a.enabled ? 'on' : 'off'} · shown ${s.shown} · helped ${s.helped} · denied ${s.denied}`, 100), value: String(a.id) };
     }))));
   }
-  components.push(row(btn('art:new', 'New article', '➕', ButtonStyle.Success), btn('art:all:0', 'View all knowledge', '📖'), btn('art:stats', 'Results', '📊'),
-    btn('art:test', 'Test matching', '🧪'), btn('dev:menu', 'Developer menu', '⬅️')));
   const draftCount = articles.drafts(guildId).length;
-  if (draftCount) components.push(row(btn('art:drafts', `Drafts to review (${draftCount})`, '📝', ButtonStyle.Primary)));
+  components.push(row(btn('art:new', 'New article', '➕', ButtonStyle.Success), ...(draftCount ? [btn('art:drafts', `Drafts to review (${draftCount})`, '📝', ButtonStyle.Primary)] : []),
+    btn('art:stats', 'Results', '📊'), btn('dev:menu', 'Developer menu', '⬅️')));
+  components.push(moreMenu('art:more', 'More…', ART_MORE));
   if (pages > 1) {
-    components.push(row(btn(`art:page:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('art:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
-      btn(`art:page:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
+    components.push(row(btn(`art:page:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn(`art:page:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
   }
   return {
-    content: `**📚 Knowledge articles** – ${all.length} of your own, plus ${KB.length} built-in answers.\nBefore anyone sends a report, they see a list of known problems (your articles first, and the closest matches to what they typed are moved to the top, even with typos). **Results** shows which answers actually help, and **Test matching** shows what a player would see for a sample sentence.`,
+    content: `**📚 Knowledge articles** – ${all.length} of your own, plus ${KB.length} built-in answers.${pages > 1 ? ` Page ${page + 1} of ${pages}.` : ''}\nBefore anyone sends a report, they see a list of known problems (your articles first, and the closest matches to what they typed are moved to the top, even with typos). **Results** shows which answers actually help, and **More… → Test matching** shows what a player would see for a sample sentence.`,
     embeds: [], components,
   };
 }
@@ -1016,13 +1025,12 @@ function allKnowledgePayload(guildId, page = 0) {
       .addOptions(list.map((e) => ({ label: trunc(e.title, 100), value: e.value, emoji: e.own ? '📚' : '💡', description: e.own ? (e.draft ? 'your article · draft' : e.off ? 'your article · off' : 'your article') : 'built-in answer' })))));
   }
   if (pages > 1) {
-    components.push(row(btn(`art:all:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn('art:noop', `Page ${page + 1} of ${pages}`, '📄').setDisabled(true),
-      btn(`art:all:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
+    components.push(row(btn(`art:all:${page - 1}`, 'Previous', '◀️').setDisabled(page === 0), btn(`art:all:${page + 1}`, 'Next', '▶️').setDisabled(page >= pages - 1)));
   }
   components.push(row(btn('art:back', 'Back', '⬅️')));
   return {
     content: '', components,
-    embeds: [new EmbedBuilder().setColor(0xfee75c).setTitle(`📖 All knowledge – ${ownCount} of your own, ${all.length - ownCount} built-in`)
+    embeds: [new EmbedBuilder().setColor(0xfee75c).setTitle(`📖 All knowledge – ${ownCount} of your own, ${all.length - ownCount} built-in${pages > 1 ? ` · page ${page + 1} of ${pages}` : ''}`)
       .setDescription(list.map((e) => `${e.own ? '📚' : '💡'} ${e.own ? `**${trunc(e.title, 90)}**` : trunc(e.title, 90)}${e.draft ? ' _(draft)_' : e.off ? ' _(disabled)_' : ''}`).join('\n') || '_Nothing yet._')
       .setFooter({ text: '📚 = your article (editable) · 💡 = built-in answer (read-only)' })],
   };
@@ -1138,6 +1146,15 @@ async function handleInteraction(i) {
     if (!i.guildId) { // used in a private message: the bot only works inside a server
       if (i.isRepliable?.() ?? true) await i.reply({ content: 'This only works inside a server, not in private messages.', flags: EPH });
       return;
+    }
+    // A choice in a "More…" menu works exactly like pressing the button it names, so each action has one handler.
+    if (i.isStringSelectMenu() && (i.customId === 'dev:tools' || i.customId === 'art:more' || i.customId.startsWith('more:'))) {
+      const v = i.values[0];
+      const ok = i.customId === 'dev:tools' ? DEV_TOOLS.some((t) => t[0] === v) : i.customId === 'art:more' ? ART_MORE.some((t) => t[0] === v) : CARD_MORE.includes(v);
+      if (!ok) return i.deferUpdate();
+      i.customId = i.customId.startsWith('more:') ? `${v}:${i.customId.slice(5)}` : v;
+      i.isButton = () => true;
+      i.isStringSelectMenu = () => false;
     }
     const id = i.customId ?? '';
 
@@ -1843,7 +1860,7 @@ async function handleInteraction(i) {
       if (!issue) return;
       if (i.isButton()) {
         const pool = articles.list(i.guildId, { enabledOnly: true }).filter((a) => !a.draft);
-        if (!pool.length) return i.reply({ content: 'There are no published knowledge articles yet. Use **Make knowledge article** to write one.', flags: EPH });
+        if (!pool.length) return i.reply({ content: 'There are no published knowledge articles yet. Use **More… → Make knowledge article** on an issue to write one.', flags: EPH });
         const text = [issue.title, ...reports.forIssue(issue.id).slice(0, 3).map((r) => r.text)].join('\n');
         const score = new Map(suggest(text, pool, 25, null, new Map(), await semanticScores(text, pool)).filter((s) => s.custom).map((s) => [s.id.replace('a:', ''), s.score]));
         const ranked = [...pool].sort((a, b) => (score.get(`${b.id}`) ?? 0) - (score.get(`${a.id}`) ?? 0)).slice(0, 24);

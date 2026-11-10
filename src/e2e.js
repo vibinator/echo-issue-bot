@@ -161,7 +161,7 @@ console.log('2. access control on the panel');
     check(has(r.out.payload, /developers only/), `an article editor cannot use ${id}`);
   }
   r = await press(dev, panelScreen, 'dev:menu');
-  check(labelsOf(r.out.payload).length >= 7, 'a developer sees the full developer menu');
+  check(labelsOf(r.out.payload).includes('Settings') && buttonsOf(r.out.payload).some((c) => c.custom_id === 'dev:tools'), 'a developer sees the full developer menu');
 }
 
 // ================================================================= 3. a player reports a problem (the whole path)
@@ -288,7 +288,7 @@ console.log('7. My issues');
   check(buttonsOf(r.out.payload).some((c) => c.custom_id === 'dm:toggle'), '…with the update-messages switch');
   let s = await choose(alice, r.screen, 'mine_view', [String(aliceIssueId)]);
   const lab = labelsOf(s.out.payload);
-  check(['Edit my report', 'Add screenshots / logs', 'Recalculate match', 'Withdraw'].every((x) => lab.includes(x)), 'the personal card offers edit / add / recalculate / withdraw');
+  check(['Edit my report', 'Add screenshots / logs', 'Withdraw'].every((x) => lab.includes(x)) && !lab.includes('Recalculate match'), 'the personal card offers edit / add / withdraw (Recalculate match is offered after an edit instead)');
   check(lab.some((x) => /My attachments \(2\)/.test(x)), '…and My attachments');
   const e = await press(alice, s.screen, `edit:${aliceReportId}`);
   check(e.out.modal && /Edit your report/.test(JSON.stringify(e.out.modal)), 'Edit opens the pre-filled form');
@@ -741,6 +741,28 @@ console.log('11. withdraw and erase');
   check(db.reports.byUser('G', 'bob').length === 0, 'none of bob\'s reports remain');
   const terms = await press(bob, panelScreen, 'legal:terms');
   check(has(terms.out.payload, /Terms of use/), 'the terms are available');
+  check(labelsOf((await press(bob, panelScreen, 'legal:privacy')).out.payload).includes('Terms of use'), 'the terms are reached from the Data & privacy screen');
+  { // the redesigned screens: few buttons, the rest behind one menu
+    const panel = plain(ui.panelPayload('G'));
+    check(panel.components.length === 1 && panel.components[0].components.length === 5, 'the public panel is one row of five buttons');
+    check(/PRIVACY\.md/.test(panel.embeds[0].description) && /TERMS\.md/.test(panel.embeds[0].description), 'the panel links to the privacy notice and the terms in its text');
+    const menu = await press(dev, panelScreen, 'dev:menu');
+    check(labelsOf(menu.out.payload).filter(Boolean).length === 4 && buttonsOf(menu.out.payload).some((c) => c.custom_id === 'dev:tools'), 'the developer menu is four buttons plus a More tools menu');
+    const viaTools = await choose(dev, menu.screen, 'dev:tools', ['dev:threads']);
+    check(has(viaTools.out.payload, /thread/i) && viaTools.out.type === 'update', 'a More tools choice opens that tool in place');
+    check((await choose(alice, menu.screen, 'dev:tools', ['dev:threads'])).out.payload && has((await choose(alice, menu.screen, 'dev:tools', ['dev:threads'])).out.payload, /developers only/i), 'More tools is refused to players like the buttons were');
+    const anyId = db.issues.list('G')[0].id;
+    const viaMore = await choose(dev, cardOf(anyId), `more:${anyId}`, ['history']);
+    check(has(viaMore.out.payload, /History/), 'a More… choice on a card works like the button it replaced');
+    const title = await choose(dev, cardOf(anyId), `more:${anyId}`, ['retitle']);
+    check(!!title.out.modal, 'More… → Edit title / category opens its form');
+    check((await choose(dev, cardOf(anyId), `more:${anyId}`, ['status'])).i.responses[0].type === 'deferUpdate', 'an unknown More… choice does nothing');
+    const boardNow = await press(dev, panelScreen, 'dev:board');
+    check(!buttonsOf(boardNow.out.payload).some((c) => c.custom_id === 'bfm'), 'the board no longer has a Move a card menu');
+    const known = await press(alice, panelScreen, 'browse');
+    check(!buttonsOf(known.out.payload).some((c) => c.custom_id?.startsWith('bfo:')), "players don't get the who's-on-it filter in Known issues");
+    check(buttonsOf((await press(dev, panelScreen, 'browse')).out.payload).some((c) => c.custom_id?.startsWith('bfo:')), '…developers do');
+  }
 }
 
 // ================================================================= 12. robustness
@@ -789,7 +811,7 @@ console.log('12b. security and unusual input');
 
   const listAdmin = person('listadmin', { roles: [ROLE.dev] }); listAdmin.rolesAsList = true;
   let r = await press(listAdmin, panelScreen, 'dev:menu');
-  check(labelsOf(r.out.payload).length >= 7, 'roles supplied as a plain list of ids still make someone a developer');
+  check(labelsOf(r.out.payload).includes('Settings') && buttonsOf(r.out.payload).some((c) => c.custom_id === 'dev:tools'), 'roles supplied as a plain list of ids still make someone a developer');
 
   const dm = interaction({ kind: 'command', commandName: 'setup', who: admin, channel: panelCh, guildId: null });
   await handleInteraction(dm);
@@ -831,11 +853,12 @@ async function crawl(who, name) {
     const { screen, depth } = queue.shift();
     for (const c of buttonsOf(screen.payload)) {
       if (!c.custom_id || c.style === 5) continue;
-      const targets = c.type === 3 ? (c.options ?? []).slice(0, 3).map((o) => o.value) : c.type === 5 ? ['bob'] : [null];
+      const isMore = /^(dev:tools|art:more|more:)/.test(c.custom_id);
+      const targets = c.type === 3 ? (c.options ?? []).slice(0, isMore ? 25 : 3).map((o) => o.value) : c.type === 5 ? ['bob'] : [null];
       for (const value of targets) {
         const key = `${name}|${screen.id}|${c.custom_id}|${value}`;
         const loose = `${name}|${c.custom_id}|${value}`;
-        if (seen.has(key) || seen.has(loose) || SKIP.some((re) => re.test(c.custom_id))) continue;
+        if (seen.has(key) || seen.has(loose) || SKIP.some((re) => re.test(c.custom_id) || (isMore && re.test(String(value))))) continue;
         seen.add(key); seen.add(loose); pressed++;
         const i = interaction({ kind: c.type === 3 ? 'select' : c.type === 8 ? 'channelselect' : c.type === 5 ? 'userselect' : 'button', customId: c.custom_id, who, values: value ? [value] : undefined, screen, channel: panelCh });
         const out = await run(i, `${name}: ${c.custom_id}${value ? ` = ${value}` : ''}`);

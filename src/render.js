@@ -106,31 +106,45 @@ ${trunc(linked.body, 500)}${linked.link ? `
   const mine = !viewer || reports.forIssue(issue.id).some((r) => r.user_id === viewer.userId);
   const reported = !!viewer && reports.hasUser(issue.id, viewer.userId); // already gets every update, so no Follow button
   const following = !!viewer && watchers.has(issue.id, viewer.userId);
+  // Few buttons, by role: developers get the actions they use on every issue, players the ones meant for them; everything
+  // used less often is one choice away in the "More…" menu (a choice there works exactly like pressing that button).
+  const dev = may('dev');
+  const playerRow = !viewer || !viewer.dev; // a card with no viewer is shared (older issues): it carries both rows
+  const followBtn = following ? btn('follow', 'Unfollow', '🔕') : btn('follow', 'Follow', '🔔'); // says what pressing it does
+  const backBtn = back && new ButtonBuilder().setCustomId(back).setLabel('Back').setEmoji('⬅️').setStyle(ButtonStyle.Secondary);
+  const ownFiles = !viewer || viewer.dev || ev.some((e) => e.user_id === viewer.userId); // others' attachments are private
+  const canFollowUp = may('report') && !!viewer && (mine || following);
+  const more = [
+    dev && ['merge', 'Merge into another issue…', '🔀', 'Same problem as another issue'],
+    dev && ['rmrep', 'Remove a report', '🗑️', "Take one player's report off this issue"],
+    dev && ['retitle', 'Edit title / category', '✏️'],
+    (dev || may('article')) && ['mkart', 'Make knowledge article', '📚', 'Write a quick fix from this issue'],
+    (dev || may('article')) && ['lkart', 'Link knowledge article', '🔗', 'Show an existing article to its reporters'],
+    !playerRow && ['history', 'History', '📜', 'Everything that happened on this issue'],
+    !playerRow && may('report') && !reported && ['plus', 'I have this too', '🙋', 'Add your own report to it'],
+    !playerRow && !reported && ['follow', following ? 'Unfollow' : 'Follow', following ? '🔕' : '🔔', 'Messages when its status changes'],
+    (!viewer || (!playerRow && may('report') && reported)) && ['editmine', 'Edit my report', '✏️'],
+    (!viewer || (!playerRow && canFollowUp)) && ['addev', 'Add screenshots / logs', '📎'],
+  ].filter(Boolean);
   const rows = [
-    ...(may('dev') ? [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu)] : []),
-    [
+    ...(dev ? [new ActionRowBuilder().addComponents(statusMenu), new ActionRowBuilder().addComponents(prioMenu)] : []),
+    playerRow && [
       may('report') && !reported && btn('plus', 'I have this too', '🙋'), // not for people whose report is already on it
-      may('dev') && btn('assign', 'Assign to me', '🙌'),
-      may('dev') && btn('note', 'Send Response to Requester', '💬'),
-      may('dev') && btn('merge', 'Merge into…', '🔀'),
-      may('dev') && btn('rmrep', 'Remove a report', '🗑️'),
-    ],
-    [
-      !reported && (following ? btn('follow', 'Unfollow', '🔕') : btn('follow', 'Follow', '🔔')), // says what pressing it does
-      may('report') && mine && btn('editmine', 'Edit my report', '✏️'),
-      may('report') && (mine || watchers.has(issue.id, viewer.userId)) && btn('addev', 'Add screenshots / logs', '📎'), // your own issues, or ones you follow
+      !reported && followBtn,
       btn('history', 'History', '📜'),
-      (may('dev') || may('article')) && btn('mkart', 'Make knowledge article', '📚'),
+      !dev && ownFiles && btn('evall', 'View attachments', '📎'),
+      !dev && backBtn,
     ],
-    // Last row: open the private attachments (the bot only shows them to the reporter and developers), plus Back in menus.
-    [
-      may('dev') && btn('retitle', 'Edit title / category', '✏️'),
-      (may('dev') || may('article')) && btn('lkart', 'Link knowledge article', '🔗'),
-      may('dev') && issue.talk_thread_id && btn('talk', 'Developer thread', '🧵'),
-      (!viewer || viewer.dev || ev.some((e) => e.user_id === viewer.userId)) && btn('evall', 'View attachments', '📎'), // others' attachments are private
-      back && new ButtonBuilder().setCustomId(back).setLabel('Back').setEmoji('⬅️').setStyle(ButtonStyle.Secondary),
+    dev && [
+      btn('assign', 'Assign to me', '🙌'),
+      btn('note', 'Send Response to Requester', '💬'),
+      ownFiles && btn('evall', 'View attachments', '📎'),
+      issue.talk_thread_id && btn('talk', 'Developer thread', '🧵'),
+      backBtn,
     ],
-  ].map((r) => (Array.isArray(r) ? r.filter(Boolean) : r)).filter((r) => (r.components ? r.components.length : r.length))
+    more.length && new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`more:${issue.id}`).setPlaceholder('More…')
+      .addOptions(more.map(([value, label, emoji, description]) => ({ value, label, emoji, ...(description ? { description } : {}) })))),
+  ].filter(Boolean).map((r) => (Array.isArray(r) ? r.filter(Boolean) : r)).filter((r) => (r.components ? r.components.length : r.length))
     .map((r) => (r.components ? r : new ActionRowBuilder().addComponents(r)));
 
   return {

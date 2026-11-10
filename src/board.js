@@ -107,16 +107,6 @@ export function boardPayload(guildId, { owner, title } = {}) {
         value: String(it.id),
       })))));
   }
-  const movable = list.filter(onBoard).slice(0, 25);
-  if (movable.length) {
-    components.push(new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder().setCustomId('bfm').setPlaceholder('Move a card to another section…').addOptions(movable.map((it) => ({
-        label: trunc(`#${it.id} ${it.title}`, 100),
-        description: trunc(`Now: ${STATUSES[it.status]?.label ?? it.status}`, 100),
-        emoji: STATUSES[it.status]?.emoji,
-        value: String(it.id),
-      })))));
-  }
   components.push(new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder().setCustomId('bsec').setPlaceholder('See everything in a section…').addOptions(
       [...ACTIVE, ...DONE].map((v) => ({ label: STATUSES[v].label, emoji: STATUSES[v].emoji, value: v, description: `${list.filter((i) => i.status === v && onBoard(i)).length} cards` })))));

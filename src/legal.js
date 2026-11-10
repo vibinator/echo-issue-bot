@@ -40,6 +40,7 @@ export function privacyPayload(devRoleId, retentionDays) {
     embeds: [embed],
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel('Full policy').setEmoji('📄').setStyle(ButtonStyle.Link).setURL(PRIVACY_URL),
+      new ButtonBuilder().setCustomId('legal:terms').setLabel('Terms of use').setEmoji('📜').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('legal:erase').setLabel('Delete my data').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId('mine').setLabel('My issues & DM settings').setEmoji('📌').setStyle(ButtonStyle.Secondary),
     )],
