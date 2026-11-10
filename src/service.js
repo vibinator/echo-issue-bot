@@ -454,9 +454,49 @@ export async function postTalkHistory(client, issue, thread = null) {
   } catch (e) { console.error('Posting thread history failed:', e.message); return false; }
 }
 
+/** Redraw a thread's first (bot) message so its status and buttons match the issue now. Never throws; true when it was changed. */
+async function refreshIntro(client, t, issue) {
+  try {
+    const first = (await t.messages.fetch({ after: '0', limit: 1 })).first();
+    if (!first || first.author?.id !== client.user?.id || !String(first.content ?? '').startsWith(`🧵 **#${issue.id} `)) return false;
+    const want = talkIntro(issue);
+    const ids = (rows) => (rows ?? []).flatMap((r) => (r.components ?? []).map((c) => c.customId ?? c.custom_id ?? c.data?.custom_id)).join('|');
+    if (first.content === want.content && ids(first.components) === ids(want.components.map((r) => r.toJSON()))) return false;
+    if (t.archived) await t.setArchived(false).catch(() => {}); // a message in an archived thread can't be edited
+    await first.edit(want);
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Bring every existing developer thread in line with its issue: the intro message shows the current status and buttons, the
+ * name starts with the status, and closed issues' threads are archived (hidden from the channel). Returns { refreshed, archived }.
+ */
+export async function refreshThreads(client, guildId) {
+  const out = { refreshed: 0, archived: 0 };
+  const seen = new Set();
+  for (const x of issues.list(guildId)) {
+    if (!x.talk_thread_id || seen.has(x.talk_thread_id)) continue;
+    // a thread shared by merged issues follows the one its intro is about, else any open one
+    const sharing = issues.byTalkThread(x.talk_thread_id);
+    const issue = sharing.find((s) => OPEN_STATUSES.includes(s.status)) ?? x;
+    seen.add(x.talk_thread_id);
+    let t;
+    try { t = await client.channels.fetch(x.talk_thread_id, { force: true }); } catch { continue; } // gone
+    for (const s of sharing) if (await refreshIntro(client, t, issues.get(s.id))) out.refreshed++;
+    if (!OPEN_STATUSES.includes(issue.status)) {
+      const wasOpen = !t.archived;
+      await syncTalkThread(client, issue);
+      if (wasOpen) out.archived++;
+    } else await renameTalk(t, issues.get(issue.id));
+  }
+  return out;
+}
+
 /**
  * Process all earlier requests into threads: every New / Seen / Being fixed issue gets its thread (if missing) and has its history
- * posted into it (if not already). Nobody is notified. Returns { threads, histories, failed }.
+ * posted into it (if not already); every existing thread is refreshed (see refreshThreads). Nobody is notified.
+ * Returns { threads, histories, failed, refreshed, archived }.
  */
 export async function processPrevious(client, guildId) {
   const out = { threads: 0, histories: 0, failed: 0 };
@@ -471,14 +511,9 @@ export async function processPrevious(client, guildId) {
     let cur = issues.get(x.id);
     if (!cur?.talk_thread_id) { out.failed++; continue; }
     if (!had) out.threads++;
-    if (had) try { // older threads: give the first (bot) message the status menu too
-      const t = await client.channels.fetch(cur.talk_thread_id);
-      const first = (await t.messages.fetch({ after: '0', limit: 1 })).first();
-      if (first?.author.id === client.user.id && !first.components.some((r) => r.components.some((c) => c.customId?.startsWith('stbtn:')))) await first.edit(talkIntro(cur));
-    } catch { /* leave it */ }
     if (!cur.talk_history && await postTalkHistory(client, cur)) out.histories++;
   }
-  return out;
+  return { ...out, ...await refreshThreads(client, guildId) };
 }
 
 /** Post a line in the issue's developer thread (notes, status changes, player activity). Never throws. */

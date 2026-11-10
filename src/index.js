@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { MAX_FILE_MB, readStored, storedSize } from './evidenceStore.js';
 import {
   attachEvidence, readScreenshots, purgeEvidence, duplicatePairs, fileReport, findFixedMatch, mergeIssues, notifyReporters, removeMessage, retireMessage,
-  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkIntro, talkSay, talkReport, carryTalkOnMerge, processPrevious,
+  eraseUser, purgeExpired, archiveFixedThreads, autoMergeDuplicates, rematchReport, splitReport, syncMessage, threadSay, openTalkThread, syncTalkThread, talkIntro, talkSay, talkReport, carryTalkOnMerge, processPrevious, refreshThreads,
 } from './service.js';
 import { faqEntries, KB, suggest } from './kb.js';
 import { boardPayload, confirmMovePayload, movePayload, postBoard, sectionPayload } from './board.js';
@@ -1997,7 +1997,7 @@ async function handleInteraction(i) {
         case 'dev:threadsok': { // step 2: do it
           await deferHidden(i);
           const r = await processPrevious(client, i.guildId);
-          return i.editReply({ content: `🧵 Done: **${r.threads}** thread${r.threads === 1 ? '' : 's'} created, history posted for **${r.histories}** issue${r.histories === 1 ? '' : 's'}.${r.failed ? `\n⚠️ ${r.failed} could not get a thread – check the bot has Create Public Threads, Send Messages in Threads and Manage Threads in <#${cfgOf(i.guildId).board_channel_id}>, then press the button again.` : ''}`, embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
+          return i.editReply({ content: `🧵 Done: **${r.threads}** thread${r.threads === 1 ? '' : 's'} created, history posted for **${r.histories}** issue${r.histories === 1 ? '' : 's'}, **${r.refreshed}** thread message${r.refreshed === 1 ? '' : 's'} brought up to date, **${r.archived}** closed thread${r.archived === 1 ? '' : 's'} archived.${r.failed ? `\n⚠️ ${r.failed} could not get a thread – check the bot has Create Public Threads, Send Messages in Threads and Manage Threads in <#${cfgOf(i.guildId).board_channel_id}>, then press the button again.` : ''}`, embeds: [], components: [row(btn('dev:menu', 'Developer menu', '⬅️'))] });
         }
         case 'dev:export': {
           const files = exportCsv(i.guildId);
@@ -2107,6 +2107,14 @@ client.once('clientReady', async () => {
     try { console.log(`Developer hub restored in ${cfg.guild_id}: ${await applyHub(cfg.guild_id, await client.channels.fetch(cfg.dev_channel_id))} thread(s) created.`); }
     catch (e) { console.error(`Could not restore the developer hub in ${cfg.guild_id}: ${e.message}`); }
   }
+  // Existing threads: current status + buttons in their first message, and closed issues' threads archived (hidden). In the background.
+  (async () => {
+    for (const cfg of settings.all()) {
+      if (!cfg.board_channel_id) continue;
+      try { const r = await refreshThreads(client, cfg.guild_id); if (r.refreshed || r.archived) console.log(`Threads refreshed in ${cfg.guild_id}: ${r.refreshed} updated, ${r.archived} archived.`); }
+      catch (e) { console.error(`Could not refresh threads in ${cfg.guild_id}: ${e.message}`); }
+    }
+  })();
   // The developer hub holds only the board and the threads: remove any copy of the public panel the bot once posted there.
   for (const cfg of settings.all()) {
     if (!cfg.board_channel_id || cfg.panel_channel_id === cfg.board_channel_id) continue;

@@ -453,6 +453,15 @@ console.log('8. developer workflow');
     await choose(dev, intro, `status:${aliceIssueId}`, ['cannot_reproduce'], 'select', talk);
     check(talk.archived, "the status menu in the thread also archives it when closing (Can't reproduce)");
     await choose(dev, intro, `status:${aliceIssueId}`, [before], 'select', talk);
+    // a pre-existing ticket closed by an older version: its thread still visible and its intro out of date -> refreshed
+    db.issues.setStatus(aliceIssueId, 'wont_fix', 'dev');
+    talk.archived = false;
+    const intro0 = talk.messages.map.get(talk.sent[0].id);
+    r = await press(dev, panelScreen, 'dev:threadsok');
+    check(talk.archived && /Won't fix/.test(intro0.content) && /archived/.test(r.out.payload.content ?? ''), "refreshing earlier threads archives a closed issue's visible thread and redraws its status message");
+    db.issues.setStatus(aliceIssueId, before, 'dev');
+    await press(dev, panelScreen, 'dev:threadsok');
+    check(!talk.archived && !/Won't fix/.test(intro0.content), 'refreshing again after reopening brings the thread back with the current status');
     const fromCard = await choose(dev, cardScreen(), `status:${aliceIssueId}`, [target]);
     check(fromCard.out.payload.embeds?.length === 1, 'the same menu on a card redraws the card');
     await choose(dev, cardScreen(), `status:${aliceIssueId}`, [before]);

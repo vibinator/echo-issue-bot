@@ -16,9 +16,12 @@ export const plain = (x) => JSON.parse(JSON.stringify(x));
 
 export class FakeMessage {
   constructor(channel, payload, author = 'bot') {
-    this.id = newId(); this.channel = channel; this.payload = payload; this.author = author; this.deleted = false;
+    this.id = newId(); this.channel = channel; this.payload = payload; this.author = typeof author === 'string' ? { id: author } : author; this.deleted = false;
     this.url = `https://discord.com/channels/G/${channel.id}/${this.id}`;
   }
+  get content() { return plain(this.payload)?.content; }
+  get components() { return plain(this.payload)?.components ?? []; }
+  async edit(payload) { tick(); if (this.channel.archived) throw unknown(50083, 'Thread is archived'); this.payload = payload; return this; }
   async delete() { tick(); this.deleted = true; this.channel.messages.map.delete(this.id); }
 }
 
@@ -29,7 +32,10 @@ export class FakeChannel {
     const ch = this;
     this.messages = {
       map: new Map(),
-      async fetch(mid) { tick(); const m = ch.messages.map.get(mid); if (!m) throw unknown(10008, 'Unknown Message'); return m; },
+      async fetch(mid) {
+        tick();
+        if (typeof mid === 'object') { const list = [...ch.messages.map.values()].slice(0, mid.limit ?? 50); return Object.assign(new Map(list.map((m) => [m.id, m])), { first: () => list[0] }); }
+        const m = ch.messages.map.get(mid); if (!m) throw unknown(10008, 'Unknown Message'); return m; },
       async edit(mid, payload) {
         tick(); const m = ch.messages.map.get(mid);
         if (!m) throw unknown(10008, 'Unknown Message');
@@ -68,6 +74,7 @@ sim.dms = [];             // { to, content }
 sim.users = new Map();
 
 export function installClient(client) {
+  client.user ??= { id: 'bot' };
   client.channels.fetch = async (id) => { tick(); const c = sim.registry.get(id); if (!c) throw unknown(10003, 'Unknown Channel'); return c; };
   client.users.fetch = async (id) => ({
     id, username: `user_${id}`,
