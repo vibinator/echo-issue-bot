@@ -1434,7 +1434,9 @@ async function handleInteraction(i) {
       if (status === 'fixed' && issue.status !== 'fixed') return i.showModal(fixedModal(issue));
       await i.deferUpdate(); // acknowledge first: changing a status edits the card and sends DMs
       const done = await applyStatus(i, issue, status);
-      return i.editReply(i.channelId === issue.talk_thread_id ? talkIntro(done) : card(i, done)); // in the developer thread the intro message stays the control
+      if (i.channelId !== issue.talk_thread_id) return i.editReply(card(i, done));
+      await i.editReply(talkIntro(done)); // in the developer thread the intro message stays the control
+      return syncTalkThread(client, done); // redrawing it reopens the thread: archive it again if the issue is closed
     }
     if (i.isButton() && id.startsWith('stbtn:')) { // status buttons in an issue's developer thread
       if (!isDev(i)) return devOnly(i, "change an issue's status");

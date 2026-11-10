@@ -378,9 +378,10 @@ export function syncTalkThread(client, issue) {
       if (!fresh || !settings.get(fresh.guild_id)?.board_channel_id) return;
       if (OPEN_STATUSES.includes(fresh.status)) await openTalkThread(client, fresh);
       else if (fresh.talk_thread_id && !issues.byTalkThread(fresh.talk_thread_id).some((x) => OPEN_STATUSES.includes(x.status))) {
-        const t = await client.channels.fetch(fresh.talk_thread_id);
+        // force: the cached copy can still say "archived" after a button press in the thread just reopened it
+        const t = await client.channels.fetch(fresh.talk_thread_id, { force: true });
         await renameTalk(t, fresh);
-        if (!t.archived) await t.setArchived(true, `Issue ${fresh.status}`);
+        await t.setArchived(true, `Issue ${fresh.status}`); // always: hides it from the channel's thread list
       }
     } catch (e) {
       console.error('Developer thread sync failed:', e.message);

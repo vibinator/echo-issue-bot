@@ -122,10 +122,11 @@ export function interaction({ kind, customId, who, values, fields = {}, files = 
   const needAck = () => { if (i.ackAfterMs === null) throw new Error('editReply/followUp before the interaction was acknowledged'); };
   const fakeMsg = () => ({ id: screen?.id ?? newId() });
   i.reply = async (p) => { guardAck('reply'); i.replied = true; record('reply', p); return fakeMsg(); };
-  i.update = async (p) => { if (!screen) throw new Error('update() on an interaction with no message'); guardAck('update'); i.replied = true; record('update', p); return fakeMsg(); };
+  i.update = async (p) => { if (!screen) throw new Error('update() on an interaction with no message'); guardAck('update'); i.replied = true; record('update', p); touch(); return fakeMsg(); };
   i.deferReply = async () => { guardAck('deferReply'); i.deferred = true; record('deferReply'); };
   i.deferUpdate = async () => { if (!screen) throw new Error('deferUpdate() on an interaction with no message'); guardAck('deferUpdate'); i.deferred = true; record('deferUpdate'); };
-  i.editReply = async (p) => { needAck(); record('editReply', p); return fakeMsg(); };
+  const touch = () => { if (channel instanceof FakeThread && screen && !screen.ephemeral) channel.archived = false; }; // like Discord: redrawing a message in a thread reopens it
+  i.editReply = async (p) => { needAck(); record('editReply', p); touch(); return fakeMsg(); };
   i.followUp = async (p) => { needAck(); record('followUp', p); return fakeMsg(); };
   i.showModal = async (m) => { guardAck('showModal'); i.replied = true; record('showModal', m); };
   return i;
