@@ -1075,13 +1075,17 @@ async function proposeArticle(issue, byUserId) {
     const chId = cfgOf(issue.guild_id).dev_channel_id;
     if (!chId) return; // no developer channel set: the draft still waits under Knowledge articles → Drafts to review
     const a = articles.get(id);
-    await (await client.channels.fetch(chId)).send({
+    // Post it inside the issue's developer thread (which then goes back to archived), so closing an issue adds nothing to the hub itself.
+    const threadId = issues.get(issue.id)?.talk_thread_id;
+    const thread = threadId ? await client.channels.fetch(threadId).catch(() => null) : null;
+    await (thread ?? await client.channels.fetch(chId)).send({
       content: `📝 **A knowledge article was proposed** from the fix for issue #${issue.id}. Players won't see it until it's published.`,
       embeds: [new EmbedBuilder().setColor(0x3498db).setTitle(`📚 ${trunc(a.title, 240)}`).addFields(
         { name: 'Matches players who write', value: trunc(a.symptoms, 1024) }, { name: 'Answer players would see', value: trunc(a.body, 1024) })],
       components: [row(btn(`art:dpub:${id}`, 'Publish', '✅', ButtonStyle.Success), btn(`art:drev:${id}`, 'Review / edit', '✏️'), btn(`art:ddis:${id}`, 'Discard', '🗑️'))],
       allowedMentions: { parse: [] },
     });
+    if (thread) await syncTalkThread(client, issues.get(issue.id)); // posting un-archives the thread: archive it again
   } catch (e) { console.error('Could not propose an article for issue', issue.id, e.message); }
 }
 
